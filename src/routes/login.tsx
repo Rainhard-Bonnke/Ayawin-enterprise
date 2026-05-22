@@ -1,69 +1,100 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Wine } from "lucide-react";
+import { type FormEvent, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { useState } from "react";
+import { useAuth } from "@/lib/auth";
+import { BrandMark } from "@/components/BrandMark";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
-  head: () => ({ meta: [{ title: "Sign in — Martin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Sign in - Ayawin Enterprise ERP" }] }),
 });
 
 function LoginPage() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("martin@martinerp.co.ke");
-  const [password, setPassword] = useState("demo");
+  const { login } = useAuth();
+  const CLIENT_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true' || import.meta.env.DEV;
+  const [email, setEmail] = useState(CLIENT_DEMO_MODE ? "admin@martin.co.ke" : "");
+  const [password, setPassword] = useState(CLIENT_DEMO_MODE ? "demo" : "");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSignIn = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      await login(email, password);
+      navigate({ to: "/" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign in failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-2">
+    <div className="grid min-h-screen bg-background lg:grid-cols-2">
       <div className="relative hidden flex-col justify-between overflow-hidden bg-navy p-12 text-navy-foreground lg:flex">
-        <div className="absolute inset-0 opacity-[0.06]" style={{
-          backgroundImage:
-            "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
-          backgroundSize: "24px 24px",
-        }} />
-        <div className="relative flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-gold text-gold-foreground">
-            <Wine className="h-6 w-6" />
-          </div>
-          <div>
-            <div className="font-display text-xl font-bold">Martin Enterprise</div>
-            <div className="text-xs uppercase tracking-[0.2em] text-gold">ERP · Kenya</div>
-          </div>
+        <div
+          className="absolute inset-0 opacity-[0.06]"
+          style={{
+            backgroundImage: "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
+            backgroundSize: "24px 24px",
+          }}
+        />
+        <div className="absolute right-0 top-0 h-80 w-80 translate-x-1/3 -translate-y-1/3 rounded-full bg-gold/15 blur-3xl" />
+        <div className="absolute bottom-0 left-0 h-72 w-72 -translate-x-1/3 translate-y-1/3 rounded-full bg-white/10 blur-3xl" />
+        <div className="relative flex items-center justify-between gap-3">
+          <BrandMark />
+          <ThemeToggle />
         </div>
-        <div className="relative">
+        <div className="relative max-w-xl">
           <h2 className="font-display text-4xl font-bold leading-tight">
-            Premium beverage operations,<br />
+            Premium beverage operations,
+            <br />
             <span className="text-gold">fully digitized.</span>
           </h2>
           <p className="mt-4 max-w-md text-sm text-navy-foreground/70">
-            KRA-compliant invoicing, excise duty automation, multi-warehouse
-            inventory, and real-time finance — built for Kenya's leading
-            distributors.
+            KRA-compliant invoicing, excise duty automation, multi-warehouse inventory,
+            and real-time finance built for Kenya's beverage distributors.
           </p>
+          <div className="mt-6 grid max-w-lg gap-3 sm:grid-cols-3">
+            {[
+              ["VAT", "16%"],
+              ["Excise", "Auto-calculated"],
+              ["Locale", "en-KE"],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur">
+                <div className="text-[10px] uppercase tracking-[0.22em] text-navy-foreground/55">{label}</div>
+                <div className="mt-1 text-sm font-semibold text-white">{value}</div>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="relative text-xs text-navy-foreground/50">
-          © 2026 Martin Enterprise Ltd · Nairobi, Kenya
+          (c) 2026 Ayawin Enterprise ERP | Nairobi, Kenya
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-6 sm:p-12">
-        <div className="w-full max-w-sm">
+      <div className="flex items-center justify-center p-4 sm:p-8 lg:p-12">
+        <div className="erp-panel w-full max-w-md rounded-3xl p-6 sm:p-8">
           <div className="mb-8 flex items-center gap-2 lg:hidden">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-navy text-navy-foreground">
-              <Wine className="h-5 w-5" />
-            </div>
-            <div className="font-display font-bold">Martin Enterprise ERP</div>
+            <BrandMark compact />
           </div>
-          <h1 className="font-display text-2xl font-bold tracking-tight">Welcome back</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Sign in to your account to continue.</p>
+          <div className="mb-4 inline-flex rounded-full border border-gold/30 bg-gold/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-gold">
+            Secure access
+          </div>
+          <h1 className="font-display text-3xl font-bold tracking-tight">Welcome back</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Sign in to Ayawin Enterprise ERP to manage sales, inventory, invoicing and KRA compliance.
+          </p>
 
-          <form
-            className="mt-8 space-y-4"
-            onSubmit={(e) => { e.preventDefault(); navigate({ to: "/" }); }}
-          >
+          <form className="mt-8 space-y-4" onSubmit={handleSignIn}>
             <div className="space-y-1.5">
               <Label htmlFor="email">Email</Label>
               <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -71,7 +102,9 @@ function LoginPage() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Password</Label>
-                <a href="#" className="text-xs text-muted-foreground hover:text-navy">Forgot?</a>
+                <a href="#" className="text-xs text-muted-foreground hover:text-navy">
+                  Forgot?
+                </a>
               </div>
               <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
@@ -81,13 +114,15 @@ function LoginPage() {
                 Remember me for 30 days
               </Label>
             </div>
-            <Button type="submit" className="w-full bg-navy text-navy-foreground hover:bg-navy/90">
-              Sign in
+            <Button type="submit" className="w-full bg-navy text-navy-foreground hover:bg-navy/90" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
             </Button>
+            {error && <div className="text-sm text-destructive">{error}</div>}
           </form>
 
-          <div className="mt-6 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Demo mode:</span> any credentials work.
+          <div className="mt-6 rounded-2xl border border-border/70 bg-muted/40 p-4 text-xs leading-5 text-muted-foreground">
+            <span className="font-medium text-foreground">Demo mode:</span> use any seeded account or{" "}
+            {loading ? "your" : "admin@martin.co.ke / demo"}.
           </div>
         </div>
       </div>

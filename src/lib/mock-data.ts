@@ -65,12 +65,12 @@ export const warehouses = [
 ];
 
 export const users = [
-  { id: "U1", name: "Martin Kamau", email: "martin@martinerp.co.ke", role: "Admin", status: "Active", lastLogin: "2026-05-20T08:14:00" },
-  { id: "U2", name: "Grace Wanjiku", email: "grace@martinerp.co.ke", role: "Manager", status: "Active", lastLogin: "2026-05-20T07:50:00" },
-  { id: "U3", name: "Brian Otieno", email: "brian@martinerp.co.ke", role: "Sales Rep", status: "Active", lastLogin: "2026-05-19T18:22:00" },
-  { id: "U4", name: "Faith Achieng", email: "faith@martinerp.co.ke", role: "Warehouse", status: "Active", lastLogin: "2026-05-20T06:30:00" },
-  { id: "U5", name: "Daniel Kiprop", email: "daniel@martinerp.co.ke", role: "Accountant", status: "Active", lastLogin: "2026-05-19T17:45:00" },
-  { id: "U6", name: "Samuel Njoroge", email: "samuel@martinerp.co.ke", role: "Driver", status: "Active", lastLogin: "2026-05-20T05:10:00" },
+  { id: "U1", name: "Admin User", email: "admin@company.local", role: "Admin", status: "Active", lastLogin: "2026-05-20T08:14:00" },
+  { id: "U2", name: "Grace Wanjiku", email: "grace@company.local", role: "Manager", status: "Active", lastLogin: "2026-05-20T07:50:00" },
+  { id: "U3", name: "Brian Otieno", email: "brian@company.local", role: "Sales Rep", status: "Active", lastLogin: "2026-05-19T18:22:00" },
+  { id: "U4", name: "Faith Achieng", email: "faith@company.local", role: "Warehouse", status: "Active", lastLogin: "2026-05-20T06:30:00" },
+  { id: "U5", name: "Daniel Kiprop", email: "daniel@company.local", role: "Accountant", status: "Active", lastLogin: "2026-05-19T17:45:00" },
+  { id: "U6", name: "Samuel Njoroge", email: "samuel@company.local", role: "Driver", status: "Active", lastLogin: "2026-05-20T05:10:00" },
 ];
 
 export interface SalesOrder {
@@ -119,7 +119,7 @@ export const deliveries = [
 ];
 
 export const employees = [
-  { id: "E001", name: "Martin Kamau", department: "Executive", role: "CEO", salary: 450000, status: "Active" },
+  { id: "E001", name: "Admin User", department: "Executive", role: "CEO", salary: 450000, status: "Active" },
   { id: "E002", name: "Grace Wanjiku", department: "Sales", role: "Sales Manager", salary: 180000, status: "Active" },
   { id: "E003", name: "Brian Otieno", department: "Sales", role: "Senior Sales Rep", salary: 95000, status: "Active" },
   { id: "E004", name: "Faith Achieng", department: "Warehouse", role: "Warehouse Supervisor", salary: 78000, status: "Active" },

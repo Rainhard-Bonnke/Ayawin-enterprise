@@ -1,0 +1,10 @@
+{
+  "name": "Martin Enterprise ERP",
+  "short_name": "Martin ERP",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#0A1628",
+  "background_color": "#0A1628",
+  "icons": []
+}

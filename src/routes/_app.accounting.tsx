@@ -1,14 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ListPagination } from "@/components/ListPagination";
+import { QuietNote } from "@/components/QuietNote";
+import { cashFlowForecast } from "@/lib/smartSignals";
+import { exportWorkbook } from "@/lib/excel";
+import { useState } from "react";
+import { Printer, FileDown, ArrowUpDown } from "lucide-react";
 
 export const Route = createFileRoute("/_app/accounting")({
   component: Accounting,
-  head: () => ({ meta: [{ title: "Accounting & Finance — Martin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Accounting & Finance — Ayawin Enterprise ERP" }] }),
 });
 
 const pnl = [
@@ -27,9 +36,83 @@ const aging = [
 ];
 
 function Accounting() {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("date");
+  const [page, setPage] = useState(1);
+  const pageSize = 5;
+  const journalRows = [
+    { d: "20/05/2026", a: "1100 — Cash at Bank", desc: "Payment received — Quickmart", db: 431984, cr: 0 },
+    { d: "20/05/2026", a: "1200 — Accounts Receivable", desc: "Payment received — Quickmart", db: 0, cr: 431984 },
+    { d: "19/05/2026", a: "1200 — Accounts Receivable", desc: "INV-2026-0531 Mombasa Distributors", db: 1350820, cr: 0 },
+    { d: "19/05/2026", a: "4000 — Sales Revenue", desc: "INV-2026-0531", db: 0, cr: 980000 },
+    { d: "19/05/2026", a: "2300 — Excise Duty Payable", desc: "INV-2026-0531", db: 0, cr: 184500 },
+    { d: "19/05/2026", a: "2200 — VAT Output", desc: "INV-2026-0531", db: 0, cr: 186320 },
+  ]
+    .filter((j) => j.d.includes(q) || j.a.toLowerCase().includes(q.toLowerCase()) || j.desc.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => {
+      if (sort === "account") return a.a.localeCompare(b.a);
+      return b.d.localeCompare(a.d);
+    });
+  const totalPages = Math.max(1, Math.ceil(journalRows.length / pageSize));
+  const paged = journalRows.slice((page - 1) * pageSize, page * pageSize);
+  const forecast = cashFlowForecast();
+  const exportAccounting = () => {
+    exportWorkbook("ayawin-enterprise-accounting.xlsx", [
+      {
+        name: "Journal",
+        rows: journalRows.map((j) => ({
+          Date: j.d,
+          Account: j.a,
+          Description: j.desc,
+          Debit: j.db,
+          Credit: j.cr,
+        })),
+      },
+      {
+        name: "P&L",
+        rows: pnl.map((row) => ({
+          Month: row.month,
+          Revenue: row.revenue,
+          Expenses: row.expenses,
+          Profit: row.revenue - row.expenses,
+        })),
+      },
+      {
+        name: "Aging",
+        rows: aging.map((row) => ({
+          Bucket: row.bucket,
+          Receivable: row.ar,
+          Payable: row.ap,
+        })),
+      },
+      {
+        name: "Cash Flow",
+        rows: forecast.map((row) => ({
+          Period: row.label,
+          Value: row.value,
+        })),
+      },
+    ]);
+  };
+
   return (
     <div>
-      <PageHeader title="Accounting & Finance" description="General Ledger, AR/AP, VAT & Excise returns, P&L." />
+      <PageHeader
+        title="Accounting & Finance"
+        description="General Ledger, AR/AP, VAT & Excise returns, P&L."
+        actions={
+          <>
+            <Button variant="outline" onClick={() => window.print()}>
+              <Printer className="mr-2 h-4 w-4" />
+              Print
+            </Button>
+            <Button variant="outline" onClick={exportAccounting}>
+              <FileDown className="mr-2 h-4 w-4" />
+              Export XLSX
+            </Button>
+          </>
+        }
+      />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
@@ -44,6 +127,27 @@ function Accounting() {
           </CardContent></Card>
         ))}
       </div>
+
+      <QuietNote
+        scenario="accounting"
+        contextKey={`${q}-${sort}`}
+        context={{ q, sort, journalRows, pnl, aging }}
+        className="mb-4"
+      />
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="font-display">Next 30 Days Cash Flow</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-4">
+          {forecast.map((item) => (
+            <div key={item.label} className="rounded-xl border border-border/70 bg-background/60 p-3">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">{item.label}</div>
+              <div className="mt-1 font-display text-xl font-bold">{KES(item.value)}</div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
       <Tabs defaultValue="pnl">
         <TabsList>
@@ -120,20 +224,26 @@ function Accounting() {
 
         <TabsContent value="ledger" className="mt-4">
           <Card><CardContent className="p-4">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search journal entries..." />
+              <Select value={sort} onValueChange={setSort}>
+                <SelectTrigger className="w-40">
+                  <ArrowUpDown className="mr-2 h-4 w-4" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="date">Sort by date</SelectItem>
+                  <SelectItem value="account">Sort by account</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Table>
               <TableHeader><TableRow>
                 <TableHead>Date</TableHead><TableHead>Account</TableHead><TableHead>Description</TableHead>
                 <TableHead className="text-right">Debit</TableHead><TableHead className="text-right">Credit</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {[
-                  { d: "20/05/2026", a: "1100 — Cash at Bank", desc: "Payment received — Quickmart", db: 431984, cr: 0 },
-                  { d: "20/05/2026", a: "1200 — Accounts Receivable", desc: "Payment received — Quickmart", db: 0, cr: 431984 },
-                  { d: "19/05/2026", a: "1200 — Accounts Receivable", desc: "INV-2026-0531 Mombasa Distributors", db: 1350820, cr: 0 },
-                  { d: "19/05/2026", a: "4000 — Sales Revenue", desc: "INV-2026-0531", db: 0, cr: 980000 },
-                  { d: "19/05/2026", a: "2300 — Excise Duty Payable", desc: "INV-2026-0531", db: 0, cr: 184500 },
-                  { d: "19/05/2026", a: "2200 — VAT Output", desc: "INV-2026-0531", db: 0, cr: 186320 },
-                ].map((j, i) => (
+                {paged.map((j, i) => (
                   <TableRow key={i}>
                     <TableCell className="text-xs">{j.d}</TableCell>
                     <TableCell className="font-mono text-xs">{j.a}</TableCell>
@@ -142,8 +252,16 @@ function Accounting() {
                     <TableCell className="text-right text-xs">{j.cr ? KES(j.cr) : "—"}</TableCell>
                   </TableRow>
                 ))}
+                {paged.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                      No journal entries match your filters.
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
+            <ListPagination page={page} totalPages={totalPages} totalItems={journalRows.length} pageSize={pageSize} onPageChange={setPage} />
           </CardContent></Card>
         </TabsContent>
       </Tabs>

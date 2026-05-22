@@ -7,14 +7,14 @@ export function KpiCard({
 }: { label: string; value: string; icon: LucideIcon; delta?: number; accent?: boolean }) {
   return (
     <Card className={cn(
-      "relative overflow-hidden border-border/60 transition-shadow hover:shadow-md",
-      accent && "border-gold/40 bg-gradient-to-br from-card to-gold/5",
+      "relative overflow-hidden transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg",
+      accent && "border-gold/40 bg-gradient-to-br from-card via-card to-gold/5",
     )}>
       <CardContent className="p-5">
         <div className="flex items-start justify-between">
           <div>
             <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</div>
-            <div className="mt-2 font-display text-2xl font-bold text-foreground">{value}</div>
+            <div className="mt-2 font-display text-2xl font-bold text-foreground sm:text-[1.65rem]">{value}</div>
             {typeof delta === "number" && (
               <div className={cn(
                 "mt-2 flex items-center gap-1 text-xs font-medium",
@@ -26,7 +26,7 @@ export function KpiCard({
             )}
           </div>
           <div className={cn(
-            "flex h-10 w-10 items-center justify-center rounded-lg",
+            "flex h-11 w-11 items-center justify-center rounded-xl shadow-sm",
             accent ? "bg-gold text-gold-foreground" : "bg-navy text-navy-foreground",
           )}>
             <Icon className="h-5 w-5" />
