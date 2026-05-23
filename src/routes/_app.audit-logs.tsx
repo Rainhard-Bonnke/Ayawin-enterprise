@@ -6,7 +6,7 @@ import { SearchBar } from "@/components/SearchBar";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListPagination } from "@/components/ListPagination";
 
-const apiBase = import.meta.env.VITE_API_BASE || "";
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 type AuditLogRow = {
   id: number;

@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 
-const apiBase = import.meta.env.VITE_API_BASE || "";
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 export function notify(message: string, description?: string) {
   toast.success(message, description ? { description } : undefined);

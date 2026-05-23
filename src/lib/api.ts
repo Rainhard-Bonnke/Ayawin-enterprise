@@ -9,7 +9,7 @@ export type User = {
   role: string;
 };
 
-const apiBase = import.meta.env.VITE_API_BASE || "";
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 const CLIENT_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true' || import.meta.env.DEV;
 const DEMO_USERS = new Set(["admin", "admin@company.local", ...Object.keys(demoRoleAccounts)]);
 

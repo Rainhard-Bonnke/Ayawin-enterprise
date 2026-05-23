@@ -1,4 +1,4 @@
-const apiBase = import.meta.env.VITE_API_BASE || "";
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 type EventPayload = {
   action: string;

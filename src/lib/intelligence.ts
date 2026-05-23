@@ -1,4 +1,4 @@
-const apiBase = import.meta.env.VITE_API_BASE || "";
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 export async function fetchInsight(scenario: string, context: unknown) {
   try {
