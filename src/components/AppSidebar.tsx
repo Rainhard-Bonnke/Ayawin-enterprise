@@ -30,7 +30,7 @@ import { BrandMark } from "@/components/BrandMark";
 import { useAuth } from "@/lib/auth";
 import { navigationAllowedForRole } from "@/lib/rbac";
 
-const groups: { label: string; items: { title: string; url: string; icon: React.ComponentType<{ className?: string }> }[] }[] = [
+export const navGroups: { label: string; items: { title: string; url: string; icon: React.ComponentType<{ className?: string }> }[] }[] = [
   {
     label: "Overview",
     items: [{ title: "Dashboard", url: "/", icon: LayoutDashboard }],
@@ -69,6 +69,45 @@ const groups: { label: string; items: { title: string; url: string; icon: React.
   },
 ];
 
+export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth();
+  const path = useRouterState({ select: (r) => r.location.pathname });
+  const isActive = (url: string) => (url === "/" ? path === "/" : path.startsWith(url));
+
+  return (
+    <nav className="px-2 py-4">
+      {navGroups.map((g) => {
+        const items = g.items.filter((item) => navigationAllowedForRole(user?.role, item.url));
+        if (items.length === 0) return null;
+        return (
+          <div key={g.label} className="mb-3">
+            <div className="px-2 pb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              {g.label}
+            </div>
+            <div className="grid gap-1">
+              {items.map((item) => (
+                <Link
+                  key={item.url}
+                  to={item.url}
+                  onClick={onNavigate}
+                  className={[
+                    "flex h-11 items-center gap-2 rounded-lg px-3 text-sm transition-colors",
+                    "hover:bg-muted",
+                    isActive(item.url) ? "bg-primary text-primary-foreground" : "text-foreground",
+                  ].join(" ")}
+                >
+                  <item.icon className="h-4 w-4" />
+                  <span>{item.title}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function AppSidebar() {
   const { state } = useSidebar();
   const { user } = useAuth();
@@ -84,7 +123,7 @@ export function AppSidebar() {
         </Link>
       </SidebarHeader>
       <SidebarContent className="gap-1 px-2 py-4">
-        {groups.map((g) => {
+        {navGroups.map((g) => {
           const items = g.items.filter((item) => navigationAllowedForRole(user?.role, item.url));
           if (items.length === 0) return null;
           return (
