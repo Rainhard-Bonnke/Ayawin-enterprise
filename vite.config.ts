@@ -4,12 +4,12 @@ import tsconfigPaths from "vite-tsconfig-paths";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import tanstackRouter from "@tanstack/router-plugin/vite";
 import tailwindcss from "@tailwindcss/vite";
-import { cloudflare } from "@cloudflare/vite-plugin";
+import { nitro } from "nitro/vite";
 
 export default defineConfig({
   plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
     tanstackStart(),
+    nitro(),
     tanstackRouter({ target: "react", enableRouteGeneration: false }),
     tailwindcss(),
     react(),
