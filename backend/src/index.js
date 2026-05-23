@@ -1234,7 +1234,7 @@ async function start() {
     } catch (seedErr) {
       console.warn('Running without database seed. Demo sign-in will still work.', seedErr.message);
     }
-    app.listen(port, () => console.log(`Server listening on ${port}`));
+    app.listen(port, '0.0.0.0', () => console.log(`Server listening on ${port}`));
   } catch (err) {
     console.error('Failed to start server', err);
     process.exit(1);
