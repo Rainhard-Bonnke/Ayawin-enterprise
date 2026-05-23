@@ -79,7 +79,7 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar/95 backdrop-blur">
       <SidebarHeader className="border-b border-sidebar-border px-3 py-4">
-        <Link to="/" className="block rounded-xl border border-sidebar-border bg-sidebar-accent/60 px-2 py-3 transition hover:bg-sidebar-accent">
+        <Link to="/" className="block px-1 py-1">
           <BrandMark compact={collapsed} />
         </Link>
       </SidebarHeader>
