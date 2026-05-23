@@ -44,14 +44,9 @@ function AppLayout() {
   return (
     <SidebarProvider>
       <div className="relative flex min-h-screen w-full bg-background">
-        <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          <div className="absolute left-0 top-0 h-80 w-80 -translate-x-1/3 -translate-y-1/3 rounded-full bg-gold/10 blur-3xl" />
-          <div className="absolute right-0 top-24 h-72 w-72 translate-x-1/3 rounded-full bg-navy/10 blur-3xl" />
-          <div className="absolute bottom-0 left-1/2 h-96 w-[32rem] -translate-x-1/2 translate-y-1/3 rounded-full bg-success/10 blur-3xl" />
-        </div>
         <AppSidebar />
         <div className="relative flex flex-1 flex-col">
-          <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border/70 bg-background/75 px-4 backdrop-blur-xl">
+          <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur">
             <SidebarTrigger />
             <div className="hidden md:block">
               <BrandMark compact />
@@ -73,7 +68,7 @@ function AppLayout() {
                 <Bell className="h-4 w-4" />
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
               </button>
-              <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
+              <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5">
                 <UserCircle2 className="h-5 w-5 text-navy" />
                 <div className="hidden text-xs leading-tight sm:block">
                   <div className="font-medium text-foreground">{user?.full_name ?? user?.username ?? "Guest"}</div>

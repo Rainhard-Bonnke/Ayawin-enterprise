@@ -77,9 +77,9 @@ export function AppSidebar() {
   const isActive = (url: string) => (url === "/" ? path === "/" : path.startsWith(url));
 
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border/70 bg-sidebar/95 backdrop-blur-xl">
-      <SidebarHeader className="border-b border-sidebar-border/70 px-3 py-4">
-        <Link to="/" className="block rounded-2xl border border-sidebar-border/60 bg-sidebar-accent/40 px-2 py-3 transition hover:bg-sidebar-accent/70">
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar/95 backdrop-blur">
+      <SidebarHeader className="border-b border-sidebar-border px-3 py-4">
+        <Link to="/" className="block rounded-xl border border-sidebar-border bg-sidebar-accent/60 px-2 py-3 transition hover:bg-sidebar-accent">
           <BrandMark compact={collapsed} />
         </Link>
       </SidebarHeader>
@@ -90,7 +90,7 @@ export function AppSidebar() {
           return (
           <SidebarGroup key={g.label} className="mb-2">
             {!collapsed && (
-              <SidebarGroupLabel className="px-2 text-[10px] font-semibold uppercase tracking-[0.28em] text-gold/70">
+              <SidebarGroupLabel className="px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 {g.label}
               </SidebarGroupLabel>
             )}
@@ -101,7 +101,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       asChild
                       isActive={isActive(item.url)}
-                      className="h-11 rounded-xl px-3 text-sm transition-all duration-200 hover:bg-sidebar-accent/80 data-[active=true]:bg-gold data-[active=true]:text-gold-foreground data-[active=true]:shadow-md"
+                      className="h-11 rounded-lg px-3 text-sm transition-all duration-200 hover:bg-sidebar-accent data-[active=true]:bg-sidebar-primary data-[active=true]:text-sidebar-primary-foreground data-[active=true]:shadow-sm"
                     >
                       <Link to={item.url} className="flex items-center gap-2">
                         <item.icon className="h-4 w-4" />
