@@ -49,6 +49,17 @@ app.get('/api/system/bootstrap', async (req, res) => {
   }
 });
 
+app.post('/api/system/bootstrap', async (req, res) => {
+  try {
+    const result = await ensureBootstrap();
+    const status = await getSchemaStatus();
+    res.json({ ...status, ...result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Unable to bootstrap schema' });
+  }
+});
+
 app.post('/api/intelligence/insight', async (req, res) => {
   const scenario = typeof req.body?.scenario === 'string' ? req.body.scenario : 'dashboard';
   const context = req.body?.context ?? {};

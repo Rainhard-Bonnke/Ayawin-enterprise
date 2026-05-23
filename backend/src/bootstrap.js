@@ -130,8 +130,11 @@ async function ensureBootstrap() {
   }
 
   const result = await bootstrapPromise;
-  // Always run safe seed patches; they are idempotent.
-  await ensureSeedPatches();
+  // Only run seed patches once the base schema exists.
+  const stillMissing = await getMissingTables();
+  if (stillMissing.length === 0) {
+    await ensureSeedPatches();
+  }
   return result;
 }
 
