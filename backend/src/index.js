@@ -16,6 +16,16 @@ const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.N
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.get('/health/db', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error(err);
+    res.status(503).json({ status: 'error', error: 'Database unavailable' });
+  }
+});
+
 app.post('/api/notifications/email', (req, res) => {
   const recipient = typeof req.body?.recipient === 'string' ? req.body.recipient.trim() : '';
   const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';

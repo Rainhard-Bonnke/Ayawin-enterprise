@@ -23,6 +23,11 @@ const DEMO_ROLES = {
   'driver@martin.co.ke': 'Driver',
 };
 
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@martin.co.ke';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || ADMIN_EMAIL.split('@')[0];
+const ADMIN_FULL_NAME = process.env.ADMIN_FULL_NAME || 'System Administrator';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+
 async function hashPassword(password) {
   return bcrypt.hash(password, 10);
 }
@@ -50,25 +55,32 @@ function verifyToken(token) {
 }
 
 async function ensureDefaultAdmin() {
-  if (!IS_DEMO_MODE) return;
+  if (!IS_DEMO_MODE && !ADMIN_PASSWORD) return;
 
-  const result = await pool.query('SELECT id, password_hash FROM users WHERE username = $1', ['admin']);
+  const password = IS_DEMO_MODE ? 'demo' : ADMIN_PASSWORD;
+  const result = await pool.query(
+    'SELECT id, password_hash FROM users WHERE username = $1 OR email = $2 LIMIT 1',
+    [ADMIN_USERNAME, ADMIN_EMAIL],
+  );
 
   if (result.rowCount === 0) {
-    const passwordHash = await hashPassword('demo');
+    const passwordHash = await hashPassword(password);
     await pool.query(
       'INSERT INTO users (username, full_name, email, role, status, password_hash) VALUES ($1, $2, $3, $4, $5, $6)',
-      ['admin', 'System Administrator', 'admin@martin.co.ke', 'Admin', 'active', passwordHash],
+      [ADMIN_USERNAME, ADMIN_FULL_NAME, ADMIN_EMAIL, 'Admin', 'active', passwordHash],
     );
-    console.log('Created default admin user admin@martin.co.ke / demo (demo mode)');
+    console.log(`Created admin user ${ADMIN_EMAIL}`);
     return;
   }
 
-  if (!result.rows[0].password_hash) {
-    const passwordHash = await hashPassword('demo');
-    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, result.rows[0].id]);
-    console.log('Updated default admin password hash (demo mode)');
-  }
+  const passwordHash = await hashPassword(password);
+  await pool.query(
+    `UPDATE users
+     SET username = $1, full_name = $2, email = $3, role = 'Admin', status = 'active', password_hash = $4
+     WHERE id = $5`,
+    [ADMIN_USERNAME, ADMIN_FULL_NAME, ADMIN_EMAIL, passwordHash, result.rows[0].id],
+  );
+  console.log(`Ensured admin credentials for ${ADMIN_EMAIL}`);
 }
 
 function createDemoUser(email = DEMO_USER.email) {
