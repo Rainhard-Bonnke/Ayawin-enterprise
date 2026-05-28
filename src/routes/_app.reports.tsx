@@ -6,38 +6,50 @@ import { FileText, FileSpreadsheet, FileDown } from "lucide-react";
 import { SearchBar } from "@/components/SearchBar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { QuietNote } from "@/components/QuietNote";
 import { exportWorkbook } from "@/lib/excel";
+import { useAuth } from "@/lib/auth";
+import { fetchReportLibrary } from "@/lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/reports")({
   component: ReportsPage,
   head: () => ({ meta: [{ title: "Reports & Analytics - Ayawin Enterprise ERP" }] }),
 });
 
-const groups = [
-  { title: "Sales", items: ["Daily Sales", "Sales by Product", "Sales by Customer", "Sales by Rep", "Commission Report"] },
-  { title: "Inventory", items: ["Stock on Hand", "Stock Movement", "Stock Valuation (FIFO)", "Expiring Stock", "Low Stock Alert"] },
-  { title: "Finance", items: ["Profit & Loss", "Balance Sheet", "Cash Flow", "Trial Balance", "Bank Reconciliation"] },
-  { title: "KRA Compliance", items: ["VAT Return (16%)", "Excise Duty Return", "Withholding Tax", "ETR Reconciliation"] },
-  { title: "Operations", items: ["Delivery Performance", "Driver Performance", "Customer Aging", "Supplier Aging"] },
-];
+const groups: Array<{ title: string; items: string[] }> = [];
 
 function ReportsPage() {
+  const { token } = useAuth();
+  const [library, setLibrary] = useState<Array<{ group: string; title: string }> | null>(null);
   const [q, setQ] = useState("");
   const [group, setGroup] = useState("all");
   const [page, setPage] = useState(1);
   const pageSize = 8;
 
+  useEffect(() => {
+    if (!token) return;
+    fetchReportLibrary(token)
+      .then((rows) => {
+        setLibrary(rows.map((r) => ({ group: r.category, title: r.name })));
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Unable to load report library");
+        setLibrary([]);
+      });
+  }, [token]);
+
+  const catalog = library ?? [];
+  const groupOptions = Array.from(new Set(catalog.map((c) => c.group))).sort();
+
   const entries = useMemo(
     () =>
-      groups
-        .flatMap((g) => g.items.map((item) => ({ group: g.title, title: item })))
-        .filter((r) => {
-          const text = `${r.group} ${r.title}`.toLowerCase();
-          return (group === "all" || r.group === group) && text.includes(q.toLowerCase());
-        }),
-    [group, q],
+      catalog.filter((r) => {
+        const text = `${r.group} ${r.title}`.toLowerCase();
+        return (group === "all" || r.group === group) && text.includes(q.toLowerCase());
+      }),
+    [catalog, group, q],
   );
 
   const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
@@ -65,7 +77,7 @@ function ReportsPage() {
       <QuietNote
         scenario="reports"
         contextKey={`${group}-${q}`}
-        context={{ groups, entries }}
+        context={{ groups: groupOptions, entries }}
         className="mb-4"
       />
 
@@ -78,9 +90,9 @@ function ReportsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All groups</SelectItem>
-              {groups.map((g) => (
-                <SelectItem key={g.title} value={g.title}>
-                  {g.title}
+              {groupOptions.map((groupName) => (
+                <SelectItem key={groupName} value={groupName}>
+                  {groupName}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -95,7 +107,7 @@ function ReportsPage() {
         {paged.map((report) => (
           <Card key={`${report.group}-${report.title}`}>
             <CardHeader>
-              <CardTitle className="font-display text-base">{report.group}</CardTitle>
+              <CardTitle className="text-base">{report.group}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="flex items-center justify-between rounded-md border border-border p-2.5">

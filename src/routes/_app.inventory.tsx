@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeftRight, Plus, ScanBarcode } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { SearchBar } from "@/components/SearchBar";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
@@ -14,7 +17,16 @@ import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import { KES, fmtDate } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
-import { fetchInventoryItems, fetchWarehouses, type BackendInventoryItem, type BackendWarehouse } from "@/lib/api";
+import {
+  createStockIn,
+  createStockTransfer,
+  fetchInventoryItems,
+  fetchMasterItems,
+  fetchWarehouses,
+  type BackendInventoryItem,
+  type BackendMasterItem,
+  type BackendWarehouse,
+} from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/inventory")({
@@ -32,8 +44,38 @@ function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<BackendInventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
+  const [masterItems, setMasterItems] = useState<BackendMasterItem[]>([]);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [stockInOpen, setStockInOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [transferForm, setTransferForm] = useState({
+    from_warehouse_id: "",
+    to_warehouse_id: "",
+    item_id: "",
+    quantity: "",
+    notes: "",
+  });
+  const [stockInForm, setStockInForm] = useState({
+    warehouse_id: "",
+    item_id: "",
+    quantity: "",
+    unit_cost: "",
+    notes: "",
+  });
 
   const pageSize = 6;
+
+  const loadCatalog = async () => {
+    if (!token) return [];
+    try {
+      const catalog = await fetchMasterItems(token);
+      setMasterItems(catalog);
+      return catalog;
+    } catch {
+      setMasterItems([]);
+      return [];
+    }
+  };
 
   const loadInventory = async () => {
     if (!token) return;
@@ -110,6 +152,90 @@ function InventoryPage() {
       .slice(0, 6);
   }, [filtered]);
 
+  const openTransfer = async () => {
+    if (!token) return;
+    const first = filtered[0];
+    const catalog = await loadCatalog();
+    setTransferForm({
+      from_warehouse_id: warehouses.find((w) => w.name === first?.warehouse)?.id?.toString() || warehouses[0]?.id?.toString() || "",
+      to_warehouse_id: warehouses[1]?.id?.toString() || warehouses[0]?.id?.toString() || "",
+      item_id: first?.item_id || catalog[0]?.id || "",
+      quantity: "1",
+      notes: "",
+    });
+    setTransferOpen(true);
+  };
+
+  const openStockIn = async () => {
+    if (!token) return;
+    const catalog = await loadCatalog();
+    setStockInForm({
+      warehouse_id: warehouses[0]?.id?.toString() || "",
+      item_id: catalog[0]?.id || "",
+      quantity: "1",
+      unit_cost: catalog[0] ? String(catalog[0].standard_cost) : "",
+      notes: "",
+    });
+    setStockInOpen(true);
+  };
+
+  const submitTransfer = async () => {
+    if (!token) return;
+    const qty = Number(transferForm.quantity);
+    if (!transferForm.from_warehouse_id || !transferForm.to_warehouse_id || !transferForm.item_id || qty <= 0) {
+      toast.error("Fill from/to warehouse, item, and quantity");
+      return;
+    }
+    if (transferForm.from_warehouse_id === transferForm.to_warehouse_id) {
+      toast.error("Choose different source and destination warehouses");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await createStockTransfer(token, {
+        from_warehouse_id: transferForm.from_warehouse_id,
+        to_warehouse_id: transferForm.to_warehouse_id,
+        lines: [{ item_id: transferForm.item_id, quantity: qty }],
+        notes: transferForm.notes || undefined,
+      });
+      toast.success(`Transfer posted: ${result.transfer_no}`);
+      setTransferOpen(false);
+      setPage(1);
+      await loadInventory();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Transfer failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submitStockIn = async () => {
+    if (!token) return;
+    const qty = Number(stockInForm.quantity);
+    if (!stockInForm.warehouse_id || !stockInForm.item_id || qty <= 0) {
+      toast.error("Warehouse, item, and quantity are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await createStockIn(token, {
+        warehouse_id: stockInForm.warehouse_id,
+        item_id: stockInForm.item_id,
+        quantity: qty,
+        unit_cost: Number(stockInForm.unit_cost) || undefined,
+        notes: stockInForm.notes || undefined,
+      });
+      toast.success("Stock received into warehouse");
+      setStockInOpen(false);
+      setPage(1);
+      await loadInventory();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Stock in failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const exportInventory = () => {
     void trackEvent({
       action: "inventory_export_xlsx",
@@ -156,35 +282,11 @@ function InventoryPage() {
               <ScanBarcode className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                void trackEvent({
-                  action: "inventory_transfer_opened",
-                  entityType: "transfer",
-                  entityId: "draft",
-                  details: { q, cat, wh, sort },
-                  scenario: "inventory",
-                  context: { q, cat, wh, sort },
-                });
-              }}
-            >
+            <Button variant="outline" onClick={() => void openTransfer()} disabled={warehouses.length < 2}>
               <ArrowLeftRight className="mr-2 h-4 w-4" />
               Transfer
             </Button>
-            <Button
-              className="bg-navy text-navy-foreground hover:bg-navy/90"
-              onClick={() => {
-                void trackEvent({
-                  action: "inventory_stockin_opened",
-                  entityType: "stock_movement",
-                  entityId: "draft",
-                  details: { q, cat, wh, sort },
-                  scenario: "inventory",
-                  context: { q, cat, wh, sort, reorderDraft },
-                });
-              }}
-            >
+            <Button onClick={() => void openStockIn()} disabled={warehouses.length === 0}>
               <Plus className="mr-2 h-4 w-4" />
               Stock In
             </Button>
@@ -202,7 +304,7 @@ function InventoryPage() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -341,7 +443,7 @@ function InventoryPage() {
               ) : paged.map((p) => {
                 const low = Number(p.stock || 0) < Number(p.min_stock || 0);
                 return (
-                  <TableRow key={`${p.product_id}-${p.warehouse_id}`}>
+                  <TableRow key={`${p.item_id}-${p.warehouse_id}`}>
                     <TableCell className="font-mono text-xs">{p.sku}</TableCell>
                     <TableCell>
                       <div className="font-medium">{p.name}</div>
@@ -378,6 +480,108 @@ function InventoryPage() {
           <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
         </CardContent>
       </Card>
+
+      <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Warehouse transfer</DialogTitle>
+            <DialogDescription>Move stock between warehouses (posted immediately).</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="space-y-1.5">
+              <Label>From warehouse</Label>
+              <Select value={transferForm.from_warehouse_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, from_warehouse_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Source" /></SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>To warehouse</Label>
+              <Select value={transferForm.to_warehouse_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, to_warehouse_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Destination" /></SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Item</Label>
+              <Select value={transferForm.item_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, item_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
+                <SelectContent>
+                  {masterItems.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>{i.item_code} — {i.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Quantity</Label>
+              <Input type="number" min={0.01} step="any" value={transferForm.quantity} onChange={(e) => setTransferForm((p) => ({ ...p, quantity: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTransferOpen(false)}>Cancel</Button>
+            <Button onClick={submitTransfer} disabled={saving}>{saving ? "Posting…" : "Post transfer"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={stockInOpen} onOpenChange={setStockInOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Stock in</DialogTitle>
+            <DialogDescription>
+              Receive quantity into a warehouse. New products: add under{" "}
+              <Link to="/master-data" className="underline" onClick={() => setStockInOpen(false)}>Master Data</Link> first.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="space-y-1.5">
+              <Label>Warehouse</Label>
+              <Select value={stockInForm.warehouse_id} onValueChange={(v) => setStockInForm((p) => ({ ...p, warehouse_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Warehouse" /></SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Item</Label>
+              <Select value={stockInForm.item_id} onValueChange={(v) => setStockInForm((p) => ({ ...p, item_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
+                <SelectContent>
+                  {masterItems.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>{i.item_code} — {i.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Quantity</Label>
+                <Input type="number" min={0.01} step="any" value={stockInForm.quantity} onChange={(e) => setStockInForm((p) => ({ ...p, quantity: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Unit cost (optional)</Label>
+                <Input type="number" min={0} step="any" value={stockInForm.unit_cost} onChange={(e) => setStockInForm((p) => ({ ...p, unit_cost: e.target.value }))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStockInOpen(false)}>Cancel</Button>
+            <Button onClick={submitStockIn} disabled={saving}>{saving ? "Saving…" : "Receive stock"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

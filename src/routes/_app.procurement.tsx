@@ -16,7 +16,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
-import { purchaseOrders } from "@/lib/mock-data";
 import { KES, fmtDate } from "@/lib/format";
 import { exportWorkbook } from "@/lib/excel";
 import { supplierScoreFromBalances } from "@/lib/smartSignals";
@@ -70,7 +69,7 @@ function Procurement() {
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
   const [ordersLoading, setOrdersLoading] = useState(true);
-  const [orders, setOrders] = useState<Array<BackendPurchaseOrder | (typeof purchaseOrders)[number]>>([]);
+  const [orders, setOrders] = useState<BackendPurchaseOrder[]>([]);
   const [suppliersLoading, setSuppliersLoading] = useState(true);
   const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
@@ -99,10 +98,10 @@ function Procurement() {
     setOrdersLoading(true);
     try {
       const data = await fetchPurchaseOrders(token);
-      setOrders(data as Array<BackendPurchaseOrder | (typeof purchaseOrders)[number]>);
-    } catch {
-      setOrders(purchaseOrders);
-      toast.error("Unable to load purchase orders");
+      setOrders(data);
+    } catch (err) {
+      setOrders([]);
+      toast.error(err instanceof Error ? err.message : "Unable to load purchase orders");
     } finally {
       setOrdersLoading(false);
     }
@@ -150,8 +149,8 @@ function Procurement() {
 
   const setOrderStatus = async (row: any, nextStatus: BackendPurchaseOrder["status"]) => {
     if (!token) return;
-    const internalId = Number(row.internal_id);
-    if (!Number.isFinite(internalId)) {
+    const internalId = row.internal_id;
+    if (!internalId) {
       toast.error("This purchase order is not connected to the database");
       return;
     }
@@ -159,6 +158,7 @@ function Procurement() {
     try {
       await updatePurchaseOrderStatus(token, internalId, nextStatus);
       toast.success(`Status set to ${nextStatus}`);
+      setPage(1);
       await loadOrders();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to update status");
@@ -167,8 +167,8 @@ function Procurement() {
 
   const receiveOrder = async (row: any) => {
     if (!token) return;
-    const internalId = Number(row.internal_id);
-    if (!Number.isFinite(internalId)) {
+    const internalId = row.internal_id;
+    if (!internalId) {
       toast.error("This purchase order is not connected to the database");
       return;
     }
@@ -290,6 +290,7 @@ function Procurement() {
       }
 
       setSupplierDialogOpen(false);
+      setPage(1);
       await loadSuppliers();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to save supplier");
@@ -326,11 +327,11 @@ function Procurement() {
         description="Raise purchase orders, receive goods, match supplier invoices and manage credit limits."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={exportProcurement}>
+            <Button onClick={exportProcurement}>
               <Plus className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button className="bg-gold text-gold-foreground hover:bg-gold/90" onClick={openCreateSupplier}>
+            <Button variant="outline" onClick={openCreateSupplier}>
               <Plus className="mr-2 h-4 w-4" />
               New Supplier
             </Button>
@@ -348,7 +349,7 @@ function Procurement() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -357,7 +358,7 @@ function Procurement() {
       <QuietNote
         scenario="procurement"
         contextKey={`${q}-${status}-${sort}-${supplierRows.length}`}
-        context={{ q, status, sort, purchaseOrders, suppliers: supplierRows }}
+        context={{ q, status, sort, purchaseOrders: orderRows, suppliers: supplierRows }}
         className="mb-4"
       />
 
@@ -528,7 +529,7 @@ function Procurement() {
                 <div className="text-xs text-muted-foreground">
                   Supplier directory is searchable by the same keyword bar above and sorted alphabetically for quick lookup.
                 </div>
-                <Button className="bg-gold text-gold-foreground hover:bg-gold/90" onClick={openCreateSupplier}>
+                <Button variant="outline" onClick={openCreateSupplier}>
                   <Plus className="mr-2 h-4 w-4" />
                   New Supplier
                 </Button>
@@ -610,7 +611,7 @@ function Procurement() {
       <Dialog open={supplierDialogOpen} onOpenChange={setSupplierDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle className="font-display">{supplierEditing ? "Edit Supplier" : "New Supplier"}</DialogTitle>
+            <DialogTitle>{supplierEditing ? "Edit Supplier" : "New Supplier"}</DialogTitle>
             <DialogDescription>Maintain supplier KRA details, payment terms, and credit limits.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2 sm:grid-cols-2">
@@ -627,7 +628,7 @@ function Procurement() {
             <Button variant="outline" onClick={() => setSupplierDialogOpen(false)} disabled={supplierSaving}>
               Cancel
             </Button>
-            <Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={saveSupplier} disabled={supplierSaving}>
+            <Button onClick={saveSupplier} disabled={supplierSaving}>
               {supplierSaving ? "Saving..." : supplierEditing ? "Save Changes" : "Create Supplier"}
             </Button>
           </DialogFooter>

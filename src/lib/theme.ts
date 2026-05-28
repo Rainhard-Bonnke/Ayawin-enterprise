@@ -10,21 +10,24 @@ function applyTheme(mode: ThemeMode) {
 }
 
 export function getInitialTheme(): ThemeMode {
-  if (typeof window === "undefined") return "light";
+  return "light";
+}
 
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark") return stored;
-
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+export function applyInitialTheme() {
+  const initial = getInitialTheme();
+  applyTheme(initial);
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(STORAGE_KEY, initial);
+  }
+  return initial;
 }
 
 export function useThemeMode() {
   const [theme, setTheme] = useState<ThemeMode>("light");
 
   useEffect(() => {
-    const initial = getInitialTheme();
+    const initial = applyInitialTheme();
     setTheme(initial);
-    applyTheme(initial);
   }, []);
 
   const updateTheme = (next: ThemeMode) => {

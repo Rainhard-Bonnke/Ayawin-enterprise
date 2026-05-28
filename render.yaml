@@ -1,0 +1,55 @@
+databases:
+  - name: martin-enterprise-db
+    plan: starter
+    databaseName: martin_enterprise
+    user: martin_enterprise
+
+services:
+  - type: redis
+    name: martin-enterprise-redis
+    ipAllowList: []
+    plan: starter
+
+  - type: web
+    name: martin-enterprise-backend
+    runtime: node
+    rootDir: backend
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: ENABLE_DEMO_MODE
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: martin-enterprise-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: martin-enterprise-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DOC_VERIFY_SECRET
+        generateValue: true
+      - key: APP_BASE_URL
+        sync: false
+
+  - type: web
+    name: martin-enterprise-frontend
+    runtime: static
+    plan: free
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: VITE_API_BASE
+        sync: false
+      - key: VITE_API_V1
+        value: "true"

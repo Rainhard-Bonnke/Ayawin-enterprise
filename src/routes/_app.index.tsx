@@ -5,9 +5,7 @@ import { KpiCard } from "@/components/KpiCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { KES, fmtDate } from "@/lib/format";
-import { monthlyRevenue, topProducts, salesByCategory, salesOrders, alerts } from "@/lib/mock-data";
 import { Banknote, ShoppingCart, AlertTriangle, FileText, Wallet, Receipt } from "lucide-react";
-import { QuietNote } from "@/components/QuietNote";
 import {
   LineChart,
   Line,
@@ -26,6 +24,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
 import { fetchDashboardSummary, type DashboardSummary } from "@/lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/")({
   component: Dashboard,
@@ -47,92 +46,43 @@ function Dashboard() {
 
   useEffect(() => {
     if (!token) return;
-    fetchDashboardSummary(token).then(setSummary).catch(() => setSummary(null));
+    fetchDashboardSummary(token)
+      .then(setSummary)
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Unable to load dashboard summary");
+        setSummary(null);
+      });
   }, [token]);
 
-  const liveMonthlyRevenue = summary?.monthlyRevenue?.length ? summary.monthlyRevenue : monthlyRevenue;
-  const liveTopProducts = summary?.topProducts?.length ? summary.topProducts : topProducts;
-  const liveSalesByCategory = summary?.salesByCategory?.length ? summary.salesByCategory : salesByCategory;
-  const liveAlerts = summary?.alerts?.length ? summary.alerts : alerts;
-  const liveTransactions = summary?.recentTransactions?.length ? summary.recentTransactions : salesOrders;
-  const todaysSales = summary?.kpis ? Number(summary.kpis.todays_sales) : 1840500;
-  const revenueMtd = summary?.kpis ? Number(summary.kpis.revenue_mtd) : 13800000;
-  const pendingOrders = summary?.kpis ? String(summary.kpis.pending_orders) : "14";
-  const stockAlerts = liveAlerts.filter((alert) => alert.type === "stock").length || 6;
+  const liveMonthlyRevenue = summary?.monthlyRevenue ?? [];
+  const liveTopProducts = summary?.topProducts ?? [];
+  const liveSalesByCategory = summary?.salesByCategory ?? [];
+  const liveAlerts = summary?.alerts ?? [];
+  const liveTransactions = summary?.recentTransactions ?? [];
+  const todaysSales = summary?.kpis ? Number(summary.kpis.todays_sales) : 0;
+  const revenueMtd = summary?.kpis ? Number(summary.kpis.revenue_mtd) : 0;
+  const pendingOrders = summary?.kpis ? String(summary.kpis.pending_orders) : "0";
+  const stockAlerts = liveAlerts.filter((alert) => alert.type === "stock").length;
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        description="Overview of today's operations - 21/05/2026"
-      />
+      <PageHeader title="Dashboard" description="Summary for today" />
 
-      <div className="erp-section overflow-hidden">
-        <div className="grid gap-4 p-5 lg:grid-cols-[1.5fr_1fr] lg:p-6">
-          <div className="relative overflow-hidden rounded-3xl bg-navy p-6 text-navy-foreground shadow-xl">
-            <div className="absolute inset-0 opacity-[0.08]" style={{
-              backgroundImage: "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
-              backgroundSize: "22px 22px",
-            }} />
-            <div className="relative flex flex-col gap-5">
-              <div>
-                <div className="inline-flex rounded-full border border-gold/30 bg-gold/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-gold">
-                  Live operations
-                </div>
-                <h2 className="mt-4 font-display text-3xl font-bold leading-tight sm:text-4xl">
-                  Premium ERP control for Kenyan beverage distribution.
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-navy-foreground/75">
-                  KRA-ready invoicing, excise duty tracking, warehouse visibility, and real-time dispatch intelligence in one screen.
-                </p>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                {[
-                  ["KRA status", "Compliant"],
-                  ["Service worker", "Online"],
-                  ["Currency", "KES"],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur">
-                    <div className="text-[10px] uppercase tracking-[0.22em] text-navy-foreground/55">{label}</div>
-                    <div className="mt-1 text-sm font-semibold text-white">{value}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="max-w-3xl">
-                <QuietNote
-                  scenario="dashboard"
-                  contextKey="dashboard"
-                  context={{ monthlyRevenue: liveMonthlyRevenue, topProducts: liveTopProducts, salesByCategory: liveSalesByCategory, salesOrders: liveTransactions, alerts: liveAlerts }}
-                  className="border-white/10 bg-white/5 text-navy-foreground/90 backdrop-blur"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-            {[
-              { label: "Today's Sales", value: KES(todaysSales), icon: ShoppingCart, accent: true },
-              { label: "Revenue MTD", value: KES(revenueMtd), icon: Banknote },
-              { label: "Pending Orders", value: pendingOrders, icon: Receipt },
-              { label: "Stock Alerts", value: String(stockAlerts), icon: AlertTriangle },
-            ].map((card) => (
-              <KpiCard
-                key={card.label}
-                label={card.label}
-                value={card.value}
-                icon={card.icon}
-                accent={card.accent}
-              />
-            ))}
-          </div>
-        </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          { label: "Today's sales", value: KES(todaysSales), icon: ShoppingCart },
+          { label: "Revenue MTD", value: KES(revenueMtd), icon: Banknote },
+          { label: "Pending orders", value: pendingOrders, icon: Receipt },
+          { label: "Stock alerts", value: String(stockAlerts), icon: AlertTriangle },
+        ].map((card) => (
+          <KpiCard key={card.label} label={card.label} value={card.value} icon={card.icon} />
+        ))}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.45fr_0.95fr]">
         <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle className="font-display">Monthly Revenue Trend</CardTitle>
+            <CardTitle>Monthly revenue</CardTitle>
           </CardHeader>
           <CardContent className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -148,7 +98,7 @@ function Dashboard() {
                   formatter={(v: number) => KES(v)}
                   contentStyle={{ borderRadius: 8, border: "1px solid var(--border)" }}
                 />
-                <Line type="monotone" dataKey="revenue" stroke="var(--gold)" strokeWidth={3} dot={{ fill: "var(--navy)", r: 4 }} />
+                <Line type="monotone" dataKey="revenue" stroke="var(--primary)" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -156,7 +106,7 @@ function Dashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="font-display">Sales by Category</CardTitle>
+            <CardTitle>Sales by category</CardTitle>
           </CardHeader>
           <CardContent className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -177,7 +127,7 @@ function Dashboard() {
       <div className="grid gap-4 lg:grid-cols-[1.4fr_0.9fr]">
         <Card>
           <CardHeader>
-            <CardTitle className="font-display">Top 10 Selling Products</CardTitle>
+            <CardTitle>Top products</CardTitle>
           </CardHeader>
           <CardContent className="h-[320px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -192,19 +142,19 @@ function Dashboard() {
                   width={110}
                 />
                 <Tooltip contentStyle={{ borderRadius: 8 }} />
-                <Bar dataKey="units" fill="var(--navy)" radius={[0, 6, 6, 0]} />
+                <Bar dataKey="units" fill="var(--primary)" radius={[0, 2, 2, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
-        <Card className="erp-section">
+        <Card>
           <CardHeader>
-            <CardTitle className="font-display">Alerts</CardTitle>
+            <CardTitle>Alerts</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {liveAlerts.map((a, i) => (
-              <div key={i} className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/60 p-3">
+              <div key={i} className="flex items-start gap-2 border-b border-border py-2 last:border-0">
                 <AlertTriangle
                   className={`mt-0.5 h-4 w-4 shrink-0 ${a.severity === "high" ? "text-destructive" : "text-warning"}`}
                 />
@@ -217,7 +167,7 @@ function Dashboard() {
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle className="font-display">Recent Transactions</CardTitle>
+          <CardTitle>Recent orders</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
@@ -249,57 +199,6 @@ function Dashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-display text-base">Compliance Snapshot</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div className="flex justify-between">
-              <span>KRA PIN on invoices</span>
-              <span className="text-success">Enabled</span>
-            </div>
-            <div className="flex justify-between">
-              <span>ETR / TIMS field</span>
-              <span className="text-success">Enabled</span>
-            </div>
-            <div className="flex justify-between">
-              <span>VAT rate</span>
-              <span>16%</span>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-display text-base">Operational Notes</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div>Warehouse transfers pending: 3</div>
-            <div>Drivers on route: 2</div>
-            <div>Payroll due: 28/05/2026</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-display text-base">Offline Readiness</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div>Dashboard shell cached by service worker</div>
-            <div>Key views: home, login, reports</div>
-            <div>Last sync: 21/05/2026 08:30 EAT</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-display text-base">Currency</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div>Default: KES</div>
-            <div>Date format: DD/MM/YYYY</div>
-            <div>Locale: en-KE</div>
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

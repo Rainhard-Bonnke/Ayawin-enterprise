@@ -73,7 +73,7 @@ function DeliveryPage() {
           <>
             <Button variant="outline" onClick={exportDeliveries}><Printer className="mr-2 h-4 w-4" />Export XLSX</Button>
             <Button
-              className="bg-navy text-navy-foreground hover:bg-navy/90"
+             
               onClick={() => {
                 void trackEvent({
                   action: "delivery_batch_scheduled",
@@ -102,7 +102,7 @@ function DeliveryPage() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -120,7 +120,7 @@ function DeliveryPage() {
           <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">Route sequence</div>
           <div className="flex flex-wrap gap-2">
             {routeHints.map((route) => (
-              <Badge key={route} variant="outline" className="border-gold/30 bg-gold/10 text-gold">
+              <Badge key={route} variant="outline" className="">
                 {route}
               </Badge>
             ))}

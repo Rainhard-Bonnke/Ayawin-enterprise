@@ -12,21 +12,19 @@ import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { cashFlowForecast } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Printer, FileDown, ArrowUpDown } from "lucide-react";
+import { exportElementAsPdf } from "@/lib/pdf";
+import { useAuth } from "@/lib/auth";
+import { fetchAccountingSnapshot, type AccountingJournalRow } from "@/lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/accounting")({
   component: Accounting,
   head: () => ({ meta: [{ title: "Accounting & Finance — Ayawin Enterprise ERP" }] }),
 });
 
-const pnl = [
-  { month: "Jan", revenue: 9800000, expenses: 7100000 },
-  { month: "Feb", revenue: 9100000, expenses: 6800000 },
-  { month: "Mar", revenue: 10600000, expenses: 7600000 },
-  { month: "Apr", revenue: 12300000, expenses: 8400000 },
-  { month: "May", revenue: 13800000, expenses: 9200000 },
-];
+const pnl: Array<{ month: string; revenue: number; expenses: number }> = [];
 
 const aging = [
   { bucket: "Current (0–30)", ar: 2840000, ap: 4100000 },
@@ -35,19 +33,37 @@ const aging = [
   { bucket: "90+ days", ar: 287500, ap: 0 },
 ];
 
+const defaultJournal: AccountingJournalRow[] = [];
+
 function Accounting() {
+  const { token } = useAuth();
+  const [liveJournal, setLiveJournal] = useState<AccountingJournalRow[] | null>(null);
+  const [livePnl, setLivePnl] = useState<typeof pnl | null>(null);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
   const pageSize = 5;
-  const journalRows = [
-    { d: "20/05/2026", a: "1100 — Cash at Bank", desc: "Payment received — Quickmart", db: 431984, cr: 0 },
-    { d: "20/05/2026", a: "1200 — Accounts Receivable", desc: "Payment received — Quickmart", db: 0, cr: 431984 },
-    { d: "19/05/2026", a: "1200 — Accounts Receivable", desc: "INV-2026-0531 Mombasa Distributors", db: 1350820, cr: 0 },
-    { d: "19/05/2026", a: "4000 — Sales Revenue", desc: "INV-2026-0531", db: 0, cr: 980000 },
-    { d: "19/05/2026", a: "2300 — Excise Duty Payable", desc: "INV-2026-0531", db: 0, cr: 184500 },
-    { d: "19/05/2026", a: "2200 — VAT Output", desc: "INV-2026-0531", db: 0, cr: 186320 },
-  ]
+
+  useEffect(() => {
+    if (!token) return;
+    void fetchAccountingSnapshot(token)
+      .then((snap) => {
+        if (!snap) return;
+        if (snap.journalRows.length) setLiveJournal(snap.journalRows);
+        if (snap.pnl.length) setLivePnl(snap.pnl);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Unable to load accounting snapshot");
+      });
+  }, [token]);
+
+  const journalSource = liveJournal ?? defaultJournal;
+  const pnlSource = livePnl ?? pnl;
+  const revenue = pnlSource.reduce((sum, row) => sum + row.revenue, 0);
+  const expenses = pnlSource.reduce((sum, row) => sum + row.expenses, 0);
+  const net = revenue - expenses;
+
+  const journalRows = journalSource
     .filter((j) => j.d.includes(q) || j.a.toLowerCase().includes(q.toLowerCase()) || j.desc.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => {
       if (sort === "account") return a.a.localeCompare(b.a);
@@ -70,7 +86,7 @@ function Accounting() {
       },
       {
         name: "P&L",
-        rows: pnl.map((row) => ({
+        rows: pnlSource.map((row) => ({
           Month: row.month,
           Revenue: row.revenue,
           Expenses: row.expenses,
@@ -96,7 +112,7 @@ function Accounting() {
   };
 
   return (
-    <div>
+    <div className="printable">
       <PageHeader
         title="Accounting & Finance"
         description="General Ledger, AR/AP, VAT & Excise returns, P&L."
@@ -105,6 +121,22 @@ function Accounting() {
             <Button variant="outline" onClick={() => window.print()}>
               <Printer className="mr-2 h-4 w-4" />
               Print
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                const el = document.querySelector('.printable');
+                if (!el) return;
+                try {
+                  await exportElementAsPdf('accounting-report.pdf', el as HTMLElement);
+                } catch (e) {
+                  // eslint-disable-next-line no-console
+                  console.error(e);
+                }
+              }}
+            >
+              <FileDown className="mr-2 h-4 w-4" />
+              Download PDF
             </Button>
             <Button variant="outline" onClick={exportAccounting}>
               <FileDown className="mr-2 h-4 w-4" />
@@ -116,14 +148,14 @@ function Accounting() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Cash Balance", v: KES(8420000) },
-          { l: "Accounts Receivable", v: KES(4947500) },
-          { l: "Accounts Payable", v: KES(5680000) },
-          { l: "VAT Payable (MTD)", v: KES(692400) },
+          { l: "Revenue (period)", v: KES(revenue) },
+          { l: "Expenses (period)", v: KES(expenses) },
+          { l: "Net Result", v: KES(net) },
+          { l: "Journal Entries", v: String(journalRows.length) },
         ].map((k) => (
           <Card key={k.l}><CardContent className="p-4">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-            <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+            <div className="mt-1 text-2xl font-bold">{k.v}</div>
           </CardContent></Card>
         ))}
       </div>
@@ -137,13 +169,13 @@ function Accounting() {
 
       <Card className="mb-4">
         <CardHeader>
-          <CardTitle className="font-display">Next 30 Days Cash Flow</CardTitle>
+          <CardTitle>Next 30 Days Cash Flow</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-4">
           {forecast.map((item) => (
             <div key={item.label} className="rounded-xl border border-border/70 bg-background/60 p-3">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{item.label}</div>
-              <div className="mt-1 font-display text-xl font-bold">{KES(item.value)}</div>
+              <div className="mt-1 text-xl font-bold">{KES(item.value)}</div>
             </div>
           ))}
         </CardContent>
@@ -159,10 +191,10 @@ function Accounting() {
 
         <TabsContent value="pnl" className="mt-4">
           <Card>
-            <CardHeader><CardTitle className="font-display">Profit & Loss — Last 5 months</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Profit & Loss — Last 5 months</CardTitle></CardHeader>
             <CardContent className="h-[320px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={pnl}>
+                <BarChart data={pnlSource}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="month" fontSize={12} />
                   <YAxis fontSize={12} tickFormatter={(v) => `${v / 1000000}M`} />
@@ -199,7 +231,7 @@ function Accounting() {
         <TabsContent value="vat" className="mt-4">
           <div className="grid gap-4 md:grid-cols-2">
             <Card>
-              <CardHeader><CardTitle className="font-display">VAT Return — May 2026</CardTitle></CardHeader>
+              <CardHeader><CardTitle>VAT Return — May 2026</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <Row label="Output VAT (Sales)" value={KES(2208000)} />
                 <Row label="Input VAT (Purchases)" value={KES(1515600)} />
@@ -209,7 +241,7 @@ function Accounting() {
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle className="font-display">Excise Duty Return</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Excise Duty Return</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <Row label="Beer (KES 121.85/L)" value={KES(412000)} />
                 <Row label="Spirits (KES 356.28/L)" value={KES(298000)} />
@@ -271,7 +303,7 @@ function Accounting() {
 
 function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
   return (
-    <div className={`flex justify-between ${bold ? "font-display text-base font-bold" : ""}`}>
+    <div className={`flex justify-between ${bold ? "text-base font-bold" : ""}`}>
       <span className={bold ? "" : "text-muted-foreground"}>{label}</span>
       <span>{value}</span>
     </div>

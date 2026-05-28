@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
-import { createUser, fetchUsers, type BackendUser, updateUser } from "@/lib/api";
+import { createUser, fetchRoles, fetchUsers, type BackendUser, updateUser } from "@/lib/api";
 import { trackEvent } from "@/lib/event-tracker";
 import { toast } from "sonner";
 
@@ -25,12 +25,12 @@ export const Route = createFileRoute("/_app/users")({
 });
 
 const roleColor: Record<string, string> = {
-  Admin: "bg-navy text-navy-foreground",
-  Manager: "bg-gold text-gold-foreground",
-  "Sales Rep": "bg-blue-500/15 text-blue-600 border-blue-500/30",
-  Warehouse: "bg-amber-500/15 text-amber-700 border-amber-500/30",
-  Accountant: "bg-green-500/15 text-green-700 border-green-500/30",
-  Driver: "bg-purple-500/15 text-purple-700 border-purple-500/30",
+  Admin: "",
+  Manager: "",
+  "Sales Rep": "",
+  Warehouse: "",
+  Accountant: "",
+  Driver: "",
 };
 
 function UsersPage() {
@@ -42,7 +42,16 @@ function UsersPage() {
   const [sort, setSort] = useState("name");
   const [page, setPage] = useState(1);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [invite, setInvite] = useState({ username: "", full_name: "", email: "", role: "Sales Rep", phone: "" });
+  const [invite, setInvite] = useState({
+    username: "",
+    full_name: "",
+    email: "",
+    role: "Sales Rep",
+    phone: "",
+    password: "",
+  });
+  const [roleOptions, setRoleOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [saving, setSaving] = useState(false);
   const pageSize = 5;
 
   useEffect(() => {
@@ -50,8 +59,19 @@ function UsersPage() {
     setLoading(true);
     void fetchUsers(token)
       .then((data) => setRows(data))
-      .catch(() => setRows([]))
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Failed to load users");
+        setRows([]);
+      })
       .finally(() => setLoading(false));
+    void fetchRoles(token)
+      .then((roles) => {
+        setRoleOptions(roles);
+        if (roles.length && !roles.some((r) => r.name === invite.role)) {
+          setInvite((prev) => ({ ...prev, role: roles[0].name }));
+        }
+      })
+      .catch(() => setRoleOptions([]));
   }, [token]);
 
   const filtered = useMemo(
@@ -75,20 +95,31 @@ function UsersPage() {
   };
 
   const createInvite = async () => {
-    if (!token || !invite.username || !invite.full_name || !invite.email) return;
-    const created = await createUser(token, invite);
-    void trackEvent({
-      action: "user_created",
-      entityType: "user",
-      entityId: String(created.id),
-      details: { username: created.username, email: created.email, role: created.role },
-      scenario: "hr",
-      context: invite,
-    });
-    toast.success(`User ${created.full_name} created`);
-    setInviteOpen(false);
-    setInvite({ username: "", full_name: "", email: "", role: "Sales Rep", phone: "" });
-    await refresh();
+    if (!token || !invite.username || !invite.full_name || !invite.email || !invite.password) {
+      toast.error("Username, name, email, and password are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const role_id = roleOptions.find((r) => r.name === invite.role)?.id;
+      const created = await createUser(token, { ...invite, role_id });
+      void trackEvent({
+        action: "user_created",
+        entityType: "user",
+        entityId: String(created.id),
+        details: { username: created.username, email: created.email, role: created.role },
+        scenario: "hr",
+        context: invite,
+      });
+      toast.success(`User ${created.full_name} created`);
+      setInviteOpen(false);
+      setInvite({ username: "", full_name: "", email: "", role: invite.role, phone: "", password: "" });
+      await refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create user");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -99,14 +130,14 @@ function UsersPage() {
         actions={
           <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
             <DialogTrigger asChild>
-              <Button className="bg-navy text-navy-foreground hover:bg-navy/90">
+              <Button>
                 <Plus className="mr-2 h-4 w-4" />
                 Invite User
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-xl">
               <DialogHeader>
-                <DialogTitle className="font-display">Invite User</DialogTitle>
+                <DialogTitle>Invite User</DialogTitle>
                 <DialogDescription>Create a new ERP account and assign a module role.</DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-2 sm:grid-cols-2">
@@ -114,6 +145,7 @@ function UsersPage() {
                 <Field label="Full name" value={invite.full_name} onChange={(v) => setInvite((prev) => ({ ...prev, full_name: v }))} />
                 <Field label="Email" value={invite.email} onChange={(v) => setInvite((prev) => ({ ...prev, email: v }))} />
                 <Field label="Phone" value={invite.phone} onChange={(v) => setInvite((prev) => ({ ...prev, phone: v }))} />
+                <Field label="Password" value={invite.password} onChange={(v) => setInvite((prev) => ({ ...prev, password: v }))} type="password" />
                 <div className="sm:col-span-2 space-y-1.5">
                   <Label>Role</Label>
                   <Select value={invite.role} onValueChange={(value) => setInvite((prev) => ({ ...prev, role: value }))}>
@@ -121,7 +153,7 @@ function UsersPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {Object.keys(roleColor).map((r) => (
+                      {(roleOptions.length ? roleOptions.map((r) => r.name) : Object.keys(roleColor)).map((r) => (
                         <SelectItem key={r} value={r}>
                           {r}
                         </SelectItem>
@@ -132,8 +164,8 @@ function UsersPage() {
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
-                <Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={createInvite}>
-                  Create user
+                <Button onClick={createInvite} disabled={saving}>
+                  {saving ? "Creating…" : "Create user"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -151,7 +183,7 @@ function UsersPage() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -167,7 +199,11 @@ function UsersPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All roles</SelectItem>
-                {Object.keys(roleColor).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                {(roleOptions.length ? roleOptions.map((r) => r.name) : Object.keys(roleColor)).map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {r}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Select value={sort} onValueChange={setSort}>
@@ -253,11 +289,21 @@ function UsersPage() {
   );
 }
 
-function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
   return (
     <div className="space-y-1.5">
       <Label>{label}</Label>
-      <Input value={value} onChange={(e) => onChange(e.target.value)} />
+      <Input type={type} value={value} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }

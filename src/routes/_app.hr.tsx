@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { employees } from "@/lib/mock-data";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -15,7 +14,10 @@ import { QuietNote } from "@/components/QuietNote";
 import { payrollVariance } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/lib/auth";
+import { fetchHrEmployees, type BackendEmployee } from "@/lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/hr")({
   component: HRPage,
@@ -50,12 +52,34 @@ function housing(g: number) {
 }
 
 function HRPage() {
+  const { token } = useAuth();
+  const [apiEmployees, setApiEmployees] = useState<BackendEmployee[] | null>(null);
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
   const [sort, setSort] = useState("name");
   const [page, setPage] = useState(1);
   const pageSize = 5;
-  const employeeRows = employees
+
+  useEffect(() => {
+    if (!token) return;
+    fetchHrEmployees(token)
+      .then((rows) => setApiEmployees(rows))
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Unable to load HR employees");
+        setApiEmployees([]);
+      });
+  }, [token]);
+
+  const sourceEmployees = (apiEmployees ?? []).map((e) => ({
+    id: e.id,
+    name: e.name,
+    department: e.department,
+    role: e.role,
+    salary: e.salary,
+    status: e.status,
+  }));
+
+  const employeeRows = sourceEmployees
     .filter((e) => (department === "all" || e.department === department) && (e.name.toLowerCase().includes(q.toLowerCase()) || e.role.toLowerCase().includes(q.toLowerCase())))
     .sort((a, b) => {
       if (sort === "salary") return b.salary - a.salary;
@@ -87,7 +111,7 @@ function HRPage() {
       },
       {
         name: "Payroll",
-        rows: employees
+        rows: sourceEmployees
           .filter((e) => e.status === "Active")
           .map((e) => {
             const paye = payeKE(e.salary);
@@ -114,20 +138,20 @@ function HRPage() {
       <PageHeader
         title="Human Resources"
         description="Employees, attendance, leave and Kenya statutory payroll."
-        actions={<Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={exportHR}><Plus className="mr-2 h-4 w-4" />Export XLSX</Button>}
+        actions={<Button onClick={exportHR}><Plus className="mr-2 h-4 w-4" />Export XLSX</Button>}
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Employees", v: String(employees.length) },
-          { l: "On Leave", v: "1" },
-          { l: "Payroll Total", v: KES(employees.reduce((sum, e) => sum + e.salary, 0)) },
-          { l: "Active Contracts", v: "8" },
+          { l: "Employees", v: String(sourceEmployees.length) },
+          { l: "On Leave", v: String(sourceEmployees.filter((e) => e.status !== "Active").length) },
+          { l: "Payroll Total", v: KES(sourceEmployees.reduce((sum, e) => sum + e.salary, 0)) },
+          { l: "Active Contracts", v: String(sourceEmployees.filter((e) => e.status === "Active").length) },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -160,7 +184,7 @@ function HRPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All departments</SelectItem>
-                    {Array.from(new Set(employees.map((e) => e.department))).map((d) => (
+                    {Array.from(new Set(sourceEmployees.map((e) => e.department))).map((d) => (
                       <SelectItem key={d} value={d}>{d}</SelectItem>
                     ))}
                   </SelectContent>
@@ -263,7 +287,7 @@ function HRPage() {
                       action: "payslip_export_requested",
                       entityType: "payroll",
                       entityId: "may-2026",
-                      details: { employees: employees.filter((e) => e.status === "Active").length },
+                      details: { employees: sourceEmployees.filter((e) => e.status === "Active").length },
                       scenario: "hr",
                       context: { department, sort, q },
                     });
@@ -290,7 +314,7 @@ function HRPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {employees
+                  {sourceEmployees
                     .filter((e) => e.status === "Active")
                     .map((e) => {
                       const paye = payeKE(e.salary);

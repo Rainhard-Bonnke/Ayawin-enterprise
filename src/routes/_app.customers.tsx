@@ -200,6 +200,7 @@ function CustomersPage() {
       }
 
       setDialogOpen(false);
+      setPage(1);
       await loadCustomers();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to save customer");
@@ -254,11 +255,11 @@ function CustomersPage() {
         description="Bars, restaurants, supermarkets, wholesalers and distributors with credit control."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={exportCustomers}>
+            <Button onClick={exportCustomers}>
               <Plus className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button className="bg-gold text-gold-foreground hover:bg-gold/90" onClick={openCreate}>
+            <Button variant="outline" onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" />
               New Customer
             </Button>
@@ -271,7 +272,7 @@ function CustomersPage() {
           <Card key={metric.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{metric.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{metric.v}</div>
+              <div className="mt-1 text-2xl font-bold">{metric.v}</div>
             </CardContent>
           </Card>
         ))}
@@ -422,7 +423,7 @@ function CustomersPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle className="font-display">{editing ? "Edit Customer" : "New Customer"}</DialogTitle>
+            <DialogTitle>{editing ? "Edit Customer" : "New Customer"}</DialogTitle>
             <DialogDescription>
               Maintain customer credit controls, KRA details and payment terms.
             </DialogDescription>
@@ -470,7 +471,7 @@ function CustomersPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button className="bg-navy text-navy-foreground hover:bg-navy/90" onClick={saveCustomer} disabled={saving}>
+            <Button onClick={saveCustomer} disabled={saving}>
               {saving ? "Saving..." : editing ? "Save Changes" : "Create Customer"}
             </Button>
           </DialogFooter>

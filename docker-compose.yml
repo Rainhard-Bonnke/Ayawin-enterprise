@@ -1,5 +1,12 @@
 version: '3.8'
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
   db:
     image: postgres:15
     environment:
@@ -21,10 +28,18 @@ services:
       DATABASE_USER: postgres
       DATABASE_PASSWORD: postgres
       DATABASE_DB: martin_enterprise
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENABLE_DEMO_MODE: 'true'
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      JWT_ACCESS_EXPIRES: 15m
+      JWT_REFRESH_EXPIRES_DAYS: 7
     depends_on:
       - db
+      - redis
     ports:
       - '4000:4000'
 
 volumes:
   db_data:
+  redis_data:

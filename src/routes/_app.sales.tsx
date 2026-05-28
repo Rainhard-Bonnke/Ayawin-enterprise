@@ -4,13 +4,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Plus, Download, FileDown, ArrowUpDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import { salesOrders, customers, products } from "@/lib/mock-data";
+import { toast } from "sonner";
 import { KES, fmtDate } from "@/lib/format";
 import { SearchBar } from "@/components/SearchBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
-import { Badge } from "@/components/ui/badge";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import {
@@ -41,7 +40,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { useAuth } from "@/lib/auth";
-import { createProductSaleWorkflow, fetchSalesOrders, type BackendSalesOrder } from "@/lib/api";
+import {
+  createInvoiceFromSalesOrder,
+  createSalesOrder,
+  confirmSalesOrder,
+  dispatchSalesOrder,
+  fetchCustomers,
+  fetchMasterItems,
+  fetchSalesOrders,
+  fetchWarehouses,
+  type BackendCustomer,
+  type BackendMasterItem,
+  type BackendSalesOrder,
+  type BackendWarehouse,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/_app/sales")({
   component: SalesPage,
@@ -50,7 +62,11 @@ export const Route = createFileRoute("/_app/sales")({
 
 function SalesPage() {
   const { token } = useAuth();
-  const [rows, setRows] = useState<BackendSalesOrder[]>(salesOrders);
+  const [rows, setRows] = useState<BackendSalesOrder[]>([]);
+  const [warehouseIds, setWarehouseIds] = useState<string[]>([]);
+  const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
+  const [processingAll, setProcessingAll] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string>("all");
   const [sort, setSort] = useState("date");
@@ -59,12 +75,36 @@ function SalesPage() {
 
   const reloadSalesOrders = async () => {
     if (!token) return;
-    const data = await fetchSalesOrders(token);
-    setRows(data);
+    setLoading(true);
+    try {
+      const data = await fetchSalesOrders(token);
+      setRows(data);
+      setPage(1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to load sales orders");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     void reloadSalesOrders();
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    void fetchWarehouses(token)
+      .then((whs) => setWarehouseIds(whs.map((w) => String(w.id))))
+      .catch(() => setWarehouseIds([]));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    const id = window.setInterval(() => {
+      void reloadSalesOrders();
+    }, 20000);
+    return () => window.clearInterval(id);
   }, [token]);
 
   const filtered = rows
@@ -107,6 +147,76 @@ function SalesPage() {
     ]);
   };
 
+  const processOrder = async (order: BackendSalesOrder): Promise<boolean> => {
+    if (!token || !order.internal_id) return false;
+    const firstWarehouse = warehouseIds[0] || "";
+    if (!firstWarehouse) {
+      toast.error("No warehouse found to process the order.");
+      return;
+    }
+
+    setProcessingOrderId(order.id);
+    try {
+      let currentStatus = order.status;
+      if (currentStatus === "Draft") {
+        const confirmed = await confirmSalesOrder(token, order.internal_id);
+        if (!confirmed.ok) throw new Error("Order confirmation failed.");
+        currentStatus = "Confirmed";
+      }
+      if (currentStatus === "Confirmed") {
+        await dispatchSalesOrder(token, order.internal_id, firstWarehouse);
+        currentStatus = "Delivered";
+      }
+      if (currentStatus === "Delivered") {
+        await createInvoiceFromSalesOrder(token, order.internal_id);
+      }
+      toast.success(`${order.id} processed to invoice.`);
+      await reloadSalesOrders();
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not process order");
+      return false;
+    } finally {
+      setProcessingOrderId(null);
+    }
+  };
+
+  const processAllReadyOrders = async () => {
+    if (!token) return;
+    const ready = filtered.filter(
+      (o) =>
+        o.internal_id &&
+        (o.status === "Draft" || o.status === "Confirmed" || o.status === "Delivered"),
+    );
+    if (!ready.length) {
+      toast.message("No ready orders to process.");
+      return;
+    }
+    if (!warehouseIds[0]) {
+      toast.error("No warehouse found to process orders.");
+      return;
+    }
+
+    setProcessingAll(true);
+    let success = 0;
+    let failed = 0;
+    for (const order of ready) {
+      const ok = await processOrder(order);
+      if (ok) {
+        success += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    setProcessingAll(false);
+    await reloadSalesOrders();
+    if (failed > 0) {
+      toast.warning(`Processed ${success} orders, ${failed} failed.`);
+    } else {
+      toast.success(`Processed ${success} orders successfully.`);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -117,6 +227,15 @@ function SalesPage() {
             <Button variant="outline" onClick={exportSales}>
               <FileDown className="mr-2 h-4 w-4" />
               Export XLSX
+            </Button>
+            <Button
+              variant="outline"
+              disabled={processingAll}
+              onClick={() => {
+                void processAllReadyOrders();
+              }}
+            >
+              {processingAll ? "Processing orders..." : "Process All Ready"}
             </Button>
             <NewOrderDialog onCompleted={reloadSalesOrders} />
           </>
@@ -133,7 +252,7 @@ function SalesPage() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 font-display text-2xl font-bold">{k.v}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
               <div className="text-xs text-muted-foreground">{k.t}</div>
             </CardContent>
           </Card>
@@ -143,7 +262,7 @@ function SalesPage() {
       <QuietNote
         scenario="sales"
         contextKey={`${query}-${status}-${sort}`}
-        context={{ query, status, sort, orders: paged, customers, products }}
+        context={{ query, status, sort, orders: paged, orderCount: rows.length }}
         className="mb-4"
       />
 
@@ -198,28 +317,115 @@ function SalesPage() {
                 <TableHead className="text-right">Items</TableHead>
                 <TableHead className="text-right">Total</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paged.map((o) => (
-                <TableRow key={o.id} className="cursor-pointer hover:bg-muted/40">
-                  <TableCell className="font-mono text-xs">{o.id}</TableCell>
-                  <TableCell>{fmtDate(o.date)}</TableCell>
-                  <TableCell className="font-medium">{o.customer}</TableCell>
-                  <TableCell className="text-muted-foreground">{o.rep}</TableCell>
-                  <TableCell className="text-right">{o.items}</TableCell>
-                  <TableCell className="text-right font-semibold">{KES(o.total)}</TableCell>
-                  <TableCell>
-                    <StatusBadge status={o.status} />
-                  </TableCell>
-                </TableRow>
-              ))}
-              {paged.length === 0 && (
+              {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
-                    No orders match your filters.
+                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                    Loading sales orders…
                   </TableCell>
                 </TableRow>
+              ) : (
+                <>
+                  {paged.map((o) => (
+                    <TableRow key={o.id} className="cursor-pointer hover:bg-muted/40">
+                      <TableCell className="font-mono text-xs">{o.id}</TableCell>
+                      <TableCell>{fmtDate(o.date)}</TableCell>
+                      <TableCell className="font-medium">{o.customer}</TableCell>
+                      <TableCell className="text-muted-foreground">{o.rep}</TableCell>
+                      <TableCell className="text-right">{o.items}</TableCell>
+                      <TableCell className="text-right font-semibold">{KES(o.total)}</TableCell>
+                      <TableCell>
+                        <StatusBadge status={o.status} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          {o.status === "Draft" && o.internal_id && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={async () => {
+                                if (!token) return;
+                                try {
+                                  const result = await confirmSalesOrder(token, o.internal_id);
+                                  if (result.ok) {
+                                    toast.success(`${o.id} confirmed`);
+                                    await reloadSalesOrders();
+                                  } else {
+                                    toast.error("Order confirmation failed");
+                                  }
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "Could not confirm order");
+                                }
+                              }}
+                            >
+                              Confirm
+                            </Button>
+                          )}
+                          {(o.status === "Draft" || o.status === "Confirmed" || o.status === "Delivered") &&
+                            o.internal_id && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={processingOrderId === o.id}
+                                onClick={() => void processOrder(o)}
+                              >
+                                {processingOrderId === o.id ? "Processing..." : "Process Order"}
+                              </Button>
+                            )}
+                          {o.status === "Confirmed" && o.internal_id && (
+                            <Button
+                              size="sm"
+                              onClick={async () => {
+                                if (!token) return;
+                                try {
+                                  const firstWarehouse = warehouseIds[0] || "";
+                                  if (!firstWarehouse) {
+                                    toast.error("No warehouse found to dispatch from.");
+                                    return;
+                                  }
+                                  await dispatchSalesOrder(token, o.internal_id, firstWarehouse);
+                                  toast.success(`${o.id} dispatched`);
+                                  await reloadSalesOrders();
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "Could not dispatch order");
+                                }
+                              }}
+                            >
+                              Dispatch
+                            </Button>
+                          )}
+                          {o.status === "Delivered" && o.internal_id && (
+                            <Button
+                              size="sm"
+                              onClick={async () => {
+                                if (!token) return;
+                                try {
+                                  await createInvoiceFromSalesOrder(token, o.internal_id);
+                                  toast.success(`Invoice created for ${o.id}`);
+                                  await reloadSalesOrders();
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "Could not create invoice");
+                                }
+                              }}
+                            >
+                              Create Invoice
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {paged.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        No orders yet. Create a sales order to see it here.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </>
               )}
             </TableBody>
           </Table>
@@ -239,58 +445,79 @@ function SalesPage() {
 function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<void> }) {
   const { token } = useAuth();
   const [open, setOpen] = useState(false);
-  const [customer, setCustomer] = useState("");
-  const [product, setProduct] = useState("");
-  const [priceTier, setPriceTier] = useState<"retail" | "wholesale" | "distributor">("wholesale");
-  const [paymentMethod, setPaymentMethod] = useState("");
   const [saving, setSaving] = useState(false);
+  const [formLoading, setFormLoading] = useState(false);
+  const [apiCustomers, setApiCustomers] = useState<BackendCustomer[]>([]);
+  const [apiItems, setApiItems] = useState<BackendMasterItem[]>([]);
+  const [apiWarehouses, setApiWarehouses] = useState<BackendWarehouse[]>([]);
+  const [customerId, setCustomerId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [itemId, setItemId] = useState("");
   const [qty, setQty] = useState(10);
-  const [discount, setDiscount] = useState(0);
-  const [deliveryDate, setDeliveryDate] = useState("2026-05-22");
-  const selectedCustomer = customers.find((c) => c.id === customer);
-  const recommendedProduct =
-    selectedCustomer?.segment === "Supermarket"
-      ? products.find((p) => p.category === "Soft Drinks")
-      : selectedCustomer?.segment === "Bar/Restaurant"
-        ? products.find((p) => p.category === "Beer")
-        : products.find((p) => p.category === "Beer");
-  const discountWarning = discount > 15 ? "This margin is below your usual floor for this customer tier." : null;
-  const upsellLine =
-    product && product.toLowerCase().includes("tusker")
-      ? "Customers who ordered this also added Krest Tonic."
-      : null;
+  const [unitPrice, setUnitPrice] = useState("");
+  const [orderDate, setOrderDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (!open || !token) return;
+    setFormLoading(true);
+    void Promise.all([fetchCustomers(token), fetchMasterItems(token), fetchWarehouses(token)])
+      .then(([cust, items, whs]) => {
+        setApiCustomers(cust);
+        setApiItems(items);
+        setApiWarehouses(whs);
+        const firstItem = items[0];
+        setCustomerId(String(cust[0]?.id ?? ""));
+        setWarehouseId(String(whs[0]?.id ?? ""));
+        setItemId(firstItem?.id ?? "");
+        setUnitPrice(String(firstItem?.standard_cost ?? ""));
+      })
+      .catch((err) => {
+        notify("Could not load form", err instanceof Error ? err.message : "Unable to load customers or products.");
+      })
+      .finally(() => setFormLoading(false));
+  }, [open, token]);
+
+  const selectedCustomer = apiCustomers.find((c) => String(c.id) === customerId);
+  const selectedItem = apiItems.find((i) => i.id === itemId);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const selectedProduct = products.find((p) => p.id === product);
-    if (!token || !selectedCustomer || !selectedProduct || qty < 1 || discount < 0 || discount > 100) return;
+    if (!token || !customerId || !warehouseId || !itemId || qty < 1) return;
+    const price = Number(unitPrice) || selectedItem?.standard_cost || 0;
+    if (price <= 0) {
+      notify("Invalid price", "Enter a unit price greater than zero.");
+      return;
+    }
     setSaving(true);
     try {
-      const result = await createProductSaleWorkflow(token, {
-        customer_kra_pin: selectedCustomer.kraPin,
-        warehouse: selectedProduct.warehouse,
-        discount_percent: discount,
-        payment_method: paymentMethod === "credit" ? undefined : paymentMethod,
-        items: [{ sku: selectedProduct.sku, quantity: qty, price_tier: priceTier }],
+      const created = await createSalesOrder(token, {
+        customer_id: customerId,
+        warehouse_id: warehouseId,
+        order_date: orderDate,
+        notes: notes.trim() || undefined,
+        lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
       });
-      notify("Sale workflow completed", `${result.order_number} generated invoice ${result.invoice_number}.`);
+      notify("Sales order created", `${created.id} saved to the database.`);
       void trackEvent({
         action: "sales_order_created",
         entityType: "sales_order",
-        entityId: result.order_number,
-        details: { customer, product, qty, discount, deliveryDate, invoice: result.invoice_number },
+        entityId: created.id,
+        details: { customerId, itemId, qty, orderDate },
         scenario: "sales",
-        context: { customer, product, qty, discount, deliveryDate, total: result.total },
+        context: { customerId, itemId, qty, total: created.total },
       });
-      void triggerEmailNotification({
-        recipient: selectedCustomer.email,
-        subject: `Invoice ${result.invoice_number}`,
-        message: `Invoice ${result.invoice_number} has been generated for ${selectedCustomer.name}.`,
-      });
+      if (selectedCustomer?.email) {
+        void triggerEmailNotification({
+          recipient: selectedCustomer.email,
+          subject: `Order ${created.id}`,
+          message: `Sales order ${created.id} has been created for ${selectedCustomer.name}.`,
+        });
+      }
       await onCompleted();
       setOpen(false);
     } catch (error) {
-      notify("Sale workflow failed", error instanceof Error ? error.message : "Unable to complete sale workflow.");
+      notify("Could not create order", error instanceof Error ? error.message : "Unable to save sales order.");
     } finally {
       setSaving(false);
     }
@@ -299,28 +526,31 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="bg-navy text-navy-foreground hover:bg-navy/90">
+        <Button>
           <Plus className="mr-2 h-4 w-4" />
           New Sales Order
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="font-display">Create Sales Order</DialogTitle>
+          <DialogTitle>Create Sales Order</DialogTitle>
           <DialogDescription>
             Draft a new order. KRA-compliant invoice generates on confirmation.
           </DialogDescription>
         </DialogHeader>
         <form className="grid gap-4 py-2 sm:grid-cols-2" id="sales-order-form" onSubmit={submit}>
+          {formLoading ? (
+            <p className="text-sm text-muted-foreground sm:col-span-2">Loading customers and products…</p>
+          ) : null}
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="customer">Customer</Label>
-            <Select value={customer} onValueChange={setCustomer}>
+            <Select value={customerId} onValueChange={setCustomerId} disabled={formLoading}>
               <SelectTrigger id="customer">
                 <SelectValue placeholder="Select customer..." />
               </SelectTrigger>
               <SelectContent>
-                {customers.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
+                {apiCustomers.map((c) => (
+                  <SelectItem key={String(c.id)} value={String(c.id)}>
                     {c.name}
                   </SelectItem>
                 ))}
@@ -328,68 +558,59 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
             </Select>
             {selectedCustomer && (
               <div className="flex flex-wrap items-center gap-2 pt-2 text-xs text-muted-foreground">
-                <span>{selectedCustomer.segment}</span>
+                <span>{selectedCustomer.segment || selectedCustomer.type}</span>
                 <span>•</span>
                 <span>{selectedCustomer.location}</span>
               </div>
             )}
           </div>
           <div className="space-y-1.5">
-            <Label>Price tier</Label>
-            <Select value={priceTier} onValueChange={(value) => setPriceTier(value as typeof priceTier)}>
+            <Label>Warehouse</Label>
+            <Select value={warehouseId} onValueChange={setWarehouseId} disabled={formLoading}>
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue placeholder="Warehouse..." />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="retail">Retail</SelectItem>
-                <SelectItem value="wholesale">Wholesale</SelectItem>
-                <SelectItem value="distributor">Distributor</SelectItem>
+                {apiWarehouses.map((w) => (
+                  <SelectItem key={String(w.id)} value={String(w.id)}>
+                    {w.name}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Payment</Label>
-            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-              <SelectTrigger>
-                <SelectValue placeholder="Credit invoice" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="credit">Credit invoice</SelectItem>
-                <SelectItem value="M-Pesa">M-Pesa</SelectItem>
-                <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
-                <SelectItem value="Cash">Cash</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="delivery-date">Delivery date</Label>
+            <Label htmlFor="order-date">Order date</Label>
             <Input
-              id="delivery-date"
+              id="order-date"
               type="date"
-              value={deliveryDate}
-              onChange={(e) => setDeliveryDate(e.target.value)}
+              value={orderDate}
+              onChange={(e) => setOrderDate(e.target.value)}
               required
             />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="product">Product</Label>
-            <Select value={product} onValueChange={setProduct}>
+            <Select
+              value={itemId}
+              onValueChange={(id) => {
+                setItemId(id);
+                const item = apiItems.find((i) => i.id === id);
+                if (item) setUnitPrice(String(item.standard_cost));
+              }}
+              disabled={formLoading}
+            >
               <SelectTrigger id="product">
                 <SelectValue placeholder="Add product..." />
               </SelectTrigger>
               <SelectContent>
-                {products.slice(0, 8).map((p) => (
+                {apiItems.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name} - {KES(p.wholesalePrice)}
+                    {p.name} ({p.item_code})
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {!product && recommendedProduct && (
-              <div className="pt-2 text-xs text-gold">
-                Suggested line: {recommendedProduct.name} at {KES(recommendedProduct.wholesalePrice)}
-              </div>
-            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="qty">Quantity</Label>
@@ -402,40 +623,30 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
               onChange={(e) => setQty(Number(e.target.value))}
               required
             />
-            {selectedCustomer && (
-              <div className="pt-2 text-xs text-muted-foreground">
-                This account usually moves mixed beverage cases in larger batches.
-              </div>
-            )}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="discount">Discount (%)</Label>
+            <Label htmlFor="unit-price">Unit price (KES)</Label>
             <Input
-              id="discount"
+              id="unit-price"
               type="number"
-              min={0}
-              max={100}
+              min={0.01}
               step={0.01}
-              value={discount}
-              onChange={(e) => setDiscount(Number(e.target.value))}
+              value={unitPrice}
+              onChange={(e) => setUnitPrice(e.target.value)}
               required
             />
-            {discountWarning ? <div className="pt-2 text-xs text-warning">{discountWarning}</div> : null}
           </div>
-          {upsellLine && (
-            <div className="sm:col-span-2">
-              <Badge variant="outline" className="border-gold/30 bg-gold/10 text-gold">
-                {upsellLine}
-              </Badge>
-            </div>
-          )}
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="notes">Notes</Label>
+            <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+          </div>
         </form>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
-            Save as draft
+            Cancel
           </Button>
-          <Button type="submit" form="sales-order-form" className="bg-navy text-navy-foreground hover:bg-navy/90" disabled={saving}>
-            {saving ? "Processing..." : "Confirm order"}
+          <Button type="submit" form="sales-order-form" disabled={saving || formLoading || !apiItems.length}>
+            {saving ? "Saving..." : "Create draft order"}
           </Button>
         </DialogFooter>
       </DialogContent>

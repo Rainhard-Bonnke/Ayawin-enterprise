@@ -22,6 +22,7 @@ const pathAccess: Record<string, RoleName[]> = {
   "/hr": ["Admin", "Manager", "HR Officer"],
   "/reports": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager"],
   "/users": ["Admin"],
+  "/master-data": ["Admin", "Manager", "Store Manager"],
   "/audit-logs": ["Admin"],
   "/settings": ["Admin"],
 };

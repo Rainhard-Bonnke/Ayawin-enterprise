@@ -1,4 +1,4 @@
-const CACHE_NAME = "ayawin-enterprise-erp-v2";
+const CACHE_NAME = "ayawin-enterprise-erp-v3";
 const ASSETS = ["/", "/login", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

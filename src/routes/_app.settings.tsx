@@ -6,7 +6,9 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { warehouses } from "@/lib/mock-data";
+import { useAuth } from "@/lib/auth";
+import { fetchWarehouses, type BackendWarehouse } from "@/lib/api";
+import { useEffect } from "react";
 import { KES } from "@/lib/format";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SearchBar } from "@/components/SearchBar";
@@ -21,8 +23,26 @@ export const Route = createFileRoute("/_app/settings")({
 });
 
 function SettingsPage() {
+  const { token } = useAuth();
+  const [warehouseRows, setWarehouseRows] = useState<Array<{ id: string; name: string; location: string; manager: string }>>([]);
   const [warehouseQ, setWarehouseQ] = useState("");
-  const filteredWarehouses = warehouses.filter((w) =>
+
+  useEffect(() => {
+    if (!token) return;
+    void fetchWarehouses(token)
+      .then((rows: BackendWarehouse[]) => {
+        if (!rows.length) return;
+        setWarehouseRows(rows.map((w) => ({
+          id: String(w.id),
+          name: w.name,
+          location: w.address,
+          manager: w.manager || "—",
+        })));
+      })
+      .catch(() => undefined);
+  }, [token]);
+
+  const filteredWarehouses = warehouseRows.filter((w) =>
     `${w.name} ${w.location} ${w.manager}`.toLowerCase().includes(warehouseQ.toLowerCase()),
   );
 
@@ -42,7 +62,7 @@ function SettingsPage() {
         <TabsContent value="company" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle className="font-display">Company Profile</CardTitle>
+              <CardTitle>Company Profile</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <Field label="Company Name" value="Ayawin Enterprise ERP Ltd" />
@@ -56,7 +76,7 @@ function SettingsPage() {
               <Field label="Default Currency" value="KES" />
               <div className="sm:col-span-2">
                 <Button
-                  className="bg-navy text-navy-foreground hover:bg-navy/90"
+                 
                   onClick={() => {
                     void trackEvent({
                       action: "settings_company_saved",
@@ -79,7 +99,7 @@ function SettingsPage() {
         <TabsContent value="tax" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle className="font-display">Tax & Excise Rates</CardTitle>
+              <CardTitle>Tax & Excise Rates</CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
@@ -152,7 +172,7 @@ function SettingsPage() {
         <TabsContent value="notifications" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle className="font-display">Notifications</CardTitle>
+              <CardTitle>Notifications</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <Toggle label="Email when invoice goes overdue" defaultOn />
@@ -204,7 +224,7 @@ function SettingsPage() {
         <TabsContent value="security" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle className="font-display">Security and Access</CardTitle>
+              <CardTitle>Security and Access</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <Toggle label="Require 2FA for admins and accountants" defaultOn />
@@ -213,7 +233,7 @@ function SettingsPage() {
               <Toggle label="Enable password rotation reminders" />
               <div className="sm:col-span-2 flex flex-wrap gap-2 pt-2">
                 <Button
-                  className="bg-navy text-navy-foreground hover:bg-navy/90"
+                 
                   onClick={() => {
                     void trackEvent({
                       action: "settings_security_saved",
@@ -234,7 +254,7 @@ function SettingsPage() {
         </TabsContent>
       </Tabs>
       <div className="mt-4 text-xs text-muted-foreground">
-        Stock value tracked: {KES(warehouses.length * 12000000)} approx | Last backup: 20/05/2026 03:00 EAT
+        Stock value tracked: {KES(warehouseRows.length * 12000000)} approx | Last backup: 20/05/2026 03:00 EAT
       </div>
     </div>
   );
