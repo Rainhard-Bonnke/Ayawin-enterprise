@@ -12,8 +12,8 @@
     "db:backup": "node scripts/backup-db.cjs",
     "db:restore": "node scripts/restore-db.cjs",
     "test": "node --test test/*.test.js",
-    "test:e2e": "node --test test/e2e/*.test.js",
-    "test:e2e:critical": "node --test test/e2e/sales-flow.test.js test/e2e/purchase-flow.test.js",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",
+    "test:e2e:critical": "node --test --test-concurrency=1 test/e2e/sales-flow.test.js test/e2e/purchase-flow.test.js",
     "test:all": "npm test && npm run test:e2e"
   },
   "dependencies": {
