@@ -1,5 +1,7 @@
 const pool = require('../db');
+const piiCrypto = require('../lib/piiCrypto');
 const gl = require('./glPostingService');
+const liveEvents = require('./liveEventsService');
 
 const DEFAULT_PAYE_BANDS = [
   { min: 0, max: 24000, rate: 10 },
@@ -58,9 +60,17 @@ function calculateNhif(grossPay, brackets = DEFAULT_NHIF) {
   return 1700;
 }
 
-function calculateNssf(pensionablePay, ceiling = 4320) {
-  const base = Math.min(pensionablePay, ceiling);
-  return round2(base * 0.06);
+const NSSF_TIER_I_LIMIT = 7000;
+const NSSF_TIER_II_LIMIT = 36000;
+const NSSF_RATE = 0.06;
+
+function calculateNssf(pensionablePay) {
+  const pay = Number(pensionablePay || 0);
+  const tier1Base = Math.min(pay, NSSF_TIER_I_LIMIT);
+  const tier1 = round2(tier1Base * NSSF_RATE);
+  const tier2Base = Math.min(Math.max(pay - NSSF_TIER_I_LIMIT, 0), NSSF_TIER_II_LIMIT - NSSF_TIER_I_LIMIT);
+  const tier2 = round2(tier2Base * NSSF_RATE);
+  return { tier1, tier2, total: round2(tier1 + tier2) };
 }
 
 function calculateHousingLevy(grossPay, rate = 1.5) {
@@ -87,7 +97,8 @@ function computePayslip(employee, contract, config, extras = {}) {
 
   const grossPay = round2(basic + house + transport + overtime + commission);
   const nhif = calculateNhif(grossPay, config.nhif_brackets || DEFAULT_NHIF);
-  const nssf = calculateNssf(grossPay, Number(config.nssf_ceiling || 4320));
+  const nssfBreakdown = calculateNssf(grossPay);
+  const nssf = nssfBreakdown.total;
   const housingLevy = calculateHousingLevy(grossPay, Number(config.housing_levy_rate || 1.5));
 
   const taxableIncome = round2(grossPay - nssf);
@@ -119,11 +130,15 @@ function computePayslip(employee, contract, config, extras = {}) {
       { code: 'OT', amount: overtime },
       { code: 'COMM', amount: commission },
     ].filter((e) => e.amount > 0),
+    nssf_tier1: nssfBreakdown.tier1,
+    nssf_tier2: nssfBreakdown.tier2,
     deductions_detail: [
       { code: 'PAYE', amount: paye },
       { code: 'NHIF', amount: nhif },
+      { code: 'NSSF_TIER_I', amount: nssfBreakdown.tier1 },
+      { code: 'NSSF_TIER_II', amount: nssfBreakdown.tier2 },
       { code: 'NSSF', amount: nssf },
-      { code: 'HOUSING', amount: housingLevy },
+      { code: 'HOUSING_LEVY', amount: housingLevy },
       { code: 'HELB', amount: helb },
       { code: 'SACCO', amount: sacco },
       { code: 'LOAN', amount: loan },
@@ -137,18 +152,38 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
   const monthDate = payrollMonth || new Date().toISOString().slice(0, 7) + '-01';
 
   const employees = await pool.query(
-    `SELECT e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance
+    `SELECT e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance,
+            ec.basic_salary_enc, ec.house_allowance_enc, ec.transport_allowance_enc,
+            e.basic_salary_enc AS employee_basic_salary_enc
      FROM erp_employees e
      LEFT JOIN erp_employee_contracts ec ON ec.employee_id = e.id AND ec.status = 'active'
      WHERE e.company_id = $1 AND e.is_active = TRUE AND e.is_deleted = FALSE`,
     [companyId],
   );
+  employees.rows = employees.rows.map((row) => piiCrypto.mergePayrollEmployeeRow(row));
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const countR = await client.query('SELECT COUNT(*)::int AS n FROM erp_payroll_runs WHERE company_id = $1', [companyId]);
     const runNo = `PR-${monthDate.slice(0, 7)}`;
+
+    const existingRun = await client.query(
+      `SELECT id, status FROM erp_payroll_runs WHERE company_id = $1 AND run_no = $2`,
+      [companyId, runNo],
+    );
+    if (existingRun.rowCount && existingRun.rows[0].status === 'posted') {
+      throw new Error('Payroll for this period is already posted and cannot be recalculated');
+    }
+
+    const postedMonth = await client.query(
+      `SELECT id FROM erp_payroll_runs
+       WHERE company_id = $1 AND date_trunc('month', payroll_month) = date_trunc('month', $2::date)
+         AND status = 'posted' AND is_deleted = FALSE`,
+      [companyId, monthDate],
+    );
+    if (postedMonth.rowCount) {
+      throw new Error('Payroll for this calendar month is already posted');
+    }
 
     const runResult = await client.query(
       `INSERT INTO erp_payroll_runs (company_id, run_no, payroll_month, status, created_by)
@@ -166,6 +201,18 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
     let totalNet = 0;
 
     for (const emp of employees.rows) {
+      const dupEmp = await client.query(
+        `SELECT pr.run_no FROM erp_payslips ps
+         JOIN erp_payroll_runs pr ON pr.id = ps.payroll_run_id
+         WHERE ps.company_id = $1 AND ps.employee_id = $2
+           AND date_trunc('month', pr.payroll_month) = date_trunc('month', $3::date)
+           AND pr.status = 'posted'`,
+        [companyId, emp.id, monthDate],
+      );
+      if (dupEmp.rowCount) {
+        throw new Error(`Employee ${emp.employee_code} already has posted payroll for this month (${dupEmp.rows[0].run_no})`);
+      }
+
       const extras = employeeExtras[emp.id] || {};
       const slip = computePayslip(emp, emp, config, extras);
 
@@ -205,7 +252,7 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
 
 async function postPayrollToGl({ companyId, userId, runId }) {
   const runResult = await pool.query(
-    `SELECT * FROM erp_payroll_runs WHERE id = $1 AND company_id = $2 AND status = 'calculated'`,
+    `SELECT * FROM erp_payroll_runs WHERE id = $1 AND company_id = $2 AND status IN ('calculated', 'approved')`,
     [runId, companyId],
   );
   const run = runResult.rows[0];
@@ -253,7 +300,47 @@ async function postPayrollToGl({ companyId, userId, runId }) {
     [runId, companyId, journal.id],
   );
 
+  liveEvents.publish(companyId, 'payroll.posted', { run_id: runId });
+
   return { ok: true, journal_id: journal.id };
+}
+
+async function approvePayrollRun({ companyId, userId, runId }) {
+  const result = await pool.query(
+    `UPDATE erp_payroll_runs
+     SET status = 'approved', updated_at = NOW(), updated_by = $3
+     WHERE id = $1 AND company_id = $2 AND status = 'calculated'
+     RETURNING *`,
+    [runId, companyId, userId],
+  );
+  if (!result.rowCount) throw new Error('Payroll run not found or not ready for approval');
+  return result.rows[0];
+}
+
+function exportPayrollBankFile(payslips) {
+  const header = 'employee_code,employee_name,bank_account,net_pay,reference';
+  const lines = [header];
+  for (const row of payslips) {
+    const name = `${row.first_name || ''} ${row.last_name || ''}`.trim();
+    const acct = row.bank_account_no || row.bank_account || '';
+    const net = Number(row.net_pay || 0).toFixed(2);
+    const ref = row.employee_code || row.id;
+    lines.push([ref, `"${name.replace(/"/g, '""')}"`, acct, net, `PAY-${ref}`].join(','));
+  }
+  return Buffer.from(`\uFEFF${lines.join('\r\n')}\r\n`, 'utf8');
+}
+
+async function buildPayrollBankExport(companyId, runId) {
+  const slips = await pool.query(
+    `SELECT ps.net_pay, e.employee_code, e.first_name, e.last_name, e.bank_account_no AS bank_account_no
+     FROM erp_payslips ps
+     JOIN erp_employees e ON e.id = ps.employee_id
+     WHERE ps.payroll_run_id = $1 AND ps.company_id = $2
+     ORDER BY e.last_name`,
+    [runId, companyId],
+  );
+  if (!slips.rowCount) throw new Error('No payslips on this payroll run');
+  return { buffer: exportPayrollBankFile(slips.rows), rows: slips.rowCount };
 }
 
 module.exports = {
@@ -262,6 +349,9 @@ module.exports = {
   calculateNhif,
   calculateNssf,
   runPayroll,
+  approvePayrollRun,
   postPayrollToGl,
+  buildPayrollBankExport,
+  exportPayrollBankFile,
   getPayrollConfig,
 };

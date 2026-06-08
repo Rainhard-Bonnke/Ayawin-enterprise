@@ -3,6 +3,8 @@ const pool = require('../../db');
 const { authenticateErp, requirePermission } = require('../../middleware/erpAuth');
 const procurement = require('../../services/procurementService');
 const { parsePagination } = require('../../lib/queryHelper');
+const { buildGrnVerificationHash } = require('../../services/documentVerificationService');
+const { renderGrnPdfBuffer } = require('../../services/grnPdfService');
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -18,6 +20,48 @@ router.get('/requisitions', requirePermission('procurement.view'), async (req, r
     ),
   ]);
   return res.json({ data: dataR.rows, pagination: { page, limit, total: countR.rows[0].total } });
+});
+
+router.post('/requisitions', requirePermission('procurement.create'), async (req, res) => {
+  try {
+    const reqn = await procurement.createPurchaseRequisition({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      warehouseId: req.body.warehouse_id,
+      requiredDate: req.body.required_date,
+      notes: req.body.notes,
+      lines: req.body.lines,
+    });
+    return res.status(201).json(reqn);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/requisitions/:id/submit', requirePermission('procurement.create'), async (req, res) => {
+  try {
+    const reqn = await procurement.submitPurchaseRequisition({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      requisitionId: req.params.id,
+    });
+    return res.json(reqn);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/requisitions/:id/approve', requirePermission('procurement.approve'), async (req, res) => {
+  try {
+    const reqn = await procurement.approvePurchaseRequisition({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      requisitionId: req.params.id,
+    });
+    return res.json(reqn);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 });
 
 router.get('/purchase-orders', requirePermission('procurement.view'), async (req, res) => {
@@ -72,12 +116,31 @@ router.post('/purchase-orders', requirePermission('procurement.create'), async (
   }
 });
 
+router.patch('/purchase-orders/:id', requirePermission('procurement.create'), async (req, res) => {
+  try {
+    const po = await procurement.updatePurchaseOrder({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      poId: req.params.id,
+      vendorId: req.body.vendor_id,
+      warehouseId: req.body.warehouse_id,
+      lines: req.body.lines,
+      notes: req.body.notes,
+      expectedDate: req.body.expected_date,
+    });
+    return res.json(po);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
 router.post('/purchase-orders/:id/approve', requirePermission('procurement.approve'), async (req, res) => {
   try {
     const po = await procurement.approvePurchaseOrder({
       companyId: req.user.company_id,
       userId: req.user.id,
       poId: req.params.id,
+      actor: req.user,
     });
     return res.json(po);
   } catch (err) {
@@ -105,6 +168,7 @@ router.post('/goods-receipts', requirePermission('procurement.create'), async (r
       lines: req.body.lines,
       receivedDate: req.body.received_date,
       notes: req.body.notes,
+      landedCostTotal: req.body.landed_cost_total,
     });
     return res.status(201).json(result);
   } catch (err) {
@@ -119,11 +183,45 @@ router.post('/goods-receipts/:id/post', requirePermission('procurement.approve')
       userId: req.user.id,
       grnId: req.params.id,
       postGl: req.body?.post_gl !== false,
+      landedCostTotal: req.body?.landed_cost_total,
     });
     return res.json(result);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
+});
+
+router.get('/goods-receipts/:id/pdf', requirePermission('procurement.view'), async (req, res) => {
+  try {
+    const buffer = await renderGrnPdfBuffer({ companyId: req.user.company_id, grnId: req.params.id });
+    const grn = await pool.query(
+      'SELECT grn_number FROM erp_goods_receipts WHERE id = $1 AND company_id = $2',
+      [req.params.id, req.user.company_id],
+    );
+    const name = grn.rows[0]?.grn_number || req.params.id;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="grn-${name}.pdf"`);
+    return res.send(buffer);
+  } catch (err) {
+    return res.status(err.message === 'Goods receipt not found' ? 404 : 500).json({ error: err.message });
+  }
+});
+
+router.get('/goods-receipts/:id/verify', requirePermission('procurement.view'), async (req, res) => {
+  const provided = String(req.query?.hash || '').trim();
+  const result = await pool.query(
+    'SELECT * FROM erp_goods_receipts WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE',
+    [req.params.id, req.user.company_id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Goods receipt not found' });
+  const grn = result.rows[0];
+  const expected = buildGrnVerificationHash(grn);
+  return res.json({
+    grn_number: grn.grn_number,
+    status: grn.status,
+    verification_hash: expected,
+    valid: provided ? provided === expected : undefined,
+  });
 });
 
 module.exports = router;

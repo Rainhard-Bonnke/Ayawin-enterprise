@@ -1,5 +1,12 @@
 {
   "watch": ["src"],
   "ext": "js,json",
-  "ignore": ["src/**/*.test.js"]
+  "ignore": ["src/**/*.test.js"],
+  "delay": 4000,
+  "signal": "SIGTERM",
+  "env": {
+    "NODE_ENV": "development",
+    "DISABLE_HTTPS_REDIRECT": "true",
+    "JWT_ACCESS_EXPIRES": "8h"
+  }
 }

@@ -4,6 +4,7 @@ const { authenticateErp, requirePermission } = require('../../middleware/erpAuth
 const { emitEvent, EVENTS } = require('../../services/webhookService');
 const { processImport } = require('../../services/importService');
 const integration = require('../../services/integrationService');
+const goLive = require('../../services/goLiveService');
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -38,6 +39,15 @@ router.post('/webhooks/test', requirePermission('foundation.edit'), async (req, 
   return res.json(result);
 });
 
+router.get('/go-live/status', requirePermission('foundation.view'), async (req, res) => {
+  try {
+    const status = await goLive.getGoLiveStatus(req.user.email);
+    return res.json(status);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/import', requirePermission('master_data.create'), async (req, res) => {
   const { entity_type, rows, file_name } = req.body || {};
   if (!entity_type || !Array.isArray(rows)) return res.status(400).json({ error: 'entity_type and rows required' });
@@ -64,7 +74,23 @@ router.get('/import/:id', requirePermission('master_data.view'), async (req, res
   return res.json(result.rows[0]);
 });
 
+router.get('/integrations/status', requirePermission('sales.view'), (req, res) => {
+  return res.json(integration.getIntegrationStatus());
+});
+
 router.post('/integrations/etims/submit', requirePermission('sales.create'), async (req, res) => {
+  if (req.body?.invoice_id) {
+    try {
+      const sales = require('../../services/salesService');
+      const result = await sales.submitInvoiceToEtims({
+        companyId: req.user.company_id,
+        invoiceId: req.body.invoice_id,
+      });
+      return res.json(result);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+  }
   const result = await integration.submitEtimsInvoice({
     companyId: req.user.company_id,
     invoice: req.body,

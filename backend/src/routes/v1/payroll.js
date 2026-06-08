@@ -2,6 +2,9 @@ const express = require('express');
 const pool = require('../../db');
 const { authenticateErp, requirePermission } = require('../../middleware/erpAuth');
 const payroll = require('../../services/payrollService');
+const { requireReauth } = require('../../middleware/requireReauth');
+const { renderPayslipPdf } = require('../../services/payslipPdfService');
+const { buildPayslipVerificationHash } = require('../../services/documentVerificationService');
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -61,7 +64,55 @@ router.get('/runs/:id/payslips/:payslipId', requirePermission('hr.view'), async 
   return res.json(result.rows[0]);
 });
 
-router.post('/runs/:id/post', requirePermission('hr.approve'), async (req, res) => {
+router.get('/runs/:id/payslips/:payslipId/verify', requirePermission('hr.view'), async (req, res) => {
+  const provided = String(req.query?.hash || '').trim();
+  const slip = await pool.query(
+    `SELECT ps.*, pr.run_no, pr.payroll_month
+     FROM erp_payslips ps
+     JOIN erp_payroll_runs pr ON pr.id = ps.payroll_run_id
+     WHERE ps.id = $1 AND ps.payroll_run_id = $2 AND ps.company_id = $3`,
+    [req.params.payslipId, req.params.id, req.user.company_id],
+  );
+  if (!slip.rowCount) return res.status(404).json({ error: 'Not found' });
+  const row = slip.rows[0];
+  const expected = buildPayslipVerificationHash(row, row);
+  return res.json({
+    payslip_id: row.id,
+    run_no: row.run_no,
+    verification_hash: expected,
+    valid: provided ? provided === expected : undefined,
+  });
+});
+
+router.get('/runs/:id/payslips/:payslipId/pdf', requirePermission('hr.view'), async (req, res) => {
+  const slip = await pool.query(
+    `SELECT ps.*, e.employee_code, e.first_name, e.last_name, e.department, e.job_title,
+            pr.run_no, pr.payroll_month, c.name AS company_name
+     FROM erp_payslips ps
+     JOIN erp_employees e ON e.id = ps.employee_id
+     JOIN erp_payroll_runs pr ON pr.id = ps.payroll_run_id
+     JOIN erp_companies c ON c.id = ps.company_id
+     WHERE ps.id = $1 AND ps.payroll_run_id = $2 AND ps.company_id = $3`,
+    [req.params.payslipId, req.params.id, req.user.company_id],
+  );
+  if (!slip.rowCount) return res.status(404).json({ error: 'Not found' });
+  const row = slip.rows[0];
+  try {
+    const pdf = await renderPayslipPdf({
+      companyName: row.company_name,
+      payslip: row,
+      employee: row,
+      run: row,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="payslip-${row.employee_code}.pdf"`);
+    return res.send(pdf);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/runs/:id/post', requirePermission('hr.approve'), requireReauth(), async (req, res) => {
   try {
     const result = await payroll.postPayrollToGl({
       companyId: req.user.company_id,

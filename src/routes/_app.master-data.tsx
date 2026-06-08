@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { MasterBulkActionsBar, useMasterRowSelection } from "@/components/MasterBulkActionsBar";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,22 +17,28 @@ import { KES } from "@/lib/format";
 import {
   createMasterItem,
   createWarehouse,
+  createChartOfAccount,
   deleteMasterItem,
   deleteWarehouse,
+  fetchChartOfAccounts,
+  fetchMasterEmployees,
   fetchMasterItems,
+  fetchMasterVendors,
   fetchWarehouses,
   importMasterData,
   updateMasterItem,
   updateWarehouse,
   type BackendMasterItem,
   type BackendWarehouse,
+  type ChartOfAccountRow,
 } from "@/lib/api";
+import { masterCreate, masterDelete, masterUpdate, type MasterEntity } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/master-data")({
   component: MasterDataPage,
-  head: () => ({ meta: [{ title: "Master Data - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Master Data - Ayawin Stock Solutions ERP" }] }),
 });
 
 function parseCsv(text: string): Record<string, string>[] {
@@ -52,19 +60,31 @@ function MasterDataPage() {
   const [tab, setTab] = useState("items");
   const [items, setItems] = useState<BackendMasterItem[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
+  const [vendors, setVendors] = useState<Record<string, unknown>[]>([]);
+  const [employees, setEmployees] = useState<Record<string, unknown>[]>([]);
+  const [coa, setCoa] = useState<ChartOfAccountRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const [importType, setImportType] = useState<"customers" | "items">("items");
+  const [importType, setImportType] = useState<"customers" | "items" | "vendors" | "opening_stock">("items");
   const [importing, setImporting] = useState(false);
 
   const load = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [itemRows, whRows] = await Promise.all([fetchMasterItems(token), fetchWarehouses(token)]);
+      const [itemRows, whRows, vendorRows, empRows, coaRows] = await Promise.all([
+        fetchMasterItems(token),
+        fetchWarehouses(token),
+        fetchMasterVendors(token),
+        fetchMasterEmployees(token),
+        fetchChartOfAccounts(token),
+      ]);
       setItems(itemRows);
       setWarehouses(whRows);
+      setVendors(vendorRows);
+      setEmployees(empRows);
+      setCoa(coaRows);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load master data");
       setItems([]);
@@ -110,22 +130,46 @@ function MasterDataPage() {
     try {
       const text = await file.text();
       const parsed = parseCsv(text);
-      const rows =
-        importType === "items"
-          ? parsed.map((r) => ({
-              item_code: r.item_code || r.sku || r.code,
-              name: r.name,
-              standard_cost: Number(r.standard_cost || r.cost || 0),
-            }))
-          : parsed.map((r) => ({
-              customer_code: r.customer_code || r.code || r.kra_pin,
-              name: r.name,
-              email: r.email,
-              tax_id: r.tax_id || r.kra_pin,
-              credit_limit: Number(r.credit_limit || 0),
-            }));
+      let rows: Record<string, unknown>[] = [];
+      if (importType === "items") {
+        rows = parsed.map((r) => ({
+          item_code: r.item_code || r.sku || r.code,
+          name: r.name,
+          standard_cost: Number(r.standard_cost || r.cost || 0),
+        }));
+      } else if (importType === "vendors") {
+        rows = parsed.map((r) => ({
+          vendor_code: r.vendor_code || r.code,
+          name: r.name,
+          email: r.email,
+          tax_id: r.tax_id || r.kra_pin,
+          credit_limit: Number(r.credit_limit || 0),
+        }));
+      } else if (importType === "opening_stock") {
+        rows = parsed.map((r) => ({
+          warehouse_code: r.warehouse_code || r.warehouse,
+          item_code: r.item_code || r.sku,
+          quantity: Number(r.quantity || 0),
+          unit_cost: Number(r.unit_cost || r.cost || 0),
+        }));
+      } else {
+        rows = parsed.map((r) => ({
+          customer_code: r.customer_code || r.code || r.kra_pin,
+          name: r.name,
+          email: r.email,
+          tax_id: r.tax_id || r.kra_pin,
+          credit_limit: Number(r.credit_limit || 0),
+        }));
+      }
 
-      const invalid = rows.findIndex((r) => !r.name || (!("item_code" in r) ? !r.customer_code : !r.item_code));
+      const invalid = rows.findIndex((r) => {
+        if (importType === "opening_stock") {
+          return !r.warehouse_code || !r.item_code || !Number(r.quantity);
+        }
+        if (importType === "vendors") return !r.name || !r.vendor_code;
+        if (importType === "items") return !r.name || !r.item_code;
+        return !r.name || !r.customer_code;
+      });
       if (invalid >= 0) {
         toast.error(`Row ${invalid + 2} is missing required fields`);
         return;
@@ -153,9 +197,12 @@ function MasterDataPage() {
       />
 
       <Tabs value={tab} onValueChange={setTab} className="space-y-4">
-        <TabsList>
+        <TabsList className="flex flex-wrap">
           <TabsTrigger value="items">Products / Items</TabsTrigger>
           <TabsTrigger value="warehouses">Warehouses</TabsTrigger>
+          <TabsTrigger value="vendors">Vendors</TabsTrigger>
+          <TabsTrigger value="employees">Employees</TabsTrigger>
+          <TabsTrigger value="coa">Chart of Accounts</TabsTrigger>
           <TabsTrigger value="import">Import CSV</TabsTrigger>
         </TabsList>
 
@@ -185,12 +232,61 @@ function MasterDataPage() {
           />
         </TabsContent>
 
+        <TabsContent value="vendors">
+          <SimpleMasterTable
+            loading={loading}
+            rows={vendors}
+            q={q}
+            columns={[
+              { key: "vendor_code", label: "Code" },
+              { key: "name", label: "Name" },
+              { key: "email", label: "Email" },
+              { key: "tax_id", label: "Tax ID" },
+            ]}
+            entity="vendors"
+            codeField="vendor_code"
+            token={token}
+            onSaved={load}
+          />
+        </TabsContent>
+
+        <TabsContent value="employees">
+          <SimpleMasterTable
+            loading={loading}
+            rows={employees}
+            q={q}
+            columns={[
+              { key: "employee_code", label: "Code" },
+              { key: "first_name", label: "First" },
+              { key: "last_name", label: "Last" },
+              { key: "department", label: "Department" },
+              { key: "job_title", label: "Title" },
+            ]}
+            entity="employees"
+            codeField="employee_code"
+            token={token}
+            onSaved={load}
+            createFields={[
+              { key: "employee_code", label: "Employee code" },
+              { key: "first_name", label: "First name" },
+              { key: "last_name", label: "Last name" },
+              { key: "email", label: "Email" },
+              { key: "department", label: "Department" },
+              { key: "job_title", label: "Job title" },
+            ]}
+          />
+        </TabsContent>
+
+        <TabsContent value="coa">
+          <CoaPanel loading={loading} rows={coa.filter((r) => `${r.code} ${r.name}`.toLowerCase().includes(q.toLowerCase()))} token={token} onSaved={load} />
+        </TabsContent>
+
         <TabsContent value="import">
           <Card>
             <CardContent className="space-y-4 p-4">
               <p className="text-sm text-muted-foreground">
-                Upload a CSV with a header row. Items: <code>item_code,name,standard_cost</code>. Customers:{" "}
-                <code>customer_code,name,email,tax_id,credit_limit</code>.
+                Upload a CSV with a header row. Opening stock: <code>warehouse_code,item_code,quantity,unit_cost</code>.
+                Items: <code>item_code,name,standard_cost</code>. Customers / vendors use their code columns.
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button
@@ -206,6 +302,20 @@ function MasterDataPage() {
                   onClick={() => setImportType("customers")}
                 >
                   Customers
+                </Button>
+                <Button
+                  variant={importType === "vendors" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setImportType("vendors")}
+                >
+                  Vendors
+                </Button>
+                <Button
+                  variant={importType === "opening_stock" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setImportType("opening_stock")}
+                >
+                  Opening stock
                 </Button>
                 <input
                   ref={fileRef}
@@ -247,6 +357,7 @@ function ItemsPanel({
   const [editing, setEditing] = useState<BackendMasterItem | null>(null);
   const [form, setForm] = useState({ item_code: "", name: "", barcode: "", standard_cost: "0", reorder_point: "0" });
   const [saving, setSaving] = useState(false);
+  const selection = useMasterRowSelection(rows);
 
   const openNew = () => {
     setEditing(null);
@@ -277,7 +388,12 @@ function ItemsPanel({
         reorder_point: Number(form.reorder_point) || 0,
       };
       if (editing) {
-        const updated = await updateMasterItem(token, editing.id, body);
+        const updated = await updateMasterItem(
+          token,
+          editing.id,
+          body,
+          editing.updated_at ? { ifMatch: editing.updated_at } : undefined,
+        );
         toast.success("Item updated");
         await onSaved();
         onItemsChange((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
@@ -331,9 +447,23 @@ function ItemsPanel({
             </DialogContent>
           </Dialog>
         </div>
+        <MasterBulkActionsBar
+          token={token}
+          entity="items"
+          selectedIds={selection.selectedIds}
+          onComplete={onSaved}
+          onClearSelection={selection.clear}
+        />
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={selection.allSelected}
+                  onCheckedChange={() => selection.toggleAll()}
+                  aria-label="Select all items"
+                />
+              </TableHead>
               <TableHead>Code</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Cost</TableHead>
@@ -344,11 +474,18 @@ function ItemsPanel({
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell>
               </TableRow>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selection.isSelected(row.id)}
+                      onCheckedChange={() => selection.toggle(row.id)}
+                      aria-label={`Select ${row.item_code}`}
+                    />
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{row.item_code}</TableCell>
                   <TableCell>{row.name}</TableCell>
                   <TableCell>{KES(row.standard_cost)}</TableCell>
@@ -378,7 +515,7 @@ function ItemsPanel({
             )}
             {!loading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No items yet.</TableCell>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No items yet.</TableCell>
               </TableRow>
             )}
           </TableBody>
@@ -403,6 +540,7 @@ function WarehousesPanel({
   const [editing, setEditing] = useState<BackendWarehouse | null>(null);
   const [form, setForm] = useState({ code: "", name: "", address_line1: "", city: "", manager_name: "", phone: "" });
   const [saving, setSaving] = useState(false);
+  const selection = useMasterRowSelection(rows.map((row) => ({ id: String(row.id) })));
 
   const openNew = () => {
     setEditing(null);
@@ -485,9 +623,23 @@ function WarehousesPanel({
             </DialogContent>
           </Dialog>
         </div>
+        <MasterBulkActionsBar
+          token={token}
+          entity="warehouses"
+          selectedIds={selection.selectedIds}
+          onComplete={onSaved}
+          onClearSelection={selection.clear}
+        />
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={selection.allSelected}
+                  onCheckedChange={() => selection.toggleAll()}
+                  aria-label="Select all warehouses"
+                />
+              </TableHead>
               <TableHead>Code</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>City</TableHead>
@@ -498,11 +650,18 @@ function WarehousesPanel({
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell>
               </TableRow>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selection.isSelected(String(row.id))}
+                      onCheckedChange={() => selection.toggle(String(row.id))}
+                      aria-label={`Select ${row.code}`}
+                    />
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{row.code}</TableCell>
                   <TableCell>{row.name}</TableCell>
                   <TableCell>{row.city || "—"}</TableCell>
@@ -532,7 +691,7 @@ function WarehousesPanel({
             )}
             {!loading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No warehouses yet.</TableCell>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No warehouses yet.</TableCell>
               </TableRow>
             )}
           </TableBody>
@@ -558,5 +717,295 @@ function Field({
       <Label>{label}</Label>
       <Input value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
     </div>
+  );
+}
+
+function SimpleMasterTable({
+  loading,
+  rows,
+  q,
+  columns,
+  entity,
+  codeField,
+  token,
+  onSaved,
+  createFields,
+}: {
+  loading: boolean;
+  rows: Record<string, unknown>[];
+  q: string;
+  columns: Array<{ key: string; label: string }>;
+  entity: Extract<MasterEntity, "vendors" | "employees">;
+  codeField: string;
+  token: string | null;
+  onSaved: () => Promise<void>;
+  createFields?: Array<{ key: string; label: string }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editVersion, setEditVersion] = useState<string | undefined>();
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  const filtered = rows.filter((row) =>
+    columns.some((c) => String(row[c.key] ?? "").toLowerCase().includes(q.toLowerCase())),
+  );
+  const selectable = filtered.map((row) => ({ id: String(row.id) }));
+  const selection = useMasterRowSelection(selectable);
+
+  const fields =
+    createFields ??
+    (entity === "vendors"
+      ? [
+          { key: "vendor_code", label: "Vendor code" },
+          { key: "name", label: "Name" },
+          { key: "email", label: "Email" },
+          { key: "tax_id", label: "Tax ID" },
+        ]
+      : []);
+
+  const save = async () => {
+    if (!token || !form[codeField]) return;
+    if (entity === "vendors" && !form.name) return;
+    if (entity === "employees" && (!form.first_name || !form.last_name)) return;
+    setSaving(true);
+    try {
+      if (editingId) {
+        await masterUpdate(token, entity, editingId, form, editVersion ? { ifMatch: editVersion } : undefined);
+        toast.success("Record updated");
+      } else {
+        await masterCreate(token, entity, form);
+        toast.success("Record created");
+      }
+      setOpen(false);
+      setEditingId(null);
+      await onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openCreate = () => {
+    setEditingId(null);
+    setForm({});
+    setOpen(true);
+  };
+
+  const openEdit = (row: Record<string, unknown>) => {
+    setEditingId(String(row.id));
+    setEditVersion(row.updated_at ? String(row.updated_at) : undefined);
+    const next: Record<string, string> = {};
+    for (const f of fields) next[f.key] = String(row[f.key] ?? "");
+    setForm(next);
+    setOpen(true);
+  };
+
+  const remove = async (row: Record<string, unknown>) => {
+    if (!token) return;
+    try {
+      await masterDelete(token, entity, String(row.id));
+      toast.success("Record deleted");
+      await onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Delete failed");
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-4 flex justify-end">
+          <Button onClick={openCreate}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add {entity === "vendors" ? "vendor" : "employee"}
+          </Button>
+        </div>
+        <MasterBulkActionsBar
+          token={token}
+          entity={entity}
+          selectedIds={selection.selectedIds}
+          onComplete={onSaved}
+          onClearSelection={selection.clear}
+        />
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={selection.allSelected}
+                  onCheckedChange={() => selection.toggleAll()}
+                  aria-label="Select all"
+                />
+              </TableHead>
+              {columns.map((c) => (
+                <TableHead key={c.key}>{c.label}</TableHead>
+              ))}
+              <TableHead className="w-24" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={columns.length + 2} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : filtered.map((row) => (
+              <TableRow key={String(row.id)}>
+                <TableCell>
+                  <Checkbox
+                    checked={selection.isSelected(String(row.id))}
+                    onCheckedChange={() => selection.toggle(String(row.id))}
+                    aria-label="Select row"
+                  />
+                </TableCell>
+                {columns.map((c) => (
+                  <TableCell key={c.key} className={c.key.includes("code") ? "font-mono text-xs" : ""}>
+                    {String(row[c.key] ?? "—")}
+                  </TableCell>
+                ))}
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)} aria-label="Edit">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <ConfirmActionDialog
+                      title="Delete record?"
+                      description="This soft-deletes the master record."
+                      confirmLabel="Delete"
+                      onConfirm={() => remove(row)}
+                    >
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" aria-label="Delete">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </ConfirmActionDialog>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {!loading && filtered.length === 0 && (
+              <TableRow><TableCell colSpan={columns.length + 2} className="py-8 text-center text-sm text-muted-foreground">No records.</TableCell></TableRow>
+            )}
+          </TableBody>
+        </Table>
+        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditingId(null); }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{editingId ? "Edit record" : "New record"}</DialogTitle></DialogHeader>
+            <div className="grid gap-3 py-2">
+              {fields.map((f) => (
+                <Field
+                  key={f.key}
+                  label={f.label}
+                  value={form[f.key] ?? ""}
+                  disabled={Boolean(editingId && f.key === codeField)}
+                  onChange={(v) => setForm((p) => ({ ...p, [f.key]: v }))}
+                />
+              ))}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button onClick={save} disabled={saving}>{saving ? "Saving…" : editingId ? "Update" : "Save"}</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CoaPanel({
+  loading,
+  rows,
+  token,
+  onSaved,
+}: {
+  loading: boolean;
+  rows: ChartOfAccountRow[];
+  token: string | null;
+  onSaved: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ account_code: "", account_name: "", account_type: "asset" });
+  const [saving, setSaving] = useState(false);
+  const selection = useMasterRowSelection(rows);
+
+  const save = async () => {
+    if (!token || !form.account_code || !form.account_name) return;
+    setSaving(true);
+    try {
+      await createChartOfAccount(token, form);
+      toast.success("Account created");
+      setOpen(false);
+      await onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-4 flex justify-end">
+          <Button onClick={() => setOpen(true)}><Plus className="mr-2 h-4 w-4" />Add account</Button>
+        </div>
+        <MasterBulkActionsBar
+          token={token}
+          entity="chart-of-accounts"
+          selectedIds={selection.selectedIds}
+          onComplete={onSaved}
+          onClearSelection={selection.clear}
+        />
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={selection.allSelected}
+                  onCheckedChange={() => selection.toggleAll()}
+                  aria-label="Select all accounts"
+                />
+              </TableHead>
+              <TableHead>Code</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Type</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No accounts yet.</TableCell></TableRow>
+            ) : rows.map((row) => (
+              <TableRow key={row.id}>
+                <TableCell>
+                  <Checkbox
+                    checked={selection.isSelected(row.id)}
+                    onCheckedChange={() => selection.toggle(row.id)}
+                    aria-label={`Select ${row.code}`}
+                  />
+                </TableCell>
+                <TableCell className="font-mono text-xs">{row.code}</TableCell>
+                <TableCell>{row.name}</TableCell>
+                <TableCell>{row.account_type}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>New GL account</DialogTitle></DialogHeader>
+            <div className="grid gap-3 py-2">
+              <Field label="Account code" value={form.account_code} onChange={(v) => setForm((p) => ({ ...p, account_code: v }))} />
+              <Field label="Account name" value={form.account_name} onChange={(v) => setForm((p) => ({ ...p, account_name: v }))} />
+              <Field label="Type (asset/liability/income/expense)" value={form.account_type} onChange={(v) => setForm((p) => ({ ...p, account_type: v }))} />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
   );
 }

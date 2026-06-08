@@ -17,6 +17,7 @@ import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSalesRouteImport } from './routes/_app.sales'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
 import { Route as AppProcurementRouteImport } from './routes/_app.procurement'
+import { Route as AppPosRouteImport } from './routes/_app.pos'
 import { Route as AppMasterDataRouteImport } from './routes/_app.master-data'
 import { Route as AppInvoicesRouteImport } from './routes/_app.invoices'
 import { Route as AppInventoryRouteImport } from './routes/_app.inventory'
@@ -24,6 +25,7 @@ import { Route as AppHrRouteImport } from './routes/_app.hr'
 import { Route as AppDeliveryRouteImport } from './routes/_app.delivery'
 import { Route as AppCustomersRouteImport } from './routes/_app.customers'
 import { Route as AppAuditLogsRouteImport } from './routes/_app.audit-logs'
+import { Route as AppAccountsPayableRouteImport } from './routes/_app.accounts-payable'
 import { Route as AppAccountingRouteImport } from './routes/_app.accounting'
 
 const LoginRoute = LoginRouteImport.update({
@@ -65,6 +67,11 @@ const AppProcurementRoute = AppProcurementRouteImport.update({
   path: '/procurement',
   getParentRoute: () => AppRoute,
 } as any)
+const AppPosRoute = AppPosRouteImport.update({
+  id: '/pos',
+  path: '/pos',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppMasterDataRoute = AppMasterDataRouteImport.update({
   id: '/master-data',
   path: '/master-data',
@@ -100,6 +107,11 @@ const AppAuditLogsRoute = AppAuditLogsRouteImport.update({
   path: '/audit-logs',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAccountsPayableRoute = AppAccountsPayableRouteImport.update({
+  id: '/accounts-payable',
+  path: '/accounts-payable',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAccountingRoute = AppAccountingRouteImport.update({
   id: '/accounting',
   path: '/accounting',
@@ -110,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/accounting': typeof AppAccountingRoute
+  '/accounts-payable': typeof AppAccountsPayableRoute
   '/audit-logs': typeof AppAuditLogsRoute
   '/customers': typeof AppCustomersRoute
   '/delivery': typeof AppDeliveryRoute
@@ -117,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/inventory': typeof AppInventoryRoute
   '/invoices': typeof AppInvoicesRoute
   '/master-data': typeof AppMasterDataRoute
+  '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
@@ -126,6 +140,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/accounting': typeof AppAccountingRoute
+  '/accounts-payable': typeof AppAccountsPayableRoute
   '/audit-logs': typeof AppAuditLogsRoute
   '/customers': typeof AppCustomersRoute
   '/delivery': typeof AppDeliveryRoute
@@ -133,6 +148,7 @@ export interface FileRoutesByTo {
   '/inventory': typeof AppInventoryRoute
   '/invoices': typeof AppInvoicesRoute
   '/master-data': typeof AppMasterDataRoute
+  '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
@@ -145,6 +161,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/accounting': typeof AppAccountingRoute
+  '/_app/accounts-payable': typeof AppAccountsPayableRoute
   '/_app/audit-logs': typeof AppAuditLogsRoute
   '/_app/customers': typeof AppCustomersRoute
   '/_app/delivery': typeof AppDeliveryRoute
@@ -152,6 +169,7 @@ export interface FileRoutesById {
   '/_app/inventory': typeof AppInventoryRoute
   '/_app/invoices': typeof AppInvoicesRoute
   '/_app/master-data': typeof AppMasterDataRoute
+  '/_app/pos': typeof AppPosRoute
   '/_app/procurement': typeof AppProcurementRoute
   '/_app/reports': typeof AppReportsRoute
   '/_app/sales': typeof AppSalesRoute
@@ -165,6 +183,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/accounting'
+    | '/accounts-payable'
     | '/audit-logs'
     | '/customers'
     | '/delivery'
@@ -172,6 +191,7 @@ export interface FileRouteTypes {
     | '/inventory'
     | '/invoices'
     | '/master-data'
+    | '/pos'
     | '/procurement'
     | '/reports'
     | '/sales'
@@ -181,6 +201,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/accounting'
+    | '/accounts-payable'
     | '/audit-logs'
     | '/customers'
     | '/delivery'
@@ -188,6 +209,7 @@ export interface FileRouteTypes {
     | '/inventory'
     | '/invoices'
     | '/master-data'
+    | '/pos'
     | '/procurement'
     | '/reports'
     | '/sales'
@@ -199,6 +221,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/_app/accounting'
+    | '/_app/accounts-payable'
     | '/_app/audit-logs'
     | '/_app/customers'
     | '/_app/delivery'
@@ -206,6 +229,7 @@ export interface FileRouteTypes {
     | '/_app/inventory'
     | '/_app/invoices'
     | '/_app/master-data'
+    | '/_app/pos'
     | '/_app/procurement'
     | '/_app/reports'
     | '/_app/sales'
@@ -277,6 +301,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProcurementRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/pos': {
+      id: '/_app/pos'
+      path: '/pos'
+      fullPath: '/pos'
+      preLoaderRoute: typeof AppPosRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/master-data': {
       id: '/_app/master-data'
       path: '/master-data'
@@ -326,6 +357,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAuditLogsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/accounts-payable': {
+      id: '/_app/accounts-payable'
+      path: '/accounts-payable'
+      fullPath: '/accounts-payable'
+      preLoaderRoute: typeof AppAccountsPayableRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/accounting': {
       id: '/_app/accounting'
       path: '/accounting'
@@ -338,6 +376,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountingRoute: typeof AppAccountingRoute
+  AppAccountsPayableRoute: typeof AppAccountsPayableRoute
   AppAuditLogsRoute: typeof AppAuditLogsRoute
   AppCustomersRoute: typeof AppCustomersRoute
   AppDeliveryRoute: typeof AppDeliveryRoute
@@ -345,6 +384,7 @@ interface AppRouteChildren {
   AppInventoryRoute: typeof AppInventoryRoute
   AppInvoicesRoute: typeof AppInvoicesRoute
   AppMasterDataRoute: typeof AppMasterDataRoute
+  AppPosRoute: typeof AppPosRoute
   AppProcurementRoute: typeof AppProcurementRoute
   AppReportsRoute: typeof AppReportsRoute
   AppSalesRoute: typeof AppSalesRoute
@@ -355,6 +395,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountingRoute: AppAccountingRoute,
+  AppAccountsPayableRoute: AppAccountsPayableRoute,
   AppAuditLogsRoute: AppAuditLogsRoute,
   AppCustomersRoute: AppCustomersRoute,
   AppDeliveryRoute: AppDeliveryRoute,
@@ -362,6 +403,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppInventoryRoute: AppInventoryRoute,
   AppInvoicesRoute: AppInvoicesRoute,
   AppMasterDataRoute: AppMasterDataRoute,
+  AppPosRoute: AppPosRoute,
   AppProcurementRoute: AppProcurementRoute,
   AppReportsRoute: AppReportsRoute,
   AppSalesRoute: AppSalesRoute,

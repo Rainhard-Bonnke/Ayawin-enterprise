@@ -5,6 +5,10 @@ const { authenticateErp, requirePermission } = require('../../middleware/erpAuth
 const userService = require('../../services/userService');
 const { logAudit } = require('../../services/auditService');
 const { getClientIp } = require('../../middleware/erpAuth');
+const { BCRYPT_ROUNDS } = require('../../constants');
+const { validateEmail } = require('../../lib/validators');
+const userInviteService = require('../../services/userInviteService');
+const { requireReauth } = require('../../middleware/requireReauth');
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -33,7 +37,7 @@ router.post('/', requirePermission('users.create'), async (req, res) => {
     return res.status(400).json({ error: 'username, email, full_name, password required' });
   }
 
-  const hash = await bcrypt.hash(password, 10);
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   try {
     const result = await pool.query(
       `INSERT INTO erp_users (
@@ -55,8 +59,44 @@ router.post('/', requirePermission('users.create'), async (req, res) => {
     });
     return res.status(201).json(result.rows[0]);
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Username or email already exists' });
+    }
     console.error(err);
     return res.status(500).json({ error: 'Unable to create user' });
+  }
+});
+
+router.post('/invite', requirePermission('users.create'), async (req, res) => {
+  const { email, full_name, username, role_id, phone, default_branch_id } = req.body || {};
+  const emailCheck = validateEmail(email, { required: true });
+  if (!emailCheck.ok) return res.status(400).json({ error: emailCheck.error });
+  if (!full_name || typeof full_name !== 'string') {
+    return res.status(400).json({ error: 'full_name is required' });
+  }
+  try {
+    const result = await userInviteService.inviteUser({
+      companyId: req.user.company_id,
+      invitedBy: req.user.id,
+      email: emailCheck.value,
+      full_name: full_name.trim(),
+      username,
+      role_id,
+      phone,
+      default_branch_id,
+    });
+    return res.status(201).json({
+      ok: true,
+      user: result.user,
+      message: 'Invite email sent with a link to set password.',
+      dev_token: result.dev_token,
+    });
+  } catch (err) {
+    if (err.code === 'DUPLICATE_EMAIL') {
+      return res.status(409).json({ error: err.message });
+    }
+    console.error(err);
+    return res.status(500).json({ error: 'Unable to send invite' });
   }
 });
 
@@ -68,7 +108,15 @@ router.get('/:id', requirePermission('users.view'), async (req, res) => {
   return res.json(userService.sanitizeUser(user));
 });
 
-router.patch('/:id', requirePermission('users.edit'), async (req, res) => {
+router.patch('/:id', requirePermission('users.edit'), async (req, res, next) => {
+  const { full_name, phone, role_id, default_branch_id, status } = req.body || {};
+  if (status === 'inactive') {
+    return requireReauth()(req, res, () => patchUser(req, res));
+  }
+  return patchUser(req, res);
+});
+
+async function patchUser(req, res) {
   const { full_name, phone, role_id, default_branch_id, status } = req.body || {};
   try {
     const before = await pool.query(
@@ -106,6 +154,6 @@ router.patch('/:id', requirePermission('users.edit'), async (req, res) => {
     console.error(err);
     return res.status(500).json({ error: 'Unable to update user' });
   }
-});
+}
 
 module.exports = router;

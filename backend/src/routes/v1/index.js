@@ -12,9 +12,12 @@ const procurementRoutes = require('./procurement');
 const inventoryRoutes = require('./inventory');
 const crmRoutes = require('./crm');
 const salesRoutes = require('./sales');
+const posRoutes = require('./pos');
+const logisticsRoutes = require('./logistics');
 const hrRoutes = require('./hr');
 const payrollRoutes = require('./payroll');
 const reportsRoutes = require('./reports');
+const dashboardRoutes = require('./dashboard');
 const platformRoutes = require('./platform');
 
 const router = express.Router();
@@ -32,8 +35,11 @@ router.use('/procurement', procurementRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/crm', crmRoutes);
 router.use('/sales', salesRoutes);
+router.use('/pos', posRoutes);
+router.use('/logistics', logisticsRoutes);
 router.use('/hr', hrRoutes);
 router.use('/payroll', payrollRoutes);
+router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportsRoutes);
 router.use('/platform', platformRoutes);
 

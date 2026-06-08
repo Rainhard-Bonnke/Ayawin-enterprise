@@ -13,8 +13,30 @@
     "db:restore": "node scripts/restore-db.cjs",
     "test": "node --test test/*.test.js",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",
-    "test:e2e:critical": "node --test --test-concurrency=1 test/e2e/sales-flow.test.js test/e2e/purchase-flow.test.js",
-    "test:all": "npm test && npm run test:e2e"
+    "test:e2e:critical": "node --test --test-concurrency=1 test/e2e/sales-flow.test.js test/e2e/purchase-flow.test.js test/e2e/payroll-flow.test.js test/e2e/delivery-list.test.js test/e2e/stock-adjustment-flow.test.js test/e2e/month-end-flow.test.js test/e2e/md-po-approval.test.js",
+    "test:e2e:integration": "node --test --test-concurrency=1 test/e2e/integration-flows.test.js",
+    "test:security": "node --test test/security/*.test.js test/auth-security.test.js",
+    "test:all": "npm test && npm run test:e2e",
+    "benchmark:load": "node scripts/load-benchmark.js",
+    "benchmark:perf": "node scripts/performance-benchmark.js",
+    "db:seed:perf": "node scripts/seed-performance-volume.cjs",
+    "db:query-plans": "node scripts/query-plan-audit.js",
+    "encrypt:salaries": "node scripts/encrypt-existing-salaries.cjs",
+    "check:data-accuracy": "node scripts/data-accuracy-audit.js",
+    "check:data-accuracy:repair": "node scripts/data-accuracy-repair.cjs",
+    "check:data-accuracy:quick": "node scripts/data-accuracy-check.js",
+    "check:data-accuracy:simulate": "node scripts/data-accuracy-audit.js --simulate",
+    "check:ui-ux": "node ../scripts/ui-ux-audit.cjs",
+    "check:deployment-infra": "node ../scripts/deployment-infra-audit.cjs",
+    "production:gate": "node scripts/production-gate.js",
+    "go-live:init": "node scripts/go-live-init.cjs",
+    "go-live:password": "node scripts/change-admin-password.cjs",
+    "go-live:validate-env": "node scripts/validate-production-env.cjs",
+    "go-live:import": "node scripts/import-master-csv.cjs",
+    "env:sync": "node scripts/sync-local-env.cjs",
+    "go-live:purge-demo": "node scripts/purge-demo-transactions.cjs",
+    "go-live:backup-drill": "node scripts/backup-restore-drill.cjs",
+    "dev:reset-db": "node scripts/reset-dev-live.cjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -29,7 +51,9 @@
     "pdfkit": "^0.18.0",
     "pg": "^8.11.0",
     "qrcode": "^1.5.4",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "ws": "^8.18.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

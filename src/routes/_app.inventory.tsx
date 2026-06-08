@@ -1,5 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRealtimeSync } from "@/hooks/useRealtimeSync";
+import { subscribeLiveEvents } from "@/hooks/useLiveEvents";
 import { AlertTriangle, ArrowLeftRight, Plus, ScanBarcode } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,9 +20,18 @@ import { trackEvent } from "@/lib/event-tracker";
 import { KES, fmtDate } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import {
+  createStockAdjustment,
   createStockIn,
   createStockTransfer,
+  fetchAdjustmentReasonCodes,
+  fetchInventoryCatalog,
   fetchInventoryItems,
+  fetchInventoryMovements,
+  fetchInventoryReorderAlerts,
+  fetchInventoryValuation,
+  fetchStockAdjustments,
+  lookupInventoryBarcode,
+  postStockAdjustment,
   fetchMasterItems,
   fetchWarehouses,
   type BackendInventoryItem,
@@ -31,12 +42,16 @@ import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/inventory")({
   component: InventoryPage,
-  head: () => ({ meta: [{ title: "Inventory - Ayawin Enterprise ERP" }] }),
+  validateSearch: (search: Record<string, unknown>) => ({
+    q: typeof search.q === "string" ? search.q : "",
+  }),
+  head: () => ({ meta: [{ title: "Inventory - Ayawin Stock Solutions ERP" }] }),
 });
 
 function InventoryPage() {
-  const { token } = useAuth();
-  const [q, setQ] = useState("");
+  const { token, user } = useAuth();
+  const { q: searchQ } = Route.useSearch();
+  const [q, setQ] = useState(searchQ || "");
   const [cat, setCat] = useState("all");
   const [wh, setWh] = useState("all");
   const [sort, setSort] = useState("name");
@@ -47,6 +62,19 @@ function InventoryPage() {
   const [masterItems, setMasterItems] = useState<BackendMasterItem[]>([]);
   const [transferOpen, setTransferOpen] = useState(false);
   const [stockInOpen, setStockInOpen] = useState(false);
+  const [adjOpen, setAdjOpen] = useState(false);
+  const [adjustments, setAdjustments] = useState<Array<Record<string, unknown>>>([]);
+  const [adjForm, setAdjForm] = useState({
+    warehouse_id: "",
+    item_id: "",
+    quantity_delta: "",
+    reason: "",
+    reason_code: "CYCLE_COUNT",
+  });
+  const [reasonCodes, setReasonCodes] = useState<Array<{ code: string; label: string }>>([]);
+  const [valuationTotal, setValuationTotal] = useState<number | null>(null);
+  const [reorderAlerts, setReorderAlerts] = useState<Array<Record<string, unknown>>>([]);
+  const [movements, setMovements] = useState<Array<Record<string, unknown>>>([]);
   const [saving, setSaving] = useState(false);
   const [transferForm, setTransferForm] = useState({
     from_warehouse_id: "",
@@ -61,9 +89,15 @@ function InventoryPage() {
     quantity: "",
     unit_cost: "",
     notes: "",
+    batch_no: "",
+    expiry_date: "",
   });
 
   const pageSize = 6;
+
+  useEffect(() => {
+    if (searchQ) setQ(searchQ);
+  }, [searchQ]);
 
   const loadCatalog = async () => {
     if (!token) return [];
@@ -81,9 +115,28 @@ function InventoryPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [inv, whs] = await Promise.all([fetchInventoryItems(token), fetchWarehouses(token)]);
-      setItems(inv);
+      const whs = await fetchWarehouses(token);
+      const catalogWh = wh !== "all" ? wh : String(whs[0]?.id ?? "");
+      const [inv, valuation, alerts, mv] = await Promise.all([
+        catalogWh
+          ? fetchInventoryCatalog(token, catalogWh).catch(() => fetchInventoryItems(token))
+          : fetchInventoryItems(token),
+        fetchInventoryValuation(token, catalogWh || undefined).catch(() => null),
+        fetchInventoryReorderAlerts(token).catch(() => []),
+        fetchInventoryMovements(token, { limit: 25 }).catch(() => []),
+      ]);
+      const whName = whs.find((w) => String(w.id) === catalogWh)?.name ?? "";
+      setItems(
+        inv.map((row) => ({
+          ...row,
+          warehouse: row.warehouse || whName,
+          warehouse_id: row.warehouse_id || catalogWh,
+        })),
+      );
       setWarehouses(whs);
+      setValuationTotal(valuation ? Number(valuation.totals?.total_value || 0) : null);
+      setReorderAlerts(alerts);
+      setMovements(mv);
     } catch {
       setItems([]);
       setWarehouses([]);
@@ -93,9 +146,37 @@ function InventoryPage() {
     }
   };
 
-  useEffect(() => {
+  const refreshInventory = useCallback(() => {
     void loadInventory();
   }, [token]);
+
+  useEffect(() => {
+    refreshInventory();
+  }, [refreshInventory, wh]);
+
+  useRealtimeSync(refreshInventory, { enabled: Boolean(token) });
+
+  const loadAdjustments = useCallback(async () => {
+    if (!token) return;
+    try {
+      setAdjustments(await fetchStockAdjustments(token));
+    } catch {
+      setAdjustments([]);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadAdjustments();
+  }, [loadAdjustments]);
+
+  useEffect(() => {
+    return subscribeLiveEvents((ev) => {
+      if (ev.type === "inventory.updated" || ev.type === "sales_order.confirmed") {
+        refreshInventory();
+        void loadAdjustments();
+      }
+    });
+  }, [refreshInventory, loadAdjustments]);
 
   const filtered = useMemo(
     () =>
@@ -121,23 +202,32 @@ function InventoryPage() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  const totalValue = useMemo(() => filtered.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0), [filtered]);
+  const totalValue = useMemo(() => {
+    if (valuationTotal != null) return valuationTotal;
+    return filtered.reduce((sum, row) => sum + Number(row.stock_value ?? Number(row.stock || 0) * Number(row.cost_price || 0)), 0);
+  }, [filtered, valuationTotal]);
   const lowStockCount = useMemo(() => filtered.filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0)).length, [filtered]);
   const skuCount = useMemo(() => new Set(items.map((row) => row.sku)).size, [items]);
 
-  const reorderDraft = useMemo(
-    () =>
-      filtered
-        .filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0))
-        .slice(0, 12)
-        .map((row) => ({
-          sku: row.sku,
-          product: row.name,
-          warehouse: row.warehouse,
-          qty: Math.max(0, Number(row.min_stock || 0) * 2 - Number(row.stock || 0)),
-        })),
-    [filtered],
-  );
+  const reorderDraft = useMemo(() => {
+    if (reorderAlerts.length > 0) {
+      return reorderAlerts.slice(0, 12).map((row) => ({
+        sku: String(row.item_code || ""),
+        product: String(row.item_name || ""),
+        warehouse: String(row.warehouse_name || ""),
+        qty: Math.max(0, Number(row.reorder_point || 0) - Number(row.quantity || 0)),
+      }));
+    }
+    return filtered
+      .filter((row) => Number(row.stock || 0) <= Number(row.min_stock || 0) && Number(row.min_stock || 0) > 0)
+      .slice(0, 12)
+      .map((row) => ({
+        sku: row.sku,
+        product: row.name,
+        warehouse: row.warehouse,
+        qty: Math.max(0, Number(row.min_stock || 0) - Number(row.stock || 0)),
+      }));
+  }, [filtered, reorderAlerts]);
 
   const expiringSoon = useMemo(() => {
     const now = Date.now();
@@ -168,15 +258,29 @@ function InventoryPage() {
 
   const openStockIn = async () => {
     if (!token) return;
-    const catalog = await loadCatalog();
-    setStockInForm({
-      warehouse_id: warehouses[0]?.id?.toString() || "",
-      item_id: catalog[0]?.id || "",
-      quantity: "1",
-      unit_cost: catalog[0] ? String(catalog[0].standard_cost) : "",
-      notes: "",
-    });
-    setStockInOpen(true);
+    try {
+      const catalog = await loadCatalog();
+      if (!warehouses.length) {
+        toast.error("No warehouse found. Add one under Master Data → Warehouses.");
+        return;
+      }
+      if (!catalog.length) {
+        toast.error("No products found. Add an item under Master Data → Items first.");
+        return;
+      }
+      setStockInForm({
+        warehouse_id: warehouses[0]?.id?.toString() || "",
+        item_id: catalog[0]?.id || "",
+        quantity: "1",
+        unit_cost: catalog[0] ? String(catalog[0].standard_cost) : "",
+        notes: "",
+        batch_no: "",
+        expiry_date: "",
+      });
+      setStockInOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load products for stock in");
+    }
   };
 
   const submitTransfer = async () => {
@@ -224,13 +328,16 @@ function InventoryPage() {
         quantity: qty,
         unit_cost: Number(stockInForm.unit_cost) || undefined,
         notes: stockInForm.notes || undefined,
+        batch_no: stockInForm.batch_no.trim() || undefined,
+        expiry_date: stockInForm.expiry_date || undefined,
       });
       toast.success("Stock received into warehouse");
       setStockInOpen(false);
       setPage(1);
       await loadInventory();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Stock in failed");
+      const msg = err instanceof Error ? err.message : "Stock in failed";
+      toast.error(msg.includes("Forbidden") ? "You do not have permission to receive stock. Sign in as admin." : msg);
     } finally {
       setSaving(false);
     }
@@ -290,6 +397,29 @@ function InventoryPage() {
               <Plus className="mr-2 h-4 w-4" />
               Stock In
             </Button>
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                const catalog = await loadCatalog();
+                if (token && reasonCodes.length === 0) {
+                  try {
+                    setReasonCodes(await fetchAdjustmentReasonCodes(token));
+                  } catch {
+                    setReasonCodes([{ code: "CYCLE_COUNT", label: "Cycle count variance" }]);
+                  }
+                }
+                setAdjForm({
+                  warehouse_id: warehouses[0]?.id?.toString() || "",
+                  item_id: catalog[0]?.id || "",
+                  quantity_delta: "-1",
+                  reason: "Physical count variance",
+                  reason_code: "CYCLE_COUNT",
+                });
+                setAdjOpen(true);
+              }}
+            >
+              Stock adjustment
+            </Button>
           </>
         }
       />
@@ -323,7 +453,7 @@ function InventoryPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Reorder Draft</div>
-                <div className="text-xs text-muted-foreground">Items below dynamic threshold (min stock x2)</div>
+                <div className="text-xs text-muted-foreground">Items at or below reorder point (server alerts)</div>
               </div>
               <Badge variant="outline">{reorderDraft.length}</Badge>
             </div>
@@ -379,7 +509,22 @@ function InventoryPage() {
                 setQ(value);
                 setPage(1);
               }}
-              placeholder="Search SKU, barcode or product name..."
+              onKeyDown={async (e) => {
+                if (e.key !== "Enter" || !token || !q.trim()) return;
+                try {
+                  const hits = await lookupInventoryBarcode(token, q.trim());
+                  if (hits.length === 1) {
+                    const hit = hits[0];
+                    setQ(String(hit.item_code || hit.barcode || q));
+                    if (hit.warehouse_id) setWh(String(hit.warehouse_name || "all"));
+                  } else if (hits.length > 1) {
+                    toast.message(`${hits.length} products match this barcode/SKU`);
+                  }
+                } catch {
+                  /* local filter still applies */
+                }
+              }}
+              placeholder="Search SKU, barcode or product name (Enter for barcode lookup)..."
             />
             <Select value={cat} onValueChange={setCat}>
               <SelectTrigger className="w-40">
@@ -575,10 +720,213 @@ function InventoryPage() {
                 <Input type="number" min={0} step="any" value={stockInForm.unit_cost} onChange={(e) => setStockInForm((p) => ({ ...p, unit_cost: e.target.value }))} />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Batch / lot no.</Label>
+                <Input value={stockInForm.batch_no} onChange={(e) => setStockInForm((p) => ({ ...p, batch_no: e.target.value }))} placeholder="Optional" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Expiry date</Label>
+                <Input type="date" value={stockInForm.expiry_date} onChange={(e) => setStockInForm((p) => ({ ...p, expiry_date: e.target.value }))} />
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setStockInOpen(false)}>Cancel</Button>
             <Button onClick={submitStockIn} disabled={saving}>{saving ? "Saving…" : "Receive stock"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Card className="mt-4">
+        <CardContent className="p-4">
+          <h3 className="mb-3 text-sm font-semibold">Recent stock movements</h3>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Item</TableHead>
+                <TableHead>Warehouse</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead>Batch</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {movements.map((mv) => (
+                <TableRow key={String(mv.id)}>
+                  <TableCell className="text-xs">{mv.movement_date ? fmtDate(String(mv.movement_date)) : "-"}</TableCell>
+                  <TableCell className="text-xs">{String(mv.item_code || "")}</TableCell>
+                  <TableCell className="text-xs">{String(mv.warehouse_name || "")}</TableCell>
+                  <TableCell className="text-xs">{String(mv.movement_type)}</TableCell>
+                  <TableCell className="text-right text-xs">{Number(mv.quantity || 0)}</TableCell>
+                  <TableCell className="text-xs">{String(mv.batch_no || "-")}</TableCell>
+                </TableRow>
+              ))}
+              {movements.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                    No movements recorded yet.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4">
+        <CardContent className="p-4">
+          <h3 className="mb-3 text-sm font-semibold">Stock adjustments (draft → post)</h3>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Adjustment #</TableHead>
+                <TableHead>Warehouse</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {adjustments.map((adj) => (
+                <TableRow key={String(adj.id)}>
+                  <TableCell className="font-mono text-xs">{String(adj.adjustment_no)}</TableCell>
+                  <TableCell>{String(adj.warehouse_name || "")}</TableCell>
+                  <TableCell className="max-w-[180px] truncate">{String(adj.reason || "")}</TableCell>
+                  <TableCell>{String(adj.status)}</TableCell>
+                  <TableCell className="text-right">
+                    {adj.status === "draft" && user?.id && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={async () => {
+                          if (!token) return;
+                          try {
+                            await postStockAdjustment(token, String(adj.id), String(user.id));
+                            toast.success("Adjustment posted");
+                            await Promise.all([loadInventory(), loadAdjustments()]);
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : "Could not post adjustment");
+                          }
+                        }}
+                      >
+                        Post
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {adjustments.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-6 text-center text-sm text-muted-foreground">
+                    No adjustments — create one when physical count differs from system.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Dialog open={adjOpen} onOpenChange={setAdjOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Stock adjustment</DialogTitle>
+            <DialogDescription>Use negative quantity to reduce stock; positive to increase. Requires approval to post.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div>
+              <Label>Warehouse</Label>
+              <Select value={adjForm.warehouse_id} onValueChange={(v) => setAdjForm((p) => ({ ...p, warehouse_id: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Item</Label>
+              <Select value={adjForm.item_id} onValueChange={(v) => setAdjForm((p) => ({ ...p, item_id: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {masterItems.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>
+                      {i.item_code} — {i.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Quantity change (+/-)</Label>
+              <Input
+                type="number"
+                value={adjForm.quantity_delta}
+                onChange={(e) => setAdjForm((p) => ({ ...p, quantity_delta: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Reason code</Label>
+              <Select value={adjForm.reason_code} onValueChange={(v) => setAdjForm((p) => ({ ...p, reason_code: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(reasonCodes.length ? reasonCodes : [{ code: "CYCLE_COUNT", label: "Cycle count variance" }]).map((rc) => (
+                    <SelectItem key={rc.code} value={rc.code}>
+                      {rc.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Input value={adjForm.reason} onChange={(e) => setAdjForm((p) => ({ ...p, reason: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={async () => {
+                if (!token || !adjForm.reason.trim()) {
+                  toast.error("Reason is required");
+                  return;
+                }
+                const delta = Number(adjForm.quantity_delta);
+                if (!delta || delta === 0) {
+                  toast.error("Enter a non-zero quantity change");
+                  return;
+                }
+                setSaving(true);
+                try {
+                  await createStockAdjustment(token, {
+                    warehouse_id: adjForm.warehouse_id,
+                    reason: adjForm.reason.trim(),
+                    reason_code: adjForm.reason_code,
+                    lines: [{ item_id: adjForm.item_id, quantity_delta: delta }],
+                  });
+                  toast.success("Draft adjustment created — post when approved");
+                  setAdjOpen(false);
+                  await loadAdjustments();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Could not create adjustment");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              disabled={saving}
+            >
+              Save draft
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

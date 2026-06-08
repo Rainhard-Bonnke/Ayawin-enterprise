@@ -4,13 +4,14 @@ const pool = require('../db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ayawin-enterprise-secret';
 const JWT_ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '15m';
-const JWT_REFRESH_EXPIRES_DAYS = Number(process.env.JWT_REFRESH_EXPIRES_DAYS) || 7;
+const { REFRESH_DAYS_DEFAULT } = require('../constants');
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 function generateAccessToken(user) {
+  const jti = crypto.randomUUID();
   return jwt.sign(
     {
       sub: user.id,
@@ -20,6 +21,7 @@ function generateAccessToken(user) {
       email: user.email,
       permissions: user.permissions || [],
       type: 'access',
+      jti,
     },
     JWT_SECRET,
     { expiresIn: JWT_ACCESS_EXPIRES },
@@ -30,10 +32,11 @@ function generateRefreshToken() {
   return crypto.randomBytes(48).toString('base64url');
 }
 
-async function storeRefreshToken({ user, token, ipAddress, deviceInfo, client = pool }) {
+async function storeRefreshToken({ user, token, ipAddress, deviceInfo, client = pool, refreshDays }) {
   const tokenHash = hashToken(token);
   const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + JWT_REFRESH_EXPIRES_DAYS);
+  const days = Number(refreshDays) > 0 ? Number(refreshDays) : REFRESH_DAYS_DEFAULT;
+  expiresAt.setDate(expiresAt.getDate() + days);
 
   const result = await client.query(
     `INSERT INTO erp_refresh_tokens (

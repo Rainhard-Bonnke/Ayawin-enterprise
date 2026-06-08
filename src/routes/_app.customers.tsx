@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpDown, Pencil, Plus, Trash2 } from "lucide-react";
+import { ReceiptPdfButton } from "@/components/ReceiptPdfButton";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,16 +11,34 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { MasterBulkActionsBar, useMasterRowSelection } from "@/components/MasterBulkActionsBar";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
-import { customerHealth } from "@/lib/smartSignals";
+import { customerHealthFromBalances } from "@/lib/smartSignals";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { fetchCrmLeads, fetchCrmOpportunities, fetchCrmPipeline, createCrmLead, createCrmOpportunity, type CrmLeadRow, type CrmOpportunityRow } from "@/lib/api";
+import { StatusBadge } from "@/components/StatusBadge";
 import { exportWorkbook } from "@/lib/excel";
-import { createCustomer, deleteCustomer, fetchCustomers, type BackendCustomer, updateCustomer } from "@/lib/api";
+import {
+  createCustomer,
+  deleteCustomer,
+  fetchArAging,
+  fetchCustomerStatement,
+  fetchCustomers,
+  type BackendCustomer,
+  type CustomerStatementTxn,
+  updateCustomer,
+} from "@/lib/api";
+import { fmtDate } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { validateKraPin, validateKenyaPhone } from "@/lib/validators";
+import { KraPinField } from "@/components/KraPinField";
+import { KenyaPhoneField } from "@/components/KenyaPhoneField";
 import { trackEvent } from "@/lib/event-tracker";
 import { toast } from "sonner";
 
@@ -35,6 +54,7 @@ type CustomerFormState = {
   credit_limit: string;
   payment_terms: string;
   balance: string;
+  is_active: boolean;
 };
 
 const emptyForm = (): CustomerFormState => ({
@@ -49,13 +69,14 @@ const emptyForm = (): CustomerFormState => ({
   credit_limit: "0",
   payment_terms: "Net 30",
   balance: "0",
+  is_active: true,
 });
 
 const segmentOptions = ["Bar/Restaurant", "Wholesaler", "Retailer", "Distributor", "Supermarket"];
 
 export const Route = createFileRoute("/_app/customers")({
   component: CustomersPage,
-  head: () => ({ meta: [{ title: "Customers (CRM) - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Customers (CRM) - Ayawin Stock Solutions ERP" }] }),
 });
 
 function CustomersPage() {
@@ -70,6 +91,21 @@ function CustomersPage() {
   const [editing, setEditing] = useState<BackendCustomer | null>(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<CustomerFormState>(emptyForm());
+  const [leads, setLeads] = useState<CrmLeadRow[]>([]);
+  const [opportunities, setOpportunities] = useState<CrmOpportunityRow[]>([]);
+  const [pipeline, setPipeline] = useState<Array<{ stage: string; count: number; total_amount: number }>>([]);
+  const [leadDialogOpen, setLeadDialogOpen] = useState(false);
+  const [oppDialogOpen, setOppDialogOpen] = useState(false);
+  const [leadForm, setLeadForm] = useState({ company_name: "", contact_name: "", email: "", phone: "", source: "Referral" });
+  const [oppForm, setOppForm] = useState({ name: "", customer_id: "", amount: "0", stage: "prospecting" });
+  const [crmSaving, setCrmSaving] = useState(false);
+  const [statementOpen, setStatementOpen] = useState(false);
+  const [statementCustomer, setStatementCustomer] = useState<BackendCustomer | null>(null);
+  const [statementLoading, setStatementLoading] = useState(false);
+  const [statementTxns, setStatementTxns] = useState<CustomerStatementTxn[]>([]);
+  const [statementOpening, setStatementOpening] = useState(0);
+  const [statementClosing, setStatementClosing] = useState(0);
+  const [agingSummary, setAgingSummary] = useState<Record<string, number> | null>(null);
   const pageSize = 5;
 
   const loadCustomers = async () => {
@@ -88,6 +124,23 @@ function CustomersPage() {
 
   useEffect(() => {
     void loadCustomers();
+    if (!token) return;
+    fetchCrmLeads(token).then(setLeads).catch(() => setLeads([]));
+    fetchCrmOpportunities(token).then(setOpportunities).catch(() => setOpportunities([]));
+    fetchCrmPipeline(token)
+      .then((rows) =>
+        setPipeline(
+          rows.map((r) => ({
+            stage: String(r.stage || "—"),
+            count: Number(r.count || 0),
+            total_amount: Number(r.total_amount || 0),
+          })),
+        ),
+      )
+      .catch(() => setPipeline([]));
+    fetchArAging(token)
+      .then((d) => setAgingSummary(d.summary))
+      .catch(() => setAgingSummary(null));
   }, [token]);
 
   const filtered = useMemo(
@@ -112,11 +165,12 @@ function CustomersPage() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+  const selection = useMasterRowSelection(filtered.map((c) => ({ id: String(c.id) })));
 
   const metrics = useMemo(() => {
     const creditExposure = rows.reduce((sum, row) => sum + Number(row.balance || 0), 0);
     const atRisk = rows.filter((row) => {
-      const health = customerHealth(row.name);
+      const health = customerHealthFromBalances(Number(row.balance || 0), Number(row.credit_limit || 0));
       return health.tone === "warning" || health.tone === "destructive";
     }).length;
 
@@ -134,6 +188,25 @@ function CustomersPage() {
     setDialogOpen(true);
   };
 
+  const openStatement = async (customer: BackendCustomer) => {
+    if (!token) return;
+    setStatementCustomer(customer);
+    setStatementOpen(true);
+    setStatementLoading(true);
+    setStatementTxns([]);
+    try {
+      const data = await fetchCustomerStatement(token, String(customer.id));
+      setStatementOpening(data.opening_balance);
+      setStatementClosing(data.closing_balance);
+      setStatementTxns(data.transactions || []);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not load statement");
+      setStatementTxns([]);
+    } finally {
+      setStatementLoading(false);
+    }
+  };
+
   const openEdit = (customer: BackendCustomer) => {
     setEditing(customer);
     setForm({
@@ -148,21 +221,33 @@ function CustomersPage() {
       credit_limit: String(customer.credit_limit ?? 0),
       payment_terms: customer.payment_terms ?? "Net 30",
       balance: String(customer.balance ?? 0),
+      is_active: customer.is_active !== false,
     });
     setDialogOpen(true);
   };
 
   const saveCustomer = async () => {
     if (!token) return;
-    if (!form.name.trim() || !form.kra_pin.trim()) {
-      toast.error("Customer name and KRA PIN are required");
+    if (!form.name.trim()) {
+      toast.error("Customer name is required");
+      return;
+    }
+    const kra = validateKraPin(form.kra_pin, { required: true });
+    if (!kra.ok) {
+      toast.error(kra.error);
+      return;
+    }
+    const phone = form.contact.trim() ? validateKenyaPhone(form.contact, { required: false }) : { ok: true as const, value: "" };
+    if (!phone.ok) {
+      toast.error(phone.error);
       return;
     }
 
     const payload = {
       name: form.name.trim(),
-      kra_pin: form.kra_pin.trim(),
-      contact: form.contact.trim(),
+      kra_pin: kra.value,
+      tax_id: kra.value,
+      contact: phone.value,
       email: form.email.trim(),
       address: form.address.trim(),
       location: form.location.trim(),
@@ -171,12 +256,18 @@ function CustomersPage() {
       credit_limit: Number(form.credit_limit || 0),
       payment_terms: form.payment_terms.trim(),
       balance: Number(form.balance || 0),
+      is_active: form.is_active,
     };
 
     setSaving(true);
     try {
       if (editing) {
-        const updated = await updateCustomer(token, editing.id, payload);
+        const updated = await updateCustomer(
+          token,
+          editing.id,
+          payload,
+          editing.updated_at ? { ifMatch: editing.updated_at } : undefined,
+        );
         void trackEvent({
           action: "customer_updated",
           entityType: "customer",
@@ -278,6 +369,25 @@ function CustomersPage() {
         ))}
       </div>
 
+      {agingSummary && (
+        <Card className="mb-4">
+          <CardContent className="grid gap-2 p-4 sm:grid-cols-5">
+            {[
+              { label: "Current", key: "current" },
+              { label: "1–30 days", key: "days_30" },
+              { label: "31–60 days", key: "days_60" },
+              { label: "61–90 days", key: "days_90" },
+              { label: "90+ days", key: "days_90_plus" },
+            ].map((b) => (
+              <div key={b.key} className="rounded-lg border border-border/60 p-2 text-center">
+                <div className="text-xs text-muted-foreground">{b.label}</div>
+                <div className="text-sm font-semibold">{KES(Number(agingSummary[b.key] || 0))}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <QuietNote
         scenario="customers"
         contextKey={`${q}-${segment}-${sort}`}
@@ -285,6 +395,113 @@ function CustomersPage() {
         className="mb-4"
       />
 
+      <Tabs defaultValue="customers" className="mb-4">
+        <TabsList>
+          <TabsTrigger value="customers">Customers</TabsTrigger>
+          <TabsTrigger value="leads">Leads</TabsTrigger>
+          <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="leads" className="mt-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-4 flex justify-end">
+                <Button size="sm" onClick={() => setLeadDialogOpen(true)}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Lead
+                </Button>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Contact</TableHead>
+                    <TableHead>Company</TableHead>
+                    <TableHead>Phone</TableHead>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {leads.map((lead) => (
+                    <TableRow key={lead.id}>
+                      <TableCell className="font-medium">{lead.name}</TableCell>
+                      <TableCell>{lead.company}</TableCell>
+                      <TableCell>{lead.phone}</TableCell>
+                      <TableCell>{lead.source}</TableCell>
+                      <TableCell><StatusBadge status={lead.status} /></TableCell>
+                    </TableRow>
+                  ))}
+                  {leads.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                        No leads in CRM yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="pipeline" className="mt-4">
+          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+            {pipeline.map((stage) => (
+              <Card key={stage.stage}>
+                <CardContent className="p-4">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{stage.stage}</div>
+                  <div className="mt-1 text-lg font-bold">{stage.count} deals · {KES(stage.total_amount)}</div>
+                </CardContent>
+              </Card>
+            ))}
+            {pipeline.length === 0 && (
+              <Card className="sm:col-span-3">
+                <CardContent className="py-10 text-center text-sm text-muted-foreground">No open pipeline stages.</CardContent>
+              </Card>
+            )}
+          </div>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-4 flex justify-end">
+                <Button size="sm" onClick={() => setOppDialogOpen(true)}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Opportunity
+                </Button>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Opportunity</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Stage</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead className="text-right">Probability</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {opportunities.map((opp) => (
+                    <TableRow key={opp.id}>
+                      <TableCell className="font-medium">{opp.title}</TableCell>
+                      <TableCell>{opp.customerName}</TableCell>
+                      <TableCell><StatusBadge status={opp.stage} /></TableCell>
+                      <TableCell className="text-right">{KES(opp.amount)}</TableCell>
+                      <TableCell className="text-right">{opp.probability}%</TableCell>
+                    </TableRow>
+                  ))}
+                  {opportunities.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                        No opportunities on file.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="customers" className="mt-4">
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -328,9 +545,24 @@ function CustomersPage() {
             </Select>
           </div>
 
+          <MasterBulkActionsBar
+            token={token}
+            entity="customers"
+            selectedIds={selection.selectedIds}
+            onComplete={loadCustomers}
+            onClearSelection={selection.clear}
+          />
+
           <Table className="mt-4">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={selection.allSelected}
+                    onCheckedChange={() => selection.toggleAll()}
+                    aria-label="Select all customers"
+                  />
+                </TableHead>
                 <TableHead>Customer</TableHead>
                 <TableHead>Segment</TableHead>
                 <TableHead>KRA PIN</TableHead>
@@ -344,7 +576,7 @@ function CustomersPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                     Loading customers...
                   </TableCell>
                 </TableRow>
@@ -352,12 +584,22 @@ function CustomersPage() {
                 const limit = Number(customer.credit_limit || 0);
                 const balance = Number(customer.balance || 0);
                 const utilisation = limit > 0 ? Math.min(100, Math.round((balance / limit) * 100)) : 0;
-                const health = customerHealth(customer.name);
+                const health = customerHealthFromBalances(balance, limit);
 
                 return (
                   <TableRow key={customer.id}>
                     <TableCell>
-                      <div className="font-medium">{customer.name}</div>
+                      <Checkbox
+                        checked={selection.isSelected(String(customer.id))}
+                        onCheckedChange={() => selection.toggle(String(customer.id))}
+                        aria-label={`Select ${customer.name}`}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{customer.name}</span>
+                        {customer.is_active === false && <Badge variant="secondary">Inactive</Badge>}
+                      </div>
                       <div className="text-xs text-muted-foreground">{customer.email || "No email on file"}</div>
                     </TableCell>
                     <TableCell>
@@ -386,6 +628,9 @@ function CustomersPage() {
                     <TableCell className="text-right font-semibold">{KES(balance)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => void openStatement(customer)}>
+                          Statement
+                        </Button>
                         <Button variant="ghost" size="sm" onClick={() => openEdit(customer)}>
                           <Pencil className="mr-2 h-4 w-4" />
                           Edit
@@ -408,7 +653,7 @@ function CustomersPage() {
               })}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                     No customers match your filters.
                   </TableCell>
                 </TableRow>
@@ -419,6 +664,84 @@ function CustomersPage() {
           <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
         </CardContent>
       </Card>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={statementOpen} onOpenChange={setStatementOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Customer statement</DialogTitle>
+            <DialogDescription>
+              {statementCustomer
+                ? `${statementCustomer.name} · KRA ${statementCustomer.kra_pin} · AR ${KES(statementClosing)}`
+                : "Chronological invoices, credit notes and receipts"}
+            </DialogDescription>
+          </DialogHeader>
+          {statementLoading ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">Loading transactions…</p>
+          ) : (
+            <>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-sm">
+                <div className="rounded-lg border p-2">
+                  <div className="text-xs text-muted-foreground">Opening</div>
+                  <div className="font-semibold">{KES(statementOpening)}</div>
+                </div>
+                <div className="rounded-lg border p-2">
+                  <div className="text-xs text-muted-foreground">Movement</div>
+                  <div className="font-semibold">{KES(statementClosing - statementOpening)}</div>
+                </div>
+                <div className="rounded-lg border p-2">
+                  <div className="text-xs text-muted-foreground">Closing</div>
+                  <div className="font-semibold">{KES(statementClosing)}</div>
+                </div>
+              </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead className="text-right">Debit</TableHead>
+                  <TableHead className="text-right">Credit</TableHead>
+                  <TableHead className="text-right">Balance</TableHead>
+                  <TableHead className="text-right">Receipt</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {statementTxns.map((txn, i) => (
+                  <TableRow key={`${txn.ref}-${i}`}>
+                    <TableCell>{fmtDate(txn.txn_date)}</TableCell>
+                    <TableCell className="capitalize">{txn.type.replace("_", " ")}</TableCell>
+                    <TableCell className="font-mono text-xs">{txn.ref}</TableCell>
+                    <TableCell className="text-right">{txn.debit ? KES(txn.debit) : "—"}</TableCell>
+                    <TableCell className="text-right">
+                      {txn.credit ? KES(txn.credit) : txn.credit_applied ? KES(txn.credit_applied) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right font-medium">
+                      {txn.running_balance != null ? KES(txn.running_balance) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {txn.type === "payment" ? (
+                        <ReceiptPdfButton kind="payment" receiptRef={txn.ref} label="PDF" />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {statementTxns.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                      No posted transactions for this customer yet.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -430,8 +753,15 @@ function CustomersPage() {
           </DialogHeader>
           <div className="grid gap-4 py-2 sm:grid-cols-2">
             <Field label="Customer Name" value={form.name} onChange={(value) => setForm((prev) => ({ ...prev, name: value }))} />
-            <Field label="KRA PIN" value={form.kra_pin} onChange={(value) => setForm((prev) => ({ ...prev, kra_pin: value }))} />
-            <Field label="Contact" value={form.contact} onChange={(value) => setForm((prev) => ({ ...prev, contact: value }))} />
+            <KraPinField
+              value={form.kra_pin}
+              onChange={(value) => setForm((prev) => ({ ...prev, kra_pin: value }))}
+            />
+            <KenyaPhoneField
+              label="Phone"
+              value={form.contact}
+              onChange={(value) => setForm((prev) => ({ ...prev, contact: value }))}
+            />
             <Field label="Email" value={form.email} onChange={(value) => setForm((prev) => ({ ...prev, email: value }))} />
             <Field label="Address" value={form.address} onChange={(value) => setForm((prev) => ({ ...prev, address: value }))} />
             <Field label="Location" value={form.location} onChange={(value) => setForm((prev) => ({ ...prev, location: value }))} />
@@ -460,12 +790,14 @@ function CustomersPage() {
               value={form.credit_limit}
               onChange={(value) => setForm((prev) => ({ ...prev, credit_limit: value }))}
             />
-            <Field
-              label="Balance"
-              type="number"
-              value={form.balance}
-              onChange={(value) => setForm((prev) => ({ ...prev, balance: value }))}
-            />
+            <div className="flex items-center gap-2 sm:col-span-2">
+              <Checkbox
+                id="customer-active"
+                checked={form.is_active}
+                onCheckedChange={(v) => setForm((prev) => ({ ...prev, is_active: v === true }))}
+              />
+              <Label htmlFor="customer-active">Active (inactive customers cannot receive new orders)</Label>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
@@ -473,6 +805,101 @@ function CustomersPage() {
             </Button>
             <Button onClick={saveCustomer} disabled={saving}>
               {saving ? "Saving..." : editing ? "Save Changes" : "Create Customer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={leadDialogOpen} onOpenChange={setLeadDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Lead</DialogTitle>
+            <DialogDescription>Add a sales lead to the CRM pipeline.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <Field label="Company name" value={leadForm.company_name} onChange={(v) => setLeadForm((p) => ({ ...p, company_name: v }))} />
+            <Field label="Contact name" value={leadForm.contact_name} onChange={(v) => setLeadForm((p) => ({ ...p, contact_name: v }))} />
+            <Field label="Email" value={leadForm.email} onChange={(v) => setLeadForm((p) => ({ ...p, email: v }))} />
+            <Field label="Phone" value={leadForm.phone} onChange={(v) => setLeadForm((p) => ({ ...p, phone: v }))} />
+            <Field label="Source" value={leadForm.source} onChange={(v) => setLeadForm((p) => ({ ...p, source: v }))} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLeadDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={crmSaving || !leadForm.company_name.trim()}
+              onClick={() => {
+                if (!token) return;
+                setCrmSaving(true);
+                void createCrmLead(token, leadForm)
+                  .then(() => {
+                    toast.success("Lead created");
+                    setLeadDialogOpen(false);
+                    return fetchCrmLeads(token);
+                  })
+                  .then(setLeads)
+                  .catch((err) => toast.error(err instanceof Error ? err.message : "Unable to create lead"))
+                  .finally(() => setCrmSaving(false));
+              }}
+            >
+              {crmSaving ? "Saving…" : "Create Lead"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={oppDialogOpen} onOpenChange={setOppDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Opportunity</DialogTitle>
+            <DialogDescription>Track a deal in the sales pipeline.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <Field label="Opportunity name" value={oppForm.name} onChange={(v) => setOppForm((p) => ({ ...p, name: v }))} />
+            <div className="space-y-1.5">
+              <Label>Customer (optional)</Label>
+              <Select value={oppForm.customer_id || "none"} onValueChange={(v) => setOppForm((p) => ({ ...p, customer_id: v === "none" ? "" : v }))}>
+                <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {rows.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Field label="Amount (KES)" type="number" value={oppForm.amount} onChange={(v) => setOppForm((p) => ({ ...p, amount: v }))} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOppDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={crmSaving || !oppForm.name.trim()}
+              onClick={() => {
+                if (!token) return;
+                setCrmSaving(true);
+                void createCrmOpportunity(token, {
+                  name: oppForm.name,
+                  customer_id: oppForm.customer_id || undefined,
+                  amount: Number(oppForm.amount) || 0,
+                  stage: oppForm.stage,
+                })
+                  .then(() => {
+                    toast.success("Opportunity created");
+                    setOppDialogOpen(false);
+                    return Promise.all([fetchCrmOpportunities(token), fetchCrmPipeline(token)]);
+                  })
+                  .then(([opps, pipe]) => {
+                    setOpportunities(opps);
+                    setPipeline(pipe.map((r) => ({
+                      stage: String(r.stage || "—"),
+                      count: Number(r.count || 0),
+                      total_amount: Number(r.total_amount || 0),
+                    })));
+                  })
+                  .catch((err) => toast.error(err instanceof Error ? err.message : "Unable to create opportunity"))
+                  .finally(() => setCrmSaving(false));
+              }}
+            >
+              {crmSaving ? "Saving…" : "Create Opportunity"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -16,6 +16,11 @@ const poolConfig = process.env.DATABASE_URL
       ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
     };
 
-const pool = new Pool(poolConfig);
+const pool = new Pool({
+  ...poolConfig,
+  max: Number(process.env.DATABASE_POOL_MAX) || 20,
+  idleTimeoutMillis: Number(process.env.DATABASE_IDLE_TIMEOUT_MS) || 30_000,
+  connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS) || 10_000,
+});
 
 module.exports = pool;

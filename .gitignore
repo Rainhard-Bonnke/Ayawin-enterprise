@@ -1,6 +1,7 @@
 # Logs
 logs
 *.log
+backend/backups/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -34,3 +35,7 @@ dist-ssr
 # Environment files
 .env
 backend/.env
+backend/.env.backup-*
+backend/.env.render
+backend/.env.production
+.env.production

@@ -5,6 +5,7 @@ const sales = require('../../src/services/salesService');
 const { buildInvoiceVerificationHash } = require('../../src/services/documentVerificationService');
 
 test('E2E sales flow: SO confirm -> delivery -> invoice -> payment', async () => {
+  process.env.AUTO_INVOICE_ON_DELIVERY = 'false';
   const ctx = await getTestContext();
   const customerId = await getCustomerId(ctx.companyId);
   const itemId = await getItemId(ctx.companyId, 'COKE-500');

@@ -4,19 +4,31 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import {
+  createCreditNote,
   createSalesInvoice,
   downloadInvoicePdf,
+  emailInvoiceToCustomer,
+  fetchCreditNotes,
+  downloadPaymentReceiptPdf,
   downloadReceiptPdf,
   fetchCustomers,
   fetchMasterItems,
+  fetchSalesAnalytics,
   fetchSalesInvoices,
+  fetchWarehouses,
   paySalesInvoice,
+  submitInvoiceEtims,
+  initiateMpesaPayment,
+  fetchIntegrationStatus,
   verifyInvoiceDocument,
+  type IntegrationStatus,
   type BackendCustomer,
   type BackendInvoice,
   type BackendMasterItem,
 } from "@/lib/api";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { subscribeLiveEvents } from "@/hooks/useLiveEvents";
+import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 import { toast } from "sonner";
 import { KES, fmtDate, VAT_RATE } from "@/lib/format";
 import { SearchBar } from "@/components/SearchBar";
@@ -25,7 +37,7 @@ import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { notify, triggerEmailNotification } from "@/lib/notifications";
-import { invoiceRisk } from "@/lib/smartSignals";
+import { invoiceRiskFromStatus } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -34,10 +46,16 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportVerificationCertificatePdf } from "@/lib/pdf";
+import { PermissionGate } from "@/components/PermissionGate";
+import { DetailNav } from "@/components/DetailNav";
+import { humanizeError } from "@/lib/humanizeError";
 
 export const Route = createFileRoute("/_app/invoices")({
   component: InvoicesPage,
-  head: () => ({ meta: [{ title: "Invoicing — Ayawin Enterprise ERP" }] }),
+  validateSearch: (search: Record<string, unknown>) => ({
+    q: typeof search.q === "string" ? search.q : "",
+  }),
+  head: () => ({ meta: [{ title: "Invoicing — Ayawin Stock Solutions ERP" }] }),
 });
 
 type InvoiceLineForm = { item_id: string; quantity: string; unit_price: string };
@@ -53,12 +71,15 @@ const emptyLine = (): InvoiceLineForm => ({ item_id: "", quantity: "1", unit_pri
 
 function InvoicesPage() {
   const { token } = useAuth();
+  const { q: searchQ } = Route.useSearch();
   const [rows, setRows] = useState<BackendInvoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(searchQ || "");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
-  const pageSize = 5;
+  const [listTotal, setListTotal] = useState(0);
+  const [invoiceStats, setInvoiceStats] = useState<Array<{ status: string; total: number }>>([]);
+  const pageSize = 25;
   const [preview, setPreview] = useState<BackendInvoice | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,24 +89,49 @@ function InvoicesPage() {
   const [items, setItems] = useState<BackendMasterItem[]>([]);
   const [form, setForm] = useState({
     customer_id: "",
+    invoice_type: "tax" as "tax" | "proforma",
     invoice_date: today(),
     due_date: dueInDays(30),
     lines: [emptyLine()] as InvoiceLineForm[],
   });
+  const [creditOpen, setCreditOpen] = useState(false);
+  const [creditNotes, setCreditNotes] = useState<Array<Record<string, unknown>>>([]);
+  const [creditForm, setCreditForm] = useState({
+    customer_id: "",
+    invoice_id: "",
+    reason: "",
+    item_id: "",
+    quantity: "1",
+    unit_price: "",
+    warehouse_id: "",
+  });
+  const [mpesaPhone, setMpesaPhone] = useState("");
+  const [integrationBusy, setIntegrationBusy] = useState(false);
+  const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
+
+  useEffect(() => {
+    if (searchQ) setQ(searchQ);
+  }, [searchQ]);
 
   const loadInvoices = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const data = await fetchSalesInvoices(token);
-      setRows(data ?? []);
+      const { rows, total } = await fetchSalesInvoices(token, {
+        page,
+        limit: pageSize,
+        q: q.trim() || undefined,
+      });
+      setRows(rows ?? []);
+      setListTotal(total);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to load invoices");
+      toast.error(humanizeError(err, "Unable to load invoices"));
       setRows([]);
+      setListTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, page, pageSize, q]);
 
   useEffect(() => {
     void loadInvoices();
@@ -93,11 +139,33 @@ function InvoicesPage() {
 
   useEffect(() => {
     if (!token) return;
-    const id = window.setInterval(() => {
-      void loadInvoices();
-    }, 20000);
-    return () => window.clearInterval(id);
-  }, [token, loadInvoices]);
+    void fetchSalesAnalytics(token)
+      .then((data) => {
+        const rows = (data?.invoices_by_status as Array<{ status: string; total: number }>) ?? [];
+        setInvoiceStats(rows);
+      })
+      .catch(() => setInvoiceStats([]));
+    void fetchIntegrationStatus(token)
+      .then(setIntegrations)
+      .catch(() => setIntegrations(null));
+  }, [token, loading]);
+
+  useRealtimeSync(() => void loadInvoices(), { enabled: Boolean(token) });
+
+  useEffect(() => {
+    return subscribeLiveEvents((ev) => {
+      if (ev.type === "invoice.updated" || ev.type === "payment.received") {
+        void loadInvoices();
+      }
+    });
+  }, [loadInvoices]);
+
+  useEffect(() => {
+    if (!token) return;
+    void fetchCreditNotes(token)
+      .then(setCreditNotes)
+      .catch(() => setCreditNotes([]));
+  }, [token, loading]);
 
   useEffect(() => {
     setVerifyHashInput("");
@@ -118,7 +186,7 @@ function InvoicesPage() {
       });
       setCreateOpen(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not load customers or products");
+      toast.error(humanizeError(err, "Could not load customers or products"));
     }
   };
 
@@ -144,9 +212,10 @@ function InvoicesPage() {
         customer_id: String(form.customer_id),
         invoice_date: form.invoice_date,
         due_date: form.due_date,
+        invoice_type: form.invoice_type,
         lines,
       });
-      toast.success("Invoice created and posted");
+      toast.success(form.invoice_type === "proforma" ? "Proforma created (no GL posting)" : "Tax invoice created and posted");
       if (result.gl_warning) toast.warning(result.gl_warning);
       setCreateOpen(false);
       setPage(1);
@@ -161,30 +230,33 @@ function InvoicesPage() {
         context: form,
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not create invoice");
+      toast.error(humanizeError(err, "Could not create invoice"));
     } finally {
       setSaving(false);
     }
   };
 
-  const filtered = rows
-    .filter((i) => i.id.toLowerCase().includes(q.toLowerCase()) || i.customer.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) => {
+  const sorted = useMemo(() => {
+    return [...rows].sort((a, b) => {
       if (sort === "total") return b.total - a.total;
       if (sort === "status") return a.status.localeCompare(b.status);
       return b.date.localeCompare(a.date);
     });
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
-  const totals = useMemo(
-    () => ({
-      sent: rows.filter((i) => i.status === "Sent").reduce((s, i) => s + i.total, 0),
-      paid: rows.filter((i) => i.status === "Paid").reduce((s, i) => s + i.total, 0),
-      overdue: rows.filter((i) => i.status === "Overdue").reduce((s, i) => s + i.total, 0),
+  }, [rows, sort]);
+  const totalPages = Math.max(1, Math.ceil(listTotal / pageSize));
+  const paged = sorted;
+  const totals = useMemo(() => {
+    const sumStatuses = (statuses: string[]) =>
+      invoiceStats
+        .filter((r) => statuses.includes(String(r.status).toLowerCase()))
+        .reduce((s, r) => s + Number(r.total || 0), 0);
+    return {
+      sent: sumStatuses(["posted", "partial"]),
+      paid: sumStatuses(["paid"]),
+      overdue: sumStatuses(["overdue"]),
       excise: rows.reduce((s, i) => s + i.excise, 0),
-    }),
-    [rows],
-  );
+    };
+  }, [invoiceStats, rows]);
 
   const draftPreview = useMemo(() => {
     const subtotal = form.lines.reduce((s, l) => s + Number(l.quantity || 0) * Number(l.unit_price || 0), 0);
@@ -197,14 +269,14 @@ function InvoicesPage() {
       action: "invoice_export_xlsx",
       entityType: "report",
       entityId: "invoices",
-      details: { rows: filtered.length },
+      details: { rows: listTotal },
       scenario: "invoice",
-      context: { q, sort, rows: filtered.length },
+      context: { q, sort, rows: listTotal },
     });
     exportWorkbook("ayawin-enterprise-invoices.xlsx", [
       {
         name: "Invoices",
-        rows: filtered.map((i) => ({
+        rows: sorted.map((i) => ({
           "Invoice #": i.id,
           "ETR / TIMS": i.etr,
           Customer: i.customer,
@@ -231,9 +303,34 @@ function InvoicesPage() {
               <FileDown className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button onClick={() => void openCreate()}>
+            <Button variant="outline" onClick={() => void openCreate()}>
               <Plus className="mr-2 h-4 w-4" />
               New Invoice
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                if (!token) return;
+                const [cust, catalog, whs] = await Promise.all([
+                  fetchCustomers(token),
+                  fetchMasterItems(token),
+                  fetchWarehouses(token),
+                ]);
+                setCustomers(cust);
+                setItems(catalog);
+                setCreditForm({
+                  customer_id: String(cust[0]?.id ?? ""),
+                  invoice_id: "",
+                  reason: "",
+                  item_id: catalog[0]?.id ?? "",
+                  quantity: "1",
+                  unit_price: String(catalog[0]?.standard_cost ?? ""),
+                  warehouse_id: String(whs[0]?.id ?? ""),
+                });
+                setCreditOpen(true);
+              }}
+            >
+              Credit note
             </Button>
           </>
         }
@@ -287,18 +384,19 @@ function InvoicesPage() {
                 <TableHead className="text-right">VAT 16%</TableHead>
                 <TableHead className="text-right">Total</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Receipt</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
                     Loading invoices…
                   </TableCell>
                 </TableRow>
               ) : (
                 paged.map((i) => {
-                  const risk = invoiceRisk(i.customer);
+                  const risk = invoiceRiskFromStatus(i.status);
                   return (
                     <TableRow key={i.id} className="cursor-pointer hover:bg-muted/40" onClick={() => setPreview(i)}>
                       <TableCell className="font-mono text-xs font-medium">{i.id}</TableCell>
@@ -320,30 +418,66 @@ function InvoicesPage() {
                           </div>
                         </div>
                       </TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        {i.status === "Paid" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              if (!token) return;
+                              try {
+                                await downloadReceiptPdf(token, i.id);
+                                notify(`Receipt ${i.id}`, "PDF with QR downloaded");
+                              } catch (err) {
+                                toast.error(err instanceof Error ? err.message : "Receipt PDF failed");
+                              }
+                            }}
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
                     </TableRow>
                   );
                 })
               )}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
                     No invoices yet. Click New Invoice to create one.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination page={page} totalPages={totalPages} totalItems={listTotal} pageSize={pageSize} onPageChange={setPage} />
         </CardContent>
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>New tax invoice</DialogTitle>
-            <DialogDescription>Creates a draft invoice, posts it, and records AR in the ledger.</DialogDescription>
+            <DialogTitle>New invoice</DialogTitle>
+            <DialogDescription>Tax invoices post to GL and AR. Proforma quotes do not affect the ledger.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Invoice type</Label>
+              <Select
+                value={form.invoice_type}
+                onValueChange={(v) => setForm((p) => ({ ...p, invoice_type: v as "tax" | "proforma" }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="tax">Tax invoice (posts to ledger)</SelectItem>
+                  <SelectItem value="proforma">Proforma (no GL posting)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label>Customer</Label>
               <Select value={form.customer_id} onValueChange={(v) => setForm((p) => ({ ...p, customer_id: v }))}>
@@ -486,14 +620,26 @@ function InvoicesPage() {
         <DialogContent className="max-w-3xl">
           {preview && (
             <>
+              <DetailNav
+                backLabel="Back to invoices"
+                onBack={() => setPreview(null)}
+                crumbs={[
+                  { label: "Invoicing", to: "/invoices" },
+                  { label: preview.id },
+                ]}
+              />
               <DialogHeader>
                 <DialogTitle>Tax Invoice — {preview.id}</DialogTitle>
               </DialogHeader>
               <div className="printable rounded-md border border-border bg-white p-6 text-sm text-foreground">
                 <div className="flex items-start justify-between border-b border-border pb-4">
                   <div>
-                    <div className="text-xl font-bold">Ayawin Enterprise</div>
-                    <div className="text-xs text-muted-foreground">Nairobi, Kenya</div>
+                    <img
+                      src="/ayawin-logo.png"
+                      alt="Ayawin Stock Solutions"
+                      className="h-10 w-auto object-contain object-left"
+                    />
+                    <div className="mt-1 text-xs text-muted-foreground">Nairobi, Kenya</div>
                   </div>
                   <div className="text-right">
                     <div className="text-lg font-bold">TAX INVOICE</div>
@@ -650,38 +796,103 @@ function InvoicesPage() {
                 <Button
                   variant="outline"
                   onClick={async () => {
-                    notify(`Invoice ${preview.id} queued for email`, "An export trigger has been recorded.");
-                    void trackEvent({
-                      action: "invoice_email_requested",
-                      entityType: "invoice",
-                      entityId: preview.id,
-                      details: { customer: preview.customer, etr: preview.etr },
-                      scenario: "invoice",
-                      context: { customer: preview.customer, due: preview.due, total: preview.total },
-                    });
-                    await triggerEmailNotification({
-                      recipient: preview.customer,
-                      subject: `Invoice ${preview.id}`,
-                      message: `Please find attached invoice ${preview.id}.`,
-                    });
+                    if (!token) return;
+                    try {
+                      const result = await emailInvoiceToCustomer(token, preview.id);
+                      toast.success(`Invoice emailed to ${result.to} (${result.pdf_bytes ?? 0} byte PDF)`);
+                      void trackEvent({
+                        action: "invoice_email_sent",
+                        entityType: "invoice",
+                        entityId: preview.id,
+                        details: { to: result.to, pdf_bytes: result.pdf_bytes },
+                        scenario: "invoice",
+                      });
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Could not email invoice");
+                    }
                   }}
                 >
                   <Mail className="mr-2 h-4 w-4" />
                   Email to customer
                 </Button>
+                {integrations?.etims.enabled && preview.status !== "Draft" && preview.status !== "Paid" && preview.status !== "Cancelled" && (
+                  <PermissionGate permission="sales.create">
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        if (!token || !preview.internal_id) return;
+                        setIntegrationBusy(true);
+                        try {
+                          const result = await submitInvoiceEtims(token, preview.internal_id);
+                          toast.success(`eTIMS ref: ${String(result.etims_ref || "submitted")}`);
+                          await loadInvoices();
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "eTIMS submit failed");
+                        } finally {
+                          setIntegrationBusy(false);
+                        }
+                      }}
+                      disabled={integrationBusy}
+                    >
+                      Submit eTIMS
+                    </Button>
+                  </PermissionGate>
+                )}
+                {integrations?.mpesa.enabled && preview.status !== "Draft" && preview.status !== "Paid" && preview.status !== "Cancelled" && (
+                  <PermissionGate permission="sales.create">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        className="h-9 w-32"
+                        placeholder="2547…"
+                        value={mpesaPhone}
+                        onChange={(e) => setMpesaPhone(e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        disabled={integrationBusy || !mpesaPhone.trim()}
+                        onClick={async () => {
+                          if (!token) return;
+                          setIntegrationBusy(true);
+                          try {
+                            const result = await initiateMpesaPayment(token, {
+                              phone: mpesaPhone.trim(),
+                              amount: preview.total,
+                              reference: preview.id,
+                            });
+                            toast.success(`STK push sent — ${String(result.checkout_request_id || "pending")}`);
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : "M-Pesa failed");
+                          } finally {
+                            setIntegrationBusy(false);
+                          }
+                        }}
+                      >
+                        M-Pesa STK
+                      </Button>
+                    </div>
+                  </PermissionGate>
+                )}
                 {preview.status !== "Draft" && preview.status !== "Paid" && preview.status !== "Cancelled" && (
+                  <PermissionGate permission="sales.create">
                   <Button
                     variant="outline"
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        await paySalesInvoice(token, preview.id, {
+                        const paid = await paySalesInvoice(token, preview.internal_id || preview.id, {
                           amount: preview.total,
                           payment_date: new Date().toISOString().slice(0, 10),
                           reference_no: preview.etr || undefined,
                           notes: "Paid in full from invoice screen",
                         });
-                        notify(`Payment posted for ${preview.id}`, "Invoice marked as paid");
+                        notify(`Payment posted for ${preview.id}`, `Receipt ${paid.payment_no} — download from Invoices or Customer statement`);
+                        if (paid.payment_no) {
+                          try {
+                            await downloadPaymentReceiptPdf(token, paid.payment_no);
+                          } catch {
+                            /* user can retry from receipt buttons */
+                          }
+                        }
                         await loadInvoices();
                         setPreview(null);
                       } catch (e) {
@@ -691,6 +902,7 @@ function InvoicesPage() {
                   >
                     Mark Paid
                   </Button>
+                  </PermissionGate>
                 )}
                 {preview.status === "Paid" && (
                   <Button
@@ -699,14 +911,14 @@ function InvoicesPage() {
                       if (!token) return;
                       try {
                         await downloadReceiptPdf(token, preview.id);
-                        notify(`Receipt for ${preview.id} downloaded`, "PDF saved");
+                        notify(`Receipt for ${preview.id} downloaded`, "PDF includes QR verification");
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : "Could not generate receipt PDF");
                       }
                     }}
                   >
                     <FileDown className="mr-2 h-4 w-4" />
-                    Download Receipt
+                    Download receipt (QR)
                   </Button>
                 )}
                 <Button onClick={exportInvoices}>
@@ -716,6 +928,136 @@ function InvoicesPage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Card className="mt-4">
+        <CardContent className="p-4">
+          <h3 className="mb-3 text-sm font-semibold">Posted credit notes</h3>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>CN #</TableHead>
+                <TableHead>Customer</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {creditNotes.map((cn) => (
+                <TableRow key={String(cn.id)}>
+                  <TableCell className="font-mono text-xs">{String(cn.credit_note_no)}</TableCell>
+                  <TableCell>{String(cn.customer_name || "")}</TableCell>
+                  <TableCell className="max-w-[200px] truncate">{String(cn.reason || "")}</TableCell>
+                  <TableCell className="text-right">{KES(Number(cn.total_amount || 0))}</TableCell>
+                </TableRow>
+              ))}
+              {creditNotes.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
+                    No credit notes posted yet.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Dialog open={creditOpen} onOpenChange={setCreditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Issue credit note</DialogTitle>
+            <DialogDescription>Reverses revenue and returns stock when a warehouse is selected.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div>
+              <Label>Customer</Label>
+              <Select
+                value={creditForm.customer_id}
+                onValueChange={(v) => setCreditForm((p) => ({ ...p, customer_id: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {customers.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Reason</Label>
+              <Input value={creditForm.reason} onChange={(e) => setCreditForm((p) => ({ ...p, reason: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Product (return)</Label>
+              <Select value={creditForm.item_id} onValueChange={(v) => setCreditForm((p) => ({ ...p, item_id: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {items.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>
+                      {i.item_code} — {i.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label>Qty</Label>
+                <Input
+                  type="number"
+                  value={creditForm.quantity}
+                  onChange={(e) => setCreditForm((p) => ({ ...p, quantity: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Unit price</Label>
+                <Input
+                  value={creditForm.unit_price}
+                  onChange={(e) => setCreditForm((p) => ({ ...p, unit_price: e.target.value }))}
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={async () => {
+                if (!token || !creditForm.customer_id || !creditForm.reason.trim()) {
+                  toast.error("Customer and reason are required");
+                  return;
+                }
+                try {
+                  await createCreditNote(token, {
+                    customer_id: creditForm.customer_id,
+                    reason: creditForm.reason.trim(),
+                    warehouse_id: creditForm.warehouse_id || undefined,
+                    lines: [
+                      {
+                        item_id: creditForm.item_id,
+                        quantity: Number(creditForm.quantity),
+                        unit_price: Number(creditForm.unit_price),
+                        warehouse_id: creditForm.warehouse_id,
+                      },
+                    ],
+                  });
+                  toast.success("Credit note posted");
+                  setCreditOpen(false);
+                  setCreditNotes(await fetchCreditNotes(token));
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Could not post credit note");
+                }
+              }}
+            >
+              Post credit note
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

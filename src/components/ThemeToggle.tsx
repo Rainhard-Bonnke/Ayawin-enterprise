@@ -8,14 +8,13 @@ export function ThemeToggle() {
   return (
     <Button
       type="button"
-      variant="outline"
-      size="sm"
+      variant="ghost"
+      size="icon"
       onClick={toggleTheme}
-      className="gap-2 border-border/70 bg-background/80"
+      className="h-9 w-9 rounded-lg"
       aria-label="Toggle theme"
     >
       {theme === "dark" ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
-      <span className="hidden sm:inline">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
     </Button>
   );
 }

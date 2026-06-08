@@ -1,5 +1,4 @@
 const pool = require('../../src/db');
-const bcrypt = require('bcryptjs');
 const { ensureErpFoundation } = require('../../src/erpBootstrap');
 
 let cachedContext = null;
@@ -54,4 +53,69 @@ async function getItemId(companyId, sku = 'TSK-500') {
   return r.rows[0].id;
 }
 
-module.exports = { getTestContext, getVendorId, getCustomerId, getItemId, pool };
+async function createTestCustomer(companyId, userId, { creditLimit = 500000 } = {}) {
+  const suffix = Date.now().toString(36);
+  const r = await pool.query(
+    `INSERT INTO erp_customers (
+       company_id, customer_code, name, tax_id, credit_limit, is_active, created_by
+     ) VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+     RETURNING id, customer_code, credit_limit`,
+    [companyId, `E2E-${suffix}`, `E2E Customer ${suffix}`, `P${suffix.toUpperCase().slice(0, 9)}`, creditLimit, userId],
+  );
+  return r.rows[0];
+}
+
+async function getDriverId(companyId) {
+  const r = await pool.query(
+    `SELECT id FROM erp_employees
+     WHERE company_id = $1 AND is_active = TRUE AND is_deleted = FALSE
+       AND (job_title ILIKE '%driver%' OR department ILIKE '%logistics%')
+     LIMIT 1`,
+    [companyId],
+  );
+  return r.rows[0]?.id || null;
+}
+
+async function getGlBalance(companyId, accountCode, fiscalPeriodId = null) {
+  const params = [companyId, accountCode];
+  let periodFilter = '';
+  if (fiscalPeriodId) {
+    params.push(fiscalPeriodId);
+    periodFilter = ` AND b.fiscal_period_id = $${params.length}`;
+  }
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(b.period_debit - b.period_credit), 0)::numeric AS balance
+     FROM erp_gl_balances b
+     JOIN erp_chart_of_accounts a ON a.id = b.account_id
+     WHERE b.company_id = $1 AND a.account_code = $2 ${periodFilter}`,
+    params,
+  );
+  return Number(r.rows[0]?.balance || 0);
+}
+
+async function countAuditActions(companyId, entityType, entityId, actions = []) {
+  const params = [companyId, entityType, String(entityId)];
+  let actionFilter = '';
+  if (actions.length) {
+    params.push(actions);
+    actionFilter = ` AND a.action = ANY($${params.length}::text[])`;
+  }
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM erp_audit_log a
+     WHERE a.company_id = $1 AND a.entity_type = $2 AND a.entity_id::text = $3::text ${actionFilter}`,
+    params,
+  );
+  return r.rows[0].n;
+}
+
+module.exports = {
+  getTestContext,
+  getVendorId,
+  getCustomerId,
+  getItemId,
+  createTestCustomer,
+  getDriverId,
+  getGlBalance,
+  countAuditActions,
+  pool,
+};

@@ -21,3 +21,16 @@ test('password hashing', async () => {
   assert.equal(await bcrypt.compare('demo', hash), true);
   assert.equal(await bcrypt.compare('wrong', hash), false);
 });
+
+test('access token includes jti without sign conflict', () => {
+  const tokenService = require('../src/services/tokenService');
+  const token = tokenService.generateAccessToken({
+    id: '00000000-0000-0000-0000-000000000001',
+    company_id: '00000000-0000-0000-0000-000000000002',
+    email: 'test@example.com',
+    permissions: ['foundation.view'],
+  });
+  const payload = tokenService.verifyAccessToken(token);
+  assert.ok(payload.jti);
+  assert.equal(payload.type, 'access');
+});

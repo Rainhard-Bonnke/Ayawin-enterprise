@@ -3,7 +3,48 @@ const pool = require('../../db');
 const { authenticateErp, requirePermission, getClientIp } = require('../../middleware/erpAuth');
 const { logAudit } = require('../../services/auditService');
 const gl = require('../../services/glPostingService');
+const reporting = require('../../services/reportingService');
+const ap = require('../../services/apService');
+const bankRecon = require('../../services/bankReconService');
+const monthEnd = require('../../services/monthEndService');
+const accounting = require('../../services/accountingService');
+const { requireReauth } = require('../../middleware/requireReauth');
+const liveEvents = require('../../services/liveEventsService');
 const { parsePagination } = require('../../lib/queryHelper');
+const { buildVendorPaymentHash } = require('../../services/documentVerificationService');
+const { renderVendorPaymentPdfBuffer } = require('../../services/vendorPaymentPdfService');
+
+const AGING_BUCKET_LABELS = {
+  current: 'Current (0–30)',
+  '1-30': 'Current (0–30)',
+  '31-60': '31–60 days',
+  '61-90': '61–90 days',
+  '61+': '90+ days',
+  '90+': '90+ days',
+};
+
+function aggregateAgingBuckets(rows, amountKey = 'outstanding') {
+  const totals = {};
+  for (const row of rows) {
+    const bucket = row.bucket || 'current';
+    const label = AGING_BUCKET_LABELS[bucket] || bucket;
+    totals[label] = (totals[label] || 0) + Number(row[amountKey] ?? row.total_amount ?? 0);
+  }
+  const order = ['Current (0–30)', '31–60 days', '61–90 days', '90+ days'];
+  return order
+    .filter((bucket) => totals[bucket] != null)
+    .map((bucket) => ({ bucket, amount: Math.round(totals[bucket]) }));
+}
+
+function mergeArApBuckets(arBuckets, apBuckets) {
+  const labels = new Set([...arBuckets.map((b) => b.bucket), ...apBuckets.map((b) => b.bucket)]);
+  const ordered = ['Current (0–30)', '31–60 days', '61–90 days', '90+ days'].filter((l) => labels.has(l));
+  return ordered.map((bucket) => ({
+    bucket,
+    ar: arBuckets.find((b) => b.bucket === bucket)?.amount || 0,
+    ap: apBuckets.find((b) => b.bucket === bucket)?.amount || 0,
+  }));
+}
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -37,26 +78,32 @@ router.get('/fiscal-periods', requirePermission('finance.view'), async (req, res
   return res.json(result.rows);
 });
 
-router.post('/fiscal-periods/:id/close', requirePermission('finance.approve'), async (req, res) => {
-  const result = await pool.query(
-    `UPDATE erp_fiscal_periods
-     SET status = 'closed', closed_at = NOW(), closed_by = $3, updated_at = NOW()
-     WHERE id = $1 AND company_id = $2 AND status = 'open'
-     RETURNING *`,
-    [req.params.id, req.user.company_id, req.user.id],
-  );
-  if (!result.rowCount) return res.status(400).json({ error: 'Period not found or not open' });
-  await logAudit({
-    companyId: req.user.company_id,
-    userId: req.user.id,
-    entityType: 'erp_fiscal_periods',
-    entityId: req.params.id,
-    action: 'close',
-    newValues: result.rows[0],
-    ipAddress: getClientIp(req),
-    userAgent: req.headers['user-agent'],
-  });
-  return res.json(result.rows[0]);
+router.post('/fiscal-periods/:id/close', requirePermission('finance.approve'), requireReauth(), async (req, res) => {
+  try {
+    const result = await monthEnd.executeMonthEnd({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      periodId: req.params.id,
+      force: Boolean(req.body?.force),
+    });
+    await logAudit({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      entityType: 'erp_fiscal_periods',
+      entityId: req.params.id,
+      action: 'close',
+      newValues: result.period,
+      ipAddress: getClientIp(req),
+      userAgent: req.headers['user-agent'],
+    });
+    liveEvents.publish(req.user.company_id, 'finance.period_closed', { period_id: req.params.id });
+    return res.json(result.period);
+  } catch (err) {
+    if (err.code === 'MONTH_END_BLOCKED') {
+      return res.status(409).json({ error: err.message, details: err.details });
+    }
+    return res.status(400).json({ error: err.message });
+  }
 });
 
 router.get('/journals', requirePermission('finance.view'), async (req, res) => {
@@ -157,52 +204,82 @@ router.post('/journals/:id/post', requirePermission('finance.approve'), async (r
   }
 });
 
+router.get('/coa/kenya-status', requirePermission('finance.view'), async (req, res) => {
+  const status = await accounting.getKenyaCoaStatus(req.user.company_id);
+  return res.json(status);
+});
+
 router.get('/reports/trial-balance', requirePermission('finance.view'), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
   if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
-  const rows = await gl.getTrialBalance(req.user.company_id, periodId);
-  const totals = rows.reduce(
-    (acc, r) => ({
-      period_debit: acc.period_debit + Number(r.period_debit),
-      period_credit: acc.period_credit + Number(r.period_credit),
-    }),
-    { period_debit: 0, period_credit: 0 },
-  );
-  return res.json({ lines: rows, totals });
+  const report = await accounting.getTrialBalanceReport(req.user.company_id, periodId);
+  return res.json(report);
 });
 
 router.get('/reports/balance-sheet', requirePermission('finance.view'), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
   if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
-  const result = await pool.query(
-    `SELECT a.account_type, a.account_code, a.account_name,
-            b.closing_debit - b.closing_credit AS balance
-     FROM erp_gl_balances b
-     JOIN erp_chart_of_accounts a ON a.id = b.account_id
-     WHERE b.company_id = $1 AND b.fiscal_period_id = $2
-       AND a.account_type IN ('asset', 'liability', 'equity')
-     ORDER BY a.account_code`,
-    [req.user.company_id, periodId],
-  );
-  return res.json(result.rows);
+  const report = await accounting.getBalanceSheetReport(req.user.company_id, periodId);
+  return res.json(report);
 });
 
 router.get('/reports/profit-loss', requirePermission('finance.view'), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
   if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
-  const result = await pool.query(
-    `SELECT a.account_type, a.account_code, a.account_name,
-            b.period_credit - b.period_debit AS amount
-     FROM erp_gl_balances b
-     JOIN erp_chart_of_accounts a ON a.id = b.account_id
-     WHERE b.company_id = $1 AND b.fiscal_period_id = $2
-       AND a.account_type IN ('income', 'expense')
-     ORDER BY a.account_code`,
-    [req.user.company_id, periodId],
+  const report = await accounting.getProfitLossReport(req.user.company_id, periodId);
+  return res.json(report);
+});
+
+router.get('/reports/vat-return', requirePermission('finance.view'), async (req, res) => {
+  const report = await accounting.getVatReport(
+    req.user.company_id,
+    req.query.from_date,
+    req.query.to_date,
   );
-  const income = result.rows.filter((r) => r.account_type === 'income').reduce((s, r) => s + Number(r.amount), 0);
-  const expense = result.rows.filter((r) => r.account_type === 'expense').reduce((s, r) => s + Number(r.amount), 0);
-  return res.json({ lines: result.rows, net_profit: income - expense });
+  return res.json(report);
+});
+
+router.get('/reports/excise-return', requirePermission('finance.view'), async (req, res) => {
+  const report = await accounting.getExciseReport(
+    req.user.company_id,
+    req.query.from_date,
+    req.query.to_date,
+  );
+  return res.json(report);
+});
+
+router.get('/reports/multi-period', requirePermission('finance.view'), async (req, res) => {
+  const periodIds = typeof req.query.period_ids === 'string'
+    ? req.query.period_ids.split(',').filter(Boolean)
+    : undefined;
+  const report = await accounting.getMultiPeriodReport(req.user.company_id, {
+    periodIds,
+    fiscalYearId: req.query.fiscal_year_id,
+  });
+  return res.json(report);
+});
+
+router.get('/reports/aging-summary', requirePermission('finance.view'), async (req, res) => {
+  try {
+    const [arData, apData] = await Promise.all([
+      reporting.runStandardReport(req.user.company_id, 'ar_aging'),
+      reporting.runStandardReport(req.user.company_id, 'ap_aging'),
+    ]);
+    const arBuckets = aggregateAgingBuckets(arData.rows, 'outstanding');
+    const apBuckets = aggregateAgingBuckets(apData.rows, 'total_amount');
+    return res.json({ buckets: mergeArApBuckets(arBuckets, apBuckets) });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/reports/cash-flow-forecast', requirePermission('finance.view'), async (req, res) => {
+  try {
+    const data = await reporting.runStandardReport(req.user.company_id, 'cash_flow_forecast');
+    return res.json({ weeks: data.rows });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 });
 
 router.get('/dimensions', requirePermission('finance.view'), async (req, res) => {
@@ -212,6 +289,202 @@ router.get('/dimensions', requirePermission('finance.view'), async (req, res) =>
     [req.user.company_id],
   );
   return res.json(result.rows);
+});
+
+router.get('/vendor-bills', requirePermission('finance.view'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT vb.*, v.name AS vendor_name, po.po_number, g.grn_number
+     FROM erp_vendor_invoices vb
+     JOIN erp_vendors v ON v.id = vb.vendor_id
+     LEFT JOIN erp_purchase_orders po ON po.id = vb.purchase_order_id
+     LEFT JOIN erp_goods_receipts g ON g.id = vb.goods_receipt_id
+     WHERE vb.company_id = $1 AND vb.is_deleted = FALSE
+     ORDER BY vb.bill_date DESC`,
+    [req.user.company_id],
+  );
+  return res.json(result.rows);
+});
+
+router.get('/vendor-bills/:id', requirePermission('finance.view'), async (req, res) => {
+  const bill = await pool.query(
+    `SELECT vb.*, v.name AS vendor_name, po.po_number, g.grn_number
+     FROM erp_vendor_invoices vb
+     JOIN erp_vendors v ON v.id = vb.vendor_id
+     LEFT JOIN erp_purchase_orders po ON po.id = vb.purchase_order_id
+     LEFT JOIN erp_goods_receipts g ON g.id = vb.goods_receipt_id
+     WHERE vb.id = $1 AND vb.company_id = $2`,
+    [req.params.id, req.user.company_id],
+  );
+  if (!bill.rowCount) return res.status(404).json({ error: 'Not found' });
+  const lines = await pool.query(
+    `SELECT vil.*, i.item_code, i.name AS item_name
+     FROM erp_vendor_invoice_lines vil
+     JOIN erp_items i ON i.id = vil.item_id
+     WHERE vil.invoice_id = $1 ORDER BY vil.line_no`,
+    [req.params.id],
+  );
+  return res.json({ ...bill.rows[0], lines: lines.rows });
+});
+
+router.post('/vendor-bills/from-grn', requirePermission('finance.create'), async (req, res) => {
+  const { goods_receipt_id, vendor_ref, bill_date, due_date } = req.body || {};
+  if (!goods_receipt_id) return res.status(400).json({ error: 'goods_receipt_id required' });
+  try {
+    const bill = await ap.createVendorBillFromGrn({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      goodsReceiptId: goods_receipt_id,
+      vendorRef: vendor_ref,
+      billDate: bill_date,
+      dueDate: due_date,
+    });
+    return res.status(201).json(bill);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/vendor-bills/:id/post', requirePermission('finance.approve'), async (req, res) => {
+  try {
+    const bill = await ap.postVendorBill({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      billId: req.params.id,
+    });
+    return res.json(bill);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/vendor-bills/:id/pay', requirePermission('finance.create'), async (req, res) => {
+  const amount = Number(req.body?.amount || 0);
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'amount required' });
+  try {
+    const result = await ap.recordVendorPayment({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      invoiceId: req.params.id,
+      paymentDate: req.body?.payment_date,
+      amount,
+      referenceNo: req.body?.reference_no,
+      paymentMethod: req.body?.payment_method,
+    });
+    return res.status(201).json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/month-end/open-period', requirePermission('finance.view'), async (req, res) => {
+  const period = await monthEnd.getOpenPeriod(req.user.company_id);
+  return res.json(period || null);
+});
+
+router.get('/month-end/:periodId/preview', requirePermission('finance.view'), async (req, res) => {
+  try {
+    const preview = await monthEnd.previewMonthEnd(req.user.company_id, req.params.periodId);
+    return res.json(preview);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/month-end/:periodId/close', requirePermission('finance.approve'), requireReauth(), async (req, res) => {
+  try {
+    const result = await monthEnd.executeMonthEnd({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      periodId: req.params.periodId,
+      force: Boolean(req.body?.force),
+    });
+    liveEvents.publish(req.user.company_id, 'finance.period_closed', { period_id: req.params.periodId });
+    return res.json(result);
+  } catch (err) {
+    if (err.code === 'MONTH_END_BLOCKED') {
+      return res.status(409).json({ error: err.message, details: err.details });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/bank-accounts', requirePermission('finance.view'), async (req, res) => {
+  const rows = await bankRecon.listBankAccounts(req.user.company_id);
+  return res.json(rows);
+});
+
+router.get('/bank-recon/unmatched', requirePermission('finance.view'), async (req, res) => {
+  const bankAccountId = req.query.bank_account_id;
+  if (!bankAccountId) return res.status(400).json({ error: 'bank_account_id required' });
+  const data = await bankRecon.getUnmatched(req.user.company_id, bankAccountId);
+  const suggestions = await bankRecon.suggestMatches(req.user.company_id, bankAccountId);
+  return res.json({ ...data, suggestions });
+});
+
+router.post('/bank-recon/import', requirePermission('finance.create'), async (req, res) => {
+  try {
+    const result = await bankRecon.importStatementLines({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      bankAccountId: req.body.bank_account_id,
+      lines: req.body.lines,
+    });
+    return res.status(201).json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/bank-recon/match', requirePermission('finance.approve'), async (req, res) => {
+  try {
+    const row = await bankRecon.matchStatementLine({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      statementLineId: req.body.statement_line_id,
+      receiptId: req.body.receipt_id,
+      journalId: req.body.journal_id,
+    });
+    return res.json(row);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/vendor-payments/:paymentNo/pdf', requirePermission('finance.view'), async (req, res) => {
+  const paymentNo = String(req.params.paymentNo || '').trim();
+  try {
+    const buffer = await renderVendorPaymentPdfBuffer({
+      companyId: req.user.company_id,
+      paymentNo,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="vendor-payment-${paymentNo}.pdf"`);
+    return res.send(buffer);
+  } catch (err) {
+    return res.status(err.message === 'Vendor payment not found' ? 404 : 500).json({ error: err.message });
+  }
+});
+
+router.get('/vendor-payments/:paymentNo/verify', requirePermission('finance.view'), async (req, res) => {
+  const paymentNo = String(req.params.paymentNo || '').trim();
+  const provided = String(req.query?.hash || '').trim();
+  const result = await pool.query(
+    `SELECT p.*, v.name AS vendor_name
+     FROM erp_vendor_payments p
+     JOIN erp_vendors v ON v.id = p.vendor_id
+     WHERE p.company_id = $1 AND p.payment_no = $2 AND p.is_deleted = FALSE`,
+    [req.user.company_id, paymentNo],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Vendor payment not found' });
+  const payment = result.rows[0];
+  const expected = buildVendorPaymentHash(payment);
+  return res.json({
+    payment_no: payment.payment_no,
+    vendor_name: payment.vendor_name,
+    amount: payment.amount,
+    verification_hash: expected,
+    valid: provided ? provided === expected : undefined,
+  });
 });
 
 module.exports = router;

@@ -9,12 +9,19 @@ import {
   v1Me,
   isV1Enabled,
   isApiSessionToken,
+  isAccessTokenExpired,
+  refreshAccessToken,
 } from "./api-v1";
+import { broadcastLogout, subscribeLogout } from "./sessionSync";
 
 type AuthContextValue = {
   user: User | null;
   token: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (
+    email: string,
+    password: string,
+    options?: { rememberMe?: boolean; mfaToken?: string },
+  ) => Promise<void>;
   logout: () => void;
   loading: boolean;
 };
@@ -36,7 +43,11 @@ function parseJwt(token: string): User | null {
         .map((c) => `%${("00" + c.charCodeAt(0).toString(16)).slice(-2)}`)
         .join(""),
     );
-    const parsed = JSON.parse(decoded);
+    const parsed = JSON.parse(decoded) as { exp?: number; id?: string; sub?: string };
+
+    if (parsed.exp && parsed.exp * 1000 < Date.now()) {
+      return null;
+    }
 
     return {
       id: parsed.id ?? parsed.sub,
@@ -78,40 +89,66 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      if (isApiSessionToken(storedToken) && isV1Enabled()) {
-        try {
-          const me = await v1Me(storedToken);
-          const access = getStoredTokens().access || storedToken;
-          localStorage.setItem(STORAGE_KEY, access);
-          setToken(access);
-          setUser(me);
-          setLoading(false);
-          return;
-        } catch {
-          clearTokens();
-          localStorage.removeItem(STORAGE_KEY);
-          setLoading(false);
-          return;
-        }
+      let access = getStoredTokens().access || storedToken;
+
+      if (isApiSessionToken(access) && isV1Enabled() && isAccessTokenExpired(access)) {
+        const refreshed = await refreshAccessToken();
+        if (refreshed) access = refreshed;
       }
 
-      const parsed = parseJwt(storedToken);
+      const parsed = parseJwt(access);
+
       if (parsed) {
-        setToken(storedToken);
+        localStorage.setItem(STORAGE_KEY, access);
+        setToken(access);
         setUser(parsed);
-      } else {
-        clearTokens();
-        localStorage.removeItem(STORAGE_KEY);
+        setLoading(false);
+
+        if (isApiSessionToken(access) && isV1Enabled()) {
+          void v1Me(access)
+            .then((me) => setUser(me))
+            .catch(() => {
+              clearTokens();
+              localStorage.removeItem(STORAGE_KEY);
+              setToken(null);
+              setUser(null);
+            });
+        }
+        return;
       }
+
+      clearTokens();
+      localStorage.removeItem(STORAGE_KEY);
       setLoading(false);
     }
 
     void restoreSession();
-    return unsubscribe;
+
+    const unsubLogout = subscribeLogout(() => {
+      clearTokens();
+      localStorage.removeItem(STORAGE_KEY);
+      setToken(null);
+      setUser(null);
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      unsubLogout();
+    };
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const { token: newToken, user: currentUser } = await loginRequest(email, password);
+  const login = async (
+    email: string,
+    password: string,
+    options?: { rememberMe?: boolean; mfaToken?: string },
+  ) => {
+    const { token: newToken, user: currentUser } = await loginRequest(email, password, {
+      rememberMe: options?.rememberMe,
+      mfaToken: options?.mfaToken,
+    });
     localStorage.setItem(STORAGE_KEY, newToken);
     setToken(newToken);
     setUser(currentUser);
@@ -125,6 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         /* ignore */
       }
     }
+    broadcastLogout();
     clearTokens();
     localStorage.removeItem(STORAGE_KEY);
     setToken(null);

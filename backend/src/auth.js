@@ -28,8 +28,10 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || ADMIN_EMAIL.split('@')[0];
 const ADMIN_FULL_NAME = process.env.ADMIN_FULL_NAME || 'System Administrator';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
+const { BCRYPT_ROUNDS } = require('./constants');
+
 async function hashPassword(password) {
-  return bcrypt.hash(password, 10);
+  return bcrypt.hash(password, BCRYPT_ROUNDS);
 }
 
 const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.NODE_ENV !== 'production');

@@ -1,4 +1,5 @@
 import type { User } from "./api";
+import { canAccessPathWithPermissions } from "./permissions";
 
 export type RoleName =
   | "Admin"
@@ -12,10 +13,12 @@ export type RoleName =
 
 const pathAccess: Record<string, RoleName[]> = {
   "/": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager", "Sales Rep", "Warehouse", "Driver"],
+  "/pos": ["Admin", "Manager", "Store Manager", "Sales Rep"],
   "/sales": ["Admin", "Manager", "Sales Rep"],
   "/customers": ["Admin", "Manager", "Sales Rep", "Accountant"],
   "/invoices": ["Admin", "Manager", "Accountant", "Sales Rep"],
   "/accounting": ["Admin", "Manager", "Accountant"],
+  "/accounts-payable": ["Admin", "Manager", "Accountant"],
   "/inventory": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/procurement": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/delivery": ["Admin", "Manager", "Driver", "Warehouse"],
@@ -56,8 +59,13 @@ export function normalizeRole(role?: string | null): RoleName {
   return "Admin";
 }
 
-export function canAccessPath(user: Pick<User, "role"> | null | undefined, path: string) {
+export function canAccessPath(user: Pick<User, "role" | "permissions"> | null | undefined, path: string) {
   if (!user) return false;
+  const perms = user.permissions ?? [];
+  if (perms.length > 0) {
+    return canAccessPathWithPermissions(user, path) === true;
+  }
+
   const role = normalizeRole(user.role);
   const matchedPath =
     Object.keys(pathAccess)

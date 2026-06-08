@@ -1,5 +1,5 @@
+const http = require('http');
 const express = require('express');
-const cors = require('cors');
 const dotenv = require('dotenv');
 const swaggerUi = require('swagger-ui-express');
 const pool = require('./db');
@@ -9,16 +9,25 @@ const { ensureErpFoundation, getErpStatus } = require('./erpBootstrap');
 const { getMigrationStatus } = require('./migrate');
 const { generateInsight } = require('./intelligence');
 const { applySecurity } = require('./middleware/security');
+const {
+  requireInternalApiKey,
+  requireMpesaCallbackSecret,
+  blockLegacyApi,
+  assertProductionSecrets,
+} = require('./middleware/guards');
 const v1Routes = require('./routes/v1');
 const openapi = require('./openapi');
+const log = require('./lib/logger');
 
 dotenv.config();
+assertProductionSecrets();
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 applySecurity(app);
+
+app.use(blockLegacyApi);
 
 app.use('/api/v1', v1Routes);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapi));
@@ -28,17 +37,28 @@ const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.N
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.post('/api/integrations/mpesa/callback', requireMpesaCallbackSecret, async (req, res) => {
+  try {
+    const integration = require('./services/integrationService');
+    const result = await integration.handleMpesaCallback({ payload: req.body });
+    return res.json(result);
+  } catch (err) {
+    log.error('mpesa_callback_failed', { err });
+    return res.status(500).json({ error: 'Callback processing failed' });
+  }
+});
+
 app.get('/health/db', async (req, res) => {
   try {
     await pool.query('SELECT 1');
     res.json({ status: 'ok' });
   } catch (err) {
-    console.error(err);
+    log.error('health_db_failed', { err });
     res.status(503).json({ status: 'error', error: 'Database unavailable' });
   }
 });
 
-app.post('/api/notifications/email', (req, res) => {
+app.post('/api/notifications/email', requireInternalApiKey, (req, res) => {
   const recipient = typeof req.body?.recipient === 'string' ? req.body.recipient.trim() : '';
   const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
@@ -47,11 +67,11 @@ app.post('/api/notifications/email', (req, res) => {
     return res.status(400).json({ error: 'recipient, subject and message are required' });
   }
 
-  console.log(`[email-trigger] to=${recipient} subject=${subject}`);
+  log.info('email_trigger', { to: recipient, subject });
   return res.json({ ok: true });
 });
 
-app.get('/api/system/bootstrap', async (req, res) => {
+app.get('/api/system/bootstrap', requireInternalApiKey, async (req, res) => {
   try {
     const status = await getSchemaStatus();
     const erp = await getErpStatus();
@@ -63,7 +83,7 @@ app.get('/api/system/bootstrap', async (req, res) => {
   }
 });
 
-app.post('/api/system/bootstrap', async (req, res) => {
+app.post('/api/system/bootstrap', requireInternalApiKey, async (req, res) => {
   try {
     const result = await ensureBootstrap();
     const erpResult = await ensureErpFoundation();
@@ -77,7 +97,7 @@ app.post('/api/system/bootstrap', async (req, res) => {
   }
 });
 
-app.post('/api/intelligence/insight', async (req, res) => {
+app.post('/api/intelligence/insight', requireInternalApiKey, async (req, res) => {
   const scenario = typeof req.body?.scenario === 'string' ? req.body.scenario : 'dashboard';
   const context = req.body?.context ?? {};
 
@@ -1262,7 +1282,28 @@ app.patch('/api/users/:id', auth.authenticateToken, auth.authorizeRoles('Admin')
   }
 });
 
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  log.error('unhandled_request_error', { err, path: req.path, method: req.method });
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 const port = process.env.PORT || 4000;
+let server;
+
+function shutdown() {
+  if (!server) {
+    process.exit(0);
+    return;
+  }
+  server.close(() => {
+    pool.end().catch(() => {}).finally(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(1), 8000).unref();
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 async function start() {
   try {
@@ -1271,11 +1312,26 @@ async function start() {
       await auth.ensureDefaultAdmin();
       await ensureErpFoundation();
     } catch (seedErr) {
-      console.warn('Running without database seed. Demo sign-in will still work.', seedErr.message);
+      log.warn('bootstrap_seed_skipped', { err: seedErr });
     }
-    app.listen(port, '0.0.0.0', () => console.log(`Server listening on ${port}`));
+    const { attachWebSocketServer } = require('./wsServer');
+    server = http.createServer(app);
+    attachWebSocketServer(server);
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        log.error('port_in_use', { port });
+        process.exit(1);
+      }
+      log.error('server_error', { err });
+      process.exit(1);
+    });
+    server.listen(port, '0.0.0.0', () => {
+      log.info('server_listening', { port, ws: true });
+      const { scheduleOverdueSync } = require('./services/overdueService');
+      scheduleOverdueSync();
+    });
   } catch (err) {
-    console.error('Failed to start server', err);
+    log.error('server_start_failed', { err });
     process.exit(1);
   }
 }

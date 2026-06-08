@@ -2,9 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { rowsToCsv, kpiStatus } = require('../src/services/reportingService');
 
-test('rowsToCsv produces header and row', () => {
+test('rowsToCsv produces header and row with BOM', () => {
   const csv = rowsToCsv([{ a: 1, b: 'hello' }, { a: 2, b: 'world' }]);
-  assert.match(csv, /^a,b/);
+  assert.equal(csv.charCodeAt(0), 0xfeff);
+  assert.match(csv, /a,b/);
   assert.match(csv, /hello/);
 });
 

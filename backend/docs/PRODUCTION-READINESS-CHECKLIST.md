@@ -1,6 +1,8 @@
 # Production Readiness Checklist
 
-Last updated: 2026-05-28
+Last updated: 2026-05-30
+
+For the full phase-by-phase audit (Phases 1–8) with PASS/PARTIAL/FAIL per checklist line, see [`docs/AUDIT-STATUS.md`](../../docs/AUDIT-STATUS.md).
 
 This checklist tracks production readiness for the ERP modules and platform services.
 
@@ -55,7 +57,7 @@ Status legend:
 - Mock employee fallback removed in HR screen: PASS
 - Payroll calculations visible in UI: PARTIAL (UI-level calculations)
 - Payroll posting + statutory filing workflows end-to-end: PARTIAL
-- Payslip generation as immutable legal docs: FAIL
+- Payslip generation as immutable legal docs: PARTIAL (server PDF; legal review on operator)
 
 ## 6) Reports & Analytics
 
@@ -73,7 +75,8 @@ Status legend:
 - Observability (metrics, traces, alert routing): PARTIAL
 - SLO/SLA definitions and incident response playbook: FAIL
 - CI quality gates (lint/test/e2e/blocking): PARTIAL
-- Load/performance test evidence: FAIL
+- Load/performance test evidence: PARTIAL (`npm run benchmark:load`)
+- Automated production gate (`npm run production:gate`): PASS
 
 ## 8) Testing Coverage
 

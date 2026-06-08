@@ -4,16 +4,35 @@ const pool = require('../../db');
 const tokenService = require('../../services/tokenService');
 const userService = require('../../services/userService');
 const mfaService = require('../../services/mfaService');
+const passwordResetService = require('../../services/passwordResetService');
 const { logAudit } = require('../../services/auditService');
+const tokenBlacklist = require('../../services/tokenBlacklistService');
+const { cacheDel } = require('../../lib/redis');
 const { authenticateErp, getClientIp } = require('../../middleware/erpAuth');
+const { BCRYPT_ROUNDS, REFRESH_DAYS_REMEMBER } = require('../../constants');
+const { validateEmail } = require('../../lib/validators');
 
 const router = express.Router();
 
 const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.NODE_ENV !== 'production');
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS) || 5;
 
+async function clearExpiredLock(user) {
+  if (user.status === 'locked' && user.locked_until && new Date(user.locked_until) <= new Date()) {
+    await pool.query(
+      `UPDATE erp_users
+       SET status = 'active', failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
+       WHERE id = $1`,
+      [user.id],
+    );
+    user.status = 'active';
+    user.locked_until = null;
+    user.failed_login_attempts = 0;
+  }
+}
+
 async function setUserPassword(userId, password) {
-  const hash = await bcrypt.hash(password, 10);
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   await pool.query(
     `UPDATE erp_users SET password_hash = $1, password_changed_at = NOW(), updated_at = NOW()
      WHERE id = $2`,
@@ -26,6 +45,7 @@ router.post('/login', async (req, res) => {
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
   const mfaToken = typeof req.body?.mfa_token === 'string' ? req.body.mfa_token.trim() : '';
   const companyCode = typeof req.body?.company_code === 'string' ? req.body.company_code.trim() : null;
+  const rememberMe = Boolean(req.body?.remember_me);
 
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });
@@ -47,14 +67,21 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    await clearExpiredLock(user);
     if (user.status === 'locked' && user.locked_until && new Date(user.locked_until) > new Date()) {
-      return res.status(403).json({ error: 'Account is temporarily locked' });
+      return res.status(403).json({ error: 'Account is temporarily locked. Try again later.' });
+    }
+    if (user.status === 'pending') {
+      return res.status(403).json({ error: 'Accept your invite email and set a password before signing in.' });
+    }
+    if (user.status === 'inactive') {
+      return res.status(403).json({ error: 'Account is not active' });
     }
 
     if (!user.password_hash) {
       if (IS_DEMO_MODE && password === 'demo') {
         await setUserPassword(user.id, 'demo');
-        user.password_hash = await bcrypt.hash('demo', 10);
+        user.password_hash = await bcrypt.hash('demo', BCRYPT_ROUNDS);
       } else {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
@@ -62,6 +89,7 @@ router.post('/login', async (req, res) => {
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
+      const ip = getClientIp(req);
       const attempts = (user.failed_login_attempts || 0) + 1;
       const lock = attempts >= MAX_FAILED_LOGINS;
       await pool.query(
@@ -73,6 +101,16 @@ router.post('/login', async (req, res) => {
          WHERE id = $3`,
         [attempts, lock, user.id],
       );
+      await logAudit({
+        companyId: user.company_id,
+        userId: user.id,
+        entityType: 'erp_users',
+        entityId: user.id,
+        action: 'login_failed',
+        newValues: { email, attempts, account_locked: lock },
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'],
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -93,6 +131,7 @@ router.post('/login', async (req, res) => {
       token: refreshToken,
       ipAddress: ip,
       deviceInfo: req.headers['user-agent'] || null,
+      refreshDays: rememberMe ? REFRESH_DAYS_REMEMBER : undefined,
     });
 
     const accessToken = tokenService.generateAccessToken(user);
@@ -126,6 +165,35 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(503).json({ error: 'Authentication service unavailable' });
+  }
+});
+
+router.post('/forgot-password', async (req, res) => {
+  const emailCheck = validateEmail(req.body?.email, { required: true });
+  if (!emailCheck.ok) {
+    return res.status(400).json({ error: emailCheck.error });
+  }
+  try {
+    const result = await passwordResetService.requestPasswordReset(emailCheck.value);
+    return res.json({
+      ok: true,
+      message: 'If an account exists for this email, a reset link has been sent.',
+      dev_token: result.dev_token,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Unable to process password reset request' });
+  }
+});
+
+router.post('/reset-password', async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  try {
+    await passwordResetService.resetPasswordWithToken(token, password);
+    return res.json({ ok: true, message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
 });
 
@@ -165,10 +233,29 @@ router.post('/refresh', async (req, res) => {
 });
 
 router.post('/logout', authenticateErp, async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const accessToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (accessToken && !accessToken.startsWith('demo:')) {
+    try {
+      const payload = tokenService.verifyAccessToken(accessToken);
+      const jti = payload.jti || payload.jwtid;
+      const exp = payload.exp ? new Date(payload.exp * 1000) : new Date(Date.now() + 900000);
+      await tokenBlacklist.revokeAccessToken({
+        jti,
+        userId: req.user.id,
+        companyId: req.user.company_id,
+        expiresAt: exp,
+      });
+    } catch {
+      /* token may already be expired */
+    }
+  }
+
   const refreshToken = typeof req.body?.refresh_token === 'string' ? req.body.refresh_token : '';
   if (refreshToken) {
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken));
   }
+  await cacheDel(`erp:user:${req.user.id}`);
   await logAudit({
     companyId: req.user.company_id,
     userId: req.user.id,
@@ -179,6 +266,42 @@ router.post('/logout', authenticateErp, async (req, res) => {
     userAgent: req.headers['user-agent'],
   });
   return res.json({ ok: true });
+});
+
+router.post('/change-password', authenticateErp, async (req, res) => {
+  const current = typeof req.body?.current_password === 'string' ? req.body.current_password : '';
+  const next = typeof req.body?.new_password === 'string' ? req.body.new_password : '';
+  if (!current || !next) {
+    return res.status(400).json({ error: 'current_password and new_password are required' });
+  }
+  if (next.length < 12) {
+    return res.status(400).json({ error: 'New password must be at least 12 characters' });
+  }
+  if (next === 'demo') {
+    return res.status(400).json({ error: 'Password "demo" is not allowed' });
+  }
+  try {
+    const row = await pool.query(
+      'SELECT password_hash FROM erp_users WHERE id = $1 AND is_deleted = FALSE',
+      [req.user.id],
+    );
+    if (!row.rowCount) return res.status(404).json({ error: 'User not found' });
+    const valid = await bcrypt.compare(current, row.rows[0].password_hash);
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    await setUserPassword(req.user.id, next);
+    await logAudit({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      entityType: 'erp_users',
+      entityId: req.user.id,
+      action: 'password_changed',
+      ipAddress: getClientIp(req),
+      userAgent: req.headers['user-agent'],
+    });
+    return res.json({ ok: true, message: 'Password updated successfully' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Unable to change password' });
+  }
 });
 
 router.get('/me', authenticateErp, async (req, res) => {

@@ -9,6 +9,7 @@ const map: Record<string, string> = {
   // sales
   Draft: "bg-muted text-muted-foreground border-border",
   Confirmed: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+  Partial: "bg-amber-500/15 text-amber-700 border-amber-500/30",
   Approved: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   Sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   Dispatched: "bg-amber-500/15 text-amber-700 border-amber-500/30",
@@ -25,7 +26,10 @@ const map: Record<string, string> = {
 
 export function StatusBadge({ status }: { status: string }) {
   return (
-    <Badge variant="outline" className={cn("font-medium", map[status] ?? "bg-muted text-muted-foreground")}>
+    <Badge
+      variant="outline"
+      className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide", map[status] ?? "bg-muted text-muted-foreground")}
+    >
       {status}
     </Badge>
   );

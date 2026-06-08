@@ -1,4 +1,6 @@
 const pool = require('../db');
+const piiCrypto = require('../lib/piiCrypto');
+const { recordReceipt } = require('./inventoryService');
 
 const IMPORT_HANDLERS = {
   customers: async (client, companyId, userId, row) => {
@@ -6,8 +8,44 @@ const IMPORT_HANDLERS = {
       `INSERT INTO erp_customers (company_id, customer_code, name, email, tax_id, credit_limit, created_by)
        VALUES ($1,$2,$3,$4,$5,COALESCE($6,0),$7)
        ON CONFLICT (company_id, customer_code) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, updated_at = NOW()`,
-      [companyId, row.customer_code, row.name, row.email, row.tax_id, row.credit_limit, userId],
+      [
+        companyId,
+        row.customer_code,
+        row.name,
+        row.email,
+        piiCrypto.isEnabled() && row.tax_id ? `***${String(row.tax_id).slice(-4)}` : row.tax_id,
+        row.credit_limit,
+        userId,
+      ],
     );
+    if (piiCrypto.isEnabled() && row.tax_id) {
+      await client.query(
+        `UPDATE erp_customers SET tax_id_enc = $1 WHERE company_id = $2 AND customer_code = $3`,
+        [piiCrypto.encrypt(row.tax_id), companyId, row.customer_code],
+      );
+    }
+  },
+  vendors: async (client, companyId, userId, row) => {
+    await client.query(
+      `INSERT INTO erp_vendors (company_id, vendor_code, name, email, tax_id, credit_limit, created_by)
+       VALUES ($1,$2,$3,$4,$5,COALESCE($6,0),$7)
+       ON CONFLICT (company_id, vendor_code) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, updated_at = NOW()`,
+      [
+        companyId,
+        row.vendor_code,
+        row.name,
+        row.email,
+        piiCrypto.isEnabled() && row.tax_id ? `***${String(row.tax_id).slice(-4)}` : row.tax_id,
+        row.credit_limit,
+        userId,
+      ],
+    );
+    if (piiCrypto.isEnabled() && row.tax_id) {
+      await client.query(
+        `UPDATE erp_vendors SET tax_id_enc = $1 WHERE company_id = $2 AND vendor_code = $3`,
+        [piiCrypto.encrypt(row.tax_id), companyId, row.vendor_code],
+      );
+    }
   },
   items: async (client, companyId, userId, row) => {
     await client.query(
@@ -16,6 +54,37 @@ const IMPORT_HANDLERS = {
        ON CONFLICT (company_id, item_code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`,
       [companyId, row.item_code, row.name, row.standard_cost, userId],
     );
+  },
+  opening_stock: async (client, companyId, userId, row) => {
+    const whCode = row.warehouse_code || row.warehouse;
+    const itemCode = row.item_code || row.sku;
+    const qty = Number(row.quantity);
+    const unitCost = Number(row.unit_cost ?? row.cost ?? 0);
+    if (!whCode || !itemCode) throw new Error('warehouse_code and item_code are required');
+    if (!qty || qty <= 0) throw new Error('quantity must be greater than zero');
+
+    const wh = await client.query(
+      `SELECT id FROM erp_warehouses WHERE company_id = $1 AND code = $2 AND is_deleted = FALSE LIMIT 1`,
+      [companyId, whCode],
+    );
+    if (!wh.rowCount) throw new Error(`Warehouse not found: ${whCode}`);
+
+    const item = await client.query(
+      `SELECT id FROM erp_items WHERE company_id = $1 AND item_code = $2 AND is_deleted = FALSE LIMIT 1`,
+      [companyId, itemCode],
+    );
+    if (!item.rowCount) throw new Error(`Item not found: ${itemCode}`);
+
+    await recordReceipt(client, {
+      companyId,
+      warehouseId: wh.rows[0].id,
+      itemId: item.rows[0].id,
+      quantity: qty,
+      unitCost,
+      referenceType: 'opening_stock',
+      referenceId: null,
+      userId,
+    });
   },
   attendance: async (client, companyId, userId, row) => {
     const emp = await client.query(

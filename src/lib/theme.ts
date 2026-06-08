@@ -10,7 +10,11 @@ function applyTheme(mode: ThemeMode) {
 }
 
 export function getInitialTheme(): ThemeMode {
-  return "light";
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+  }
+  return "dark";
 }
 
 export function applyInitialTheme() {
@@ -23,7 +27,7 @@ export function applyInitialTheme() {
 }
 
 export function useThemeMode() {
-  const [theme, setTheme] = useState<ThemeMode>("light");
+  const [theme, setTheme] = useState<ThemeMode>("dark");
 
   useEffect(() => {
     const initial = applyInitialTheme();

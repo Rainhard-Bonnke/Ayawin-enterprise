@@ -28,8 +28,7 @@ services:
       DATABASE_USER: postgres
       DATABASE_PASSWORD: postgres
       DATABASE_DB: martin_enterprise
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
       ENABLE_DEMO_MODE: 'true'
       JWT_SECRET: dev_jwt_secret_change_in_production
       JWT_ACCESS_EXPIRES: 15m

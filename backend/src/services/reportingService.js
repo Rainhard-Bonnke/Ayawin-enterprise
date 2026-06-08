@@ -1,4 +1,6 @@
 const pool = require('../db');
+const { parseReportRange } = require('../lib/reportDateRange');
+const reportExport = require('./reportExportService');
 
 function kpiStatus(actual, target, warning, critical, higherIsBetter) {
   if (higherIsBetter) {
@@ -21,6 +23,16 @@ async function metricRevenueMtd(companyId) {
   return Number(r.rows[0].v);
 }
 
+async function metricRevenueInRange(companyId, from, to) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(total_amount),0) AS v FROM erp_customer_invoices
+     WHERE company_id = $1 AND status IN ('posted','partial','paid','overdue') AND is_deleted = FALSE
+       AND invoice_date BETWEEN $2 AND $3`,
+    [companyId, from, to],
+  );
+  return Number(r.rows[0].v);
+}
+
 async function metricArOutstanding(companyId) {
   const r = await pool.query(
     `SELECT COALESCE(SUM(total_amount - amount_paid),0) AS v FROM erp_customer_invoices
@@ -32,8 +44,8 @@ async function metricArOutstanding(companyId) {
 
 async function metricApOutstanding(companyId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(total_amount),0) AS v FROM erp_purchase_orders
-     WHERE company_id = $1 AND status IN ('approved','sent','partial','received')`,
+    `SELECT COALESCE(SUM(total_amount - amount_paid),0) AS v FROM erp_vendor_invoices
+     WHERE company_id = $1 AND status IN ('posted','partial','overdue') AND is_deleted = FALSE`,
     [companyId],
   );
   return Number(r.rows[0].v);
@@ -179,34 +191,110 @@ async function computeKpis(companyId) {
   return results;
 }
 
+async function reconcileWithDashboard(companyId, filters = {}) {
+  const range = parseReportRange(filters);
+  const dashboardService = require('./dashboardService');
+  const summary = await dashboardService.getDashboardSummary(companyId, {
+    from: range.from,
+    to: range.to,
+    preset: filters.preset,
+  });
+
+  const checks = [
+    {
+      metric: 'revenue_in_range',
+      dashboard: Number(summary.kpis.revenue_in_range || 0),
+      report: await metricRevenueInRange(companyId, range.from, range.to),
+    },
+    {
+      metric: 'revenue_mtd',
+      dashboard: Number(summary.kpis.revenue_mtd || 0),
+      report: await metricRevenueMtd(companyId),
+    },
+    {
+      metric: 'outstanding_invoices',
+      dashboard: Number(summary.kpis.outstanding_invoices || 0),
+      report: await metricArOutstanding(companyId),
+    },
+    {
+      metric: 'stock_value',
+      dashboard: Number(summary.kpis.stock_value || 0),
+      report: await metricStockValue(companyId),
+    },
+    {
+      metric: 'open_pos',
+      dashboard: Number(summary.kpis.open_pos || 0),
+      report: await metricOpenPos(companyId),
+    },
+  ];
+
+  const rows = checks.map((c) => {
+    const variance = Math.round((c.report - c.dashboard) * 100) / 100;
+    return {
+      ...c,
+      variance,
+      matched: Math.abs(variance) < 1,
+    };
+  });
+
+  return {
+    report: 'kpi_reconciliation',
+    period: range,
+    rows,
+    all_matched: rows.every((r) => r.matched),
+  };
+}
+
 async function runStandardReport(companyId, reportKey, filters = {}) {
+  const range = parseReportRange(filters);
+
   switch (reportKey) {
+    case 'kpi_reconciliation':
+      return reconcileWithDashboard(companyId, filters);
+
+    case 'comparative_period': {
+      const current = await metricRevenueInRange(companyId, range.from, range.to);
+      let prior = 0;
+      if (range.compare) {
+        prior = await metricRevenueInRange(companyId, range.compare.from, range.compare.to);
+      }
+      const change = prior > 0 ? Math.round(((current - prior) / prior) * 10000) / 100 : null;
+      return {
+        report: reportKey,
+        period: range,
+        rows: [
+          {
+            metric: 'revenue',
+            current_from: range.from,
+            current_to: range.to,
+            current_value: current,
+            prior_from: range.compare?.from || null,
+            prior_to: range.compare?.to || null,
+            prior_value: prior,
+            change_percent: change,
+          },
+        ],
+      };
+    }
+
     case 'sales_summary': {
       const r = await pool.query(
         `SELECT status, COUNT(*)::int AS order_count, COALESCE(SUM(total_amount),0) AS total
-         FROM erp_sales_orders WHERE company_id = $1 AND is_deleted = FALSE GROUP BY status ORDER BY status`,
-        [companyId],
+         FROM erp_sales_orders
+         WHERE company_id = $1 AND is_deleted = FALSE
+           AND order_date BETWEEN $2 AND $3
+         GROUP BY status ORDER BY status`,
+        [companyId, range.from, range.to],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, period: range, rows: r.rows };
     }
     case 'ar_aging': {
-      const r = await pool.query(
-        `SELECT invoice_no, c.name AS customer, invoice_date, due_date,
-                total_amount - amount_paid AS outstanding,
-                CASE
-                  WHEN due_date >= CURRENT_DATE THEN 'current'
-                  WHEN due_date >= CURRENT_DATE - 30 THEN '1-30'
-                  WHEN due_date >= CURRENT_DATE - 60 THEN '31-60'
-                  ELSE '61+'
-                END AS bucket
-         FROM erp_customer_invoices inv
-         JOIN erp_customers c ON c.id = inv.customer_id
-         WHERE inv.company_id = $1 AND inv.status IN ('posted','partial','overdue')
-           AND total_amount > amount_paid
-         ORDER BY due_date`,
-        [companyId],
-      );
-      return { report: reportKey, rows: r.rows };
+      const data = await require('./crmService').getArAging(companyId);
+      const filtered = data.rows.filter((row) => {
+        const d = String(row.invoice_date || '').slice(0, 10);
+        return d >= range.from && d <= range.to;
+      });
+      return { report: reportKey, period: range, rows: filtered.slice(0, range.limit), summary: data.summary };
     }
     case 'stock_valuation': {
       const r = await pool.query(
@@ -218,7 +306,7 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
          WHERE s.company_id = $1 ORDER BY w.name, i.item_code`,
         [companyId],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, period: range, rows: r.rows.slice(0, range.limit) };
     }
     case 'payroll_summary': {
       const r = await pool.query(
@@ -226,32 +314,79 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
                 COUNT(ps.id)::int AS employees
          FROM erp_payroll_runs pr
          LEFT JOIN erp_payslips ps ON ps.payroll_run_id = pr.id
-         WHERE pr.company_id = $1 GROUP BY pr.id ORDER BY pr.payroll_month DESC LIMIT 12`,
-        [companyId],
+         WHERE pr.company_id = $1 AND pr.payroll_month BETWEEN $2::date AND $3::date
+         GROUP BY pr.id ORDER BY pr.payroll_month DESC LIMIT $4`,
+        [companyId, range.from, range.to, range.limit],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, period: range, rows: r.rows };
     }
     case 'procurement_spend': {
       const r = await pool.query(
         `SELECT v.name AS vendor, COUNT(po.id)::int AS po_count, COALESCE(SUM(po.total_amount),0) AS spend
          FROM erp_purchase_orders po
          JOIN erp_vendors v ON v.id = po.vendor_id
-         WHERE po.company_id = $1 AND po.status NOT IN ('cancelled','draft')
-         GROUP BY v.id, v.name ORDER BY spend DESC`,
-        [companyId],
+         WHERE po.company_id = $1 AND po.status NOT IN ('cancelled','draft') AND po.is_deleted = FALSE
+           AND po.order_date BETWEEN $2 AND $3
+         GROUP BY v.id, v.name ORDER BY spend DESC LIMIT $4`,
+        [companyId, range.from, range.to, range.limit],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, period: range, rows: r.rows };
     }
     case 'ap_aging': {
       const r = await pool.query(
-        `SELECT po.po_number, v.name AS vendor, po.order_date, po.total_amount, po.status
-         FROM erp_purchase_orders po
-         JOIN erp_vendors v ON v.id = po.vendor_id
-         WHERE po.company_id = $1 AND po.status IN ('approved','sent','partial','received')
-         ORDER BY po.order_date`,
+        `SELECT vb.bill_no, v.name AS vendor, vb.bill_date, vb.due_date,
+                vb.total_amount - vb.amount_paid AS outstanding, vb.status, vb.match_status,
+                CASE
+                  WHEN COALESCE(vb.due_date, vb.bill_date) >= CURRENT_DATE - 30 THEN 'current'
+                  WHEN COALESCE(vb.due_date, vb.bill_date) >= CURRENT_DATE - 60 THEN '31-60'
+                  WHEN COALESCE(vb.due_date, vb.bill_date) >= CURRENT_DATE - 90 THEN '61-90'
+                  ELSE '90+'
+                END AS bucket
+         FROM erp_vendor_invoices vb
+         JOIN erp_vendors v ON v.id = vb.vendor_id
+         WHERE vb.company_id = $1 AND vb.status IN ('posted','partial','overdue')
+           AND vb.total_amount > vb.amount_paid AND vb.is_deleted = FALSE
+           AND vb.bill_date BETWEEN $2 AND $3
+         ORDER BY vb.bill_date LIMIT $4`,
+        [companyId, range.from, range.to, range.limit],
+      );
+      return { report: reportKey, period: range, rows: r.rows };
+    }
+    case 'cash_flow_forecast': {
+      const ar = await pool.query(
+        `SELECT due_date, total_amount - amount_paid AS outstanding
+         FROM erp_customer_invoices
+         WHERE company_id = $1 AND status IN ('posted','partial','overdue')
+           AND total_amount > amount_paid`,
         [companyId],
       );
-      return { report: reportKey, rows: r.rows };
+      const ap = await pool.query(
+        `SELECT due_date, total_amount - amount_paid AS outstanding
+         FROM erp_vendor_invoices
+         WHERE company_id = $1 AND status IN ('posted','partial','overdue')
+           AND total_amount > amount_paid AND is_deleted = FALSE`,
+        [companyId],
+      );
+      const weeks = [0, 0, 0, 0];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      for (const row of ar.rows) {
+        const due = new Date(row.due_date);
+        const days = Math.ceil((due - today) / 86400000);
+        const wi = Math.min(3, Math.max(0, Math.floor(days / 7)));
+        weeks[wi] += Number(row.outstanding || 0);
+      }
+      for (const row of ap.rows) {
+        const due = new Date(row.due_date || row.bill_date);
+        const days = Math.ceil((due - today) / 86400000);
+        const wi = Math.min(3, Math.max(0, Math.floor(days / 7)));
+        weeks[wi] -= Number(row.outstanding || 0);
+      }
+      return {
+        report: reportKey,
+        period: range,
+        rows: weeks.map((value, i) => ({ label: `Week ${i + 1}`, value: Math.round(value) })),
+      };
     }
     default:
       throw new Error(`Unknown report: ${reportKey}`);
@@ -259,31 +394,47 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
 }
 
 function rowsToCsv(rows) {
-  if (!rows?.length) return '';
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.join(',')];
-  for (const row of rows) {
-    lines.push(headers.map((h) => {
-      const v = row[h];
-      const s = v == null ? '' : String(v);
-      return s.includes(',') ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(','));
-  }
-  return lines.join('\n');
+  return reportExport.rowsToCsv(rows, { bom: true });
 }
 
-async function getBiDataset(companyId, dataset) {
+async function getBiDataset(companyId, dataset, filters = {}) {
+  const range = parseReportRange(filters);
   const datasets = {
-    sales_orders: `SELECT order_no, order_date, status, total_amount, currency_code FROM erp_sales_orders WHERE company_id = $1`,
-    customer_invoices: `SELECT invoice_no, invoice_date, due_date, status, subtotal, tax_amount, total_amount FROM erp_customer_invoices WHERE company_id = $1`,
-    stock_on_hand: `SELECT i.item_code, w.code AS warehouse, s.quantity, s.avg_unit_cost FROM erp_stock_on_hand s JOIN erp_items i ON i.id = s.item_id JOIN erp_warehouses w ON w.id = s.warehouse_id WHERE s.company_id = $1`,
-    payslips: `SELECT e.employee_code, ps.gross_pay, ps.net_pay, ps.paye, ps.nhif, ps.nssf FROM erp_payslips ps JOIN erp_employees e ON e.id = ps.employee_id WHERE ps.company_id = $1`,
-    gl_balances: `SELECT a.account_code, a.account_name, b.period_debit, b.period_credit, b.closing_debit, b.closing_credit FROM erp_gl_balances b JOIN erp_chart_of_accounts a ON a.id = b.account_id WHERE b.company_id = $1`,
+    sales_orders: {
+      sql: `SELECT order_no, order_date, status, total_amount, currency_code FROM erp_sales_orders
+            WHERE company_id = $1 AND is_deleted = FALSE AND order_date BETWEEN $2 AND $3 ORDER BY order_date DESC LIMIT $4`,
+      params: [companyId, range.from, range.to, range.limit],
+    },
+    customer_invoices: {
+      sql: `SELECT invoice_no, invoice_date, due_date, status, subtotal, tax_amount, total_amount
+            FROM erp_customer_invoices
+            WHERE company_id = $1 AND is_deleted = FALSE AND invoice_date BETWEEN $2 AND $3
+            ORDER BY invoice_date DESC LIMIT $4`,
+      params: [companyId, range.from, range.to, range.limit],
+    },
+    stock_on_hand: {
+      sql: `SELECT i.item_code, w.code AS warehouse, s.quantity, s.avg_unit_cost
+            FROM erp_stock_on_hand s JOIN erp_items i ON i.id = s.item_id
+            JOIN erp_warehouses w ON w.id = s.warehouse_id WHERE s.company_id = $1 LIMIT $2`,
+      params: [companyId, range.limit],
+    },
+    payslips: {
+      sql: `SELECT e.employee_code, ps.gross_pay, ps.net_pay, ps.paye, ps.nhif, ps.nssf
+            FROM erp_payslips ps JOIN erp_employees e ON e.id = ps.employee_id
+            WHERE ps.company_id = $1 LIMIT $2`,
+      params: [companyId, range.limit],
+    },
+    gl_balances: {
+      sql: `SELECT a.account_code, a.account_name, b.period_debit, b.period_credit, b.closing_debit, b.closing_credit
+            FROM erp_gl_balances b JOIN erp_chart_of_accounts a ON a.id = b.account_id
+            WHERE b.company_id = $1 LIMIT $2`,
+      params: [companyId, range.limit],
+    },
   };
-  const sql = datasets[dataset];
-  if (!sql) throw new Error(`Unknown dataset: ${dataset}`);
-  const r = await pool.query(sql, [companyId]);
-  return { dataset, rows: r.rows, count: r.rowCount };
+  const spec = datasets[dataset];
+  if (!spec) throw new Error(`Unknown dataset: ${dataset}`);
+  const r = await pool.query(spec.sql, spec.params);
+  return { dataset, period: range, rows: r.rows, count: r.rowCount };
 }
 
 module.exports = {
@@ -291,8 +442,10 @@ module.exports = {
   getWidgetData,
   computeKpis,
   runStandardReport,
+  reconcileWithDashboard,
   rowsToCsv,
   getBiDataset,
   kpiStatus,
   METRICS,
+  metricRevenueInRange,
 };

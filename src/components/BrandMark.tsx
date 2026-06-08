@@ -1,13 +1,20 @@
-/** Text branding; add logo image here when ready. */
-export function BrandMark({ compact = false }: { compact?: boolean }) {
-  if (compact) {
-    return <span className="text-sm font-semibold">Ayawin</span>;
-  }
+import { cn } from "@/lib/utils";
 
+const LOGO_SRC = "/ayawin-logo.png?v=2";
+
+export function BrandMark({ compact = false, inverted = false }: { compact?: boolean; inverted?: boolean }) {
   return (
-    <div>
-      <div className="text-sm font-semibold">Ayawin Enterprise ERP</div>
-      <div className="text-xs text-muted-foreground">Beverage distribution</div>
+    <div className="flex shrink-0 items-center">
+      <img
+        src={LOGO_SRC}
+        alt="Ayawin Stock Solutions"
+        className={cn(
+          "h-auto w-auto object-contain object-left drop-shadow-sm",
+          compact ? "max-h-7 max-w-[128px]" : "max-h-10 max-w-[188px]",
+          inverted && "brightness-0 invert opacity-95",
+        )}
+        decoding="async"
+      />
     </div>
   );
 }

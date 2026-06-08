@@ -1,5 +1,6 @@
 const legacyAuth = require('../auth');
 const tokenService = require('../services/tokenService');
+const tokenBlacklist = require('../services/tokenBlacklistService');
 const userService = require('../services/userService');
 const { cacheGet, cacheSet } = require('../lib/redis');
 
@@ -28,6 +29,10 @@ async function authenticateErp(req, res, next) {
     const payload = tokenService.verifyAccessToken(token);
     if (payload.type !== 'access') {
       return res.status(401).json({ error: 'Invalid token type' });
+    }
+    const jti = payload.jti || payload.jwtid;
+    if (await tokenBlacklist.isAccessTokenRevoked(jti)) {
+      return res.status(401).json({ error: 'Token has been revoked' });
     }
 
     const cacheKey = `erp:user:${payload.sub}`;
@@ -68,6 +73,21 @@ function requirePermission(...codes) {
   };
 }
 
+/** User needs at least one of the listed permissions (or admin). */
+function requireAnyPermission(...codes) {
+  return (req, res, next) => {
+    const perms = req.user?.permissions || [];
+    const isLegacyAdmin = req.user?.role === 'Admin';
+    if (isLegacyAdmin || perms.includes('foundation.edit')) {
+      return next();
+    }
+    if (codes.some((code) => perms.includes(code))) {
+      return next();
+    }
+    return res.status(403).json({ error: 'Forbidden', required_any: codes });
+  };
+}
+
 function requireCompanyScope(req, res, next) {
   const companyId = req.params.companyId || req.body?.company_id || req.query.company_id;
   if (companyId && companyId !== req.user.company_id) {
@@ -79,6 +99,7 @@ function requireCompanyScope(req, res, next) {
 module.exports = {
   authenticateErp,
   requirePermission,
+  requireAnyPermission,
   requireCompanyScope,
   getClientIp,
 };

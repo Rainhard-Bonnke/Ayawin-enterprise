@@ -1,10 +1,17 @@
 {
-  "name": "Martin Enterprise ERP",
-  "short_name": "Martin ERP",
+  "name": "Ayawin Stock Solutions ERP",
+  "short_name": "Ayawin ERP",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "theme_color": "#0A1628",
-  "background_color": "#0A1628",
-  "icons": []
+  "theme_color": "#0f1419",
+  "background_color": "#f8f9fb",
+  "icons": [
+    {
+      "src": "/ayawin-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
 }

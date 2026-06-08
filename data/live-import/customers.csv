@@ -1,0 +1,3 @@
+customer_code,name,email,tax_id,credit_limit
+LIVE-C001,Acme Distributors Ltd,accounts@acme.example.co.ke,A001234567Z,500000
+LIVE-C002,Coastal Retailers,finance@coastal.example.co.ke,P051234567B,250000
