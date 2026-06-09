@@ -26,7 +26,7 @@ function LoginPage() {
   const CLIENT_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
   const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
   const IS_HOSTED_API = Boolean(API_BASE && !API_BASE.includes("localhost"));
-  const [email, setEmail] = useState(CLIENT_DEMO_MODE ? "admin@martin.co.ke" : "admin@martin.co.ke");
+  const [email, setEmail] = useState("admin@martin.co.ke");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -351,15 +351,11 @@ function LoginPage() {
               </form>
             )}
 
-            {CLIENT_DEMO_MODE && mode === "signin" && (
+            {!CLIENT_DEMO_MODE && mode === "signin" && (
               <p className="mt-6 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
-                <strong className="text-foreground">Live database mode:</strong> sign in with{" "}
-                <strong className="text-foreground">admin@martin.co.ke</strong> /{" "}
-                <strong className="text-foreground">demo</strong> (saves to PostgreSQL). Start backend with{" "}
-                <code className="text-foreground">npm run dev:all</code>. Header badge must show{" "}
-                <strong className="text-foreground">Live</strong> or <strong className="text-foreground">Polling</strong>
-                — not &quot;Demo / API off&quot;. Clean slate: <code className="text-foreground">npm run dev:reset-db</code>{" "}
-                (set <code className="text-foreground">CONFIRM_RESET_DEV=yes</code>).
+                <strong className="text-foreground">Live ERP:</strong> sign in with the administrator account your IT
+                team configured. Run <code className="text-foreground">npm run dev:all</code> for local development.
+                {IS_HOSTED_API && apiWaking && " Waking hosted API — first request may take up to a minute."}
               </p>
             )}
           </div>

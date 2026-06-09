@@ -30,6 +30,14 @@ export function subscribeLiveEvents(listener: Listener) {
 }
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000, 30000];
+const MAX_RECONNECT_ATTEMPTS = 8;
+
+function isLiveWsEnabled() {
+  const flag = import.meta.env.VITE_ENABLE_LIVE_WS;
+  if (flag === "false" || flag === "0") return false;
+  if (flag === "true" || flag === "1") return true;
+  return true;
+}
 
 export function useLiveEvents(enabled = true) {
   const [connected, setConnected] = useState(false);
@@ -41,7 +49,7 @@ export function useLiveEvents(enabled = true) {
 
   const connect = useCallback(() => {
     const { access } = getStoredTokens();
-    if (!enabled || !isApiSessionToken(access)) return;
+    if (!enabled || !isLiveWsEnabled() || !isApiSessionToken(access)) return;
 
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
@@ -72,11 +80,18 @@ export function useLiveEvents(enabled = true) {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      if (enabled && isApiSessionToken(getStoredTokens().access)) {
+      const canRetry =
+        enabled &&
+        isLiveWsEnabled() &&
+        isApiSessionToken(getStoredTokens().access) &&
+        attemptRef.current < MAX_RECONNECT_ATTEMPTS;
+      if (canRetry) {
         setReconnecting(true);
         const delay = RECONNECT_DELAYS_MS[Math.min(attemptRef.current, RECONNECT_DELAYS_MS.length - 1)];
         attemptRef.current += 1;
         retryRef.current = setTimeout(connect, delay);
+      } else {
+        setReconnecting(false);
       }
     };
 

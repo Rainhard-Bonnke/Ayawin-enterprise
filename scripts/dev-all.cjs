@@ -131,6 +131,19 @@ async function main() {
     process.exit(1);
   }
 
+  const viteEnvPath = path.join(root, ".env");
+  if (fs.existsSync(viteEnvPath)) {
+    const viteEnv = fs.readFileSync(viteEnvPath, "utf8");
+    const apiMatch = viteEnv.match(/^VITE_API_BASE=(.*)$/m);
+    const apiBase = apiMatch ? apiMatch[1].trim().replace(/^["']|["']$/g, "") : "";
+    if (apiBase && !apiBase.includes("localhost") && !apiBase.includes("127.0.0.1")) {
+      console.warn(
+        `[dev:all] VITE_API_BASE=${apiBase} — frontend will call remote API, not this local backend.`,
+      );
+      console.warn("[dev:all] For local live ERP, clear VITE_API_BASE in .env and restart.");
+    }
+  }
+
   frontend = start("npm", ["run", "dev"], root, "frontend");
   console.log("[dev:all] Frontend starting at http://localhost:3000 (typical) — API at http://localhost:4000");
 

@@ -959,8 +959,24 @@ export const v1Api = {
   reports: {
     dashboard: (token: string, code: string) =>
       apiV1Fetch<{ widgets: Array<{ widget: string; value: number | null }> }>>(`/reports/dashboards/${code}`, {}, token),
-    dashboardSummary: (token: string, preset = "6m") =>
-      apiV1Fetch<Record<string, unknown>>(`/dashboard/summary?preset=${encodeURIComponent(preset)}`, {}, token),
+    dashboardSummary: async (token: string, preset = "6m") => {
+      const query = `?preset=${encodeURIComponent(preset)}`;
+      const paths = [`/reports/dashboard/summary${query}`, `/dashboard/summary${query}`];
+      let lastError: Error | null = null;
+      for (const path of paths) {
+        try {
+          return await apiV1Fetch<Record<string, unknown>>(path, {}, token);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          lastError = error;
+          const notFound =
+            /cannot get \/api\/v1\//i.test(error.message) ||
+            /not found/i.test(error.message);
+          if (!notFound) throw error;
+        }
+      }
+      throw lastError ?? new Error("Dashboard summary is not available on this API deployment.");
+    },
     kpis: (token: string) => apiV1Fetch<Array<Record<string, unknown>>>("/reports/kpis", {}, token),
     library: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/reports/library", {}, token),
     run: (
