@@ -75,6 +75,7 @@ async function bootstrapDatabase() {
   }
 
   const schemaSql = await loadSchemaFile();
+  await pool.query(schemaSql);
   await pool.query(`
     ALTER TABLE IF EXISTS roles ADD COLUMN IF NOT EXISTS description TEXT;
 
@@ -116,7 +117,6 @@ async function bootstrapDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS customers_kra_pin_uidx ON customers (kra_pin);
     CREATE UNIQUE INDEX IF NOT EXISTS suppliers_kra_pin_uidx ON suppliers (kra_pin);
   `);
-  await pool.query(schemaSql);
 
   return { initialized: true, missingTables };
 }

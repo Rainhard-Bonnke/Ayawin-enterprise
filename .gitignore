@@ -34,3 +34,6 @@ dist-ssr
 # Environment files
 .env
 backend/.env
+
+# Local database backups
+backend/backups/

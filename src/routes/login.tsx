@@ -17,9 +17,8 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   const navigate = useNavigate();
   const { login } = useAuth();
-  const CLIENT_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true" || import.meta.env.DEV;
-  const [email, setEmail] = useState(CLIENT_DEMO_MODE ? "admin@martin.co.ke" : "");
-  const [password, setPassword] = useState(CLIENT_DEMO_MODE ? "demo" : "");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -78,14 +77,6 @@ function LoginPage() {
               {error && <p className="text-sm text-destructive">{error}</p>}
             </form>
 
-            {CLIENT_DEMO_MODE && (
-              <p className="mt-4 text-xs text-muted-foreground">
-                Dev sign-in: <strong>admin@martin.co.ke</strong> / <strong>demo</strong> (API when backend has{" "}
-                <code className="text-[11px]">ENABLE_DEMO_MODE=true</code>, otherwise offline demo token).
-                <br />
-                Use the Vite app URL (e.g. port <strong>5173</strong>), not port 4000 — that is API-only.
-              </p>
-            )}
           </CardContent>
         </Card>
       </div>

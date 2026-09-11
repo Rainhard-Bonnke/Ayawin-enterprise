@@ -1,11 +1,10 @@
-import * as XLSX from "xlsx";
-
 type SheetInput = {
   name: string;
   rows: Record<string, unknown>[];
 };
 
-export function exportWorkbook(filename: string, sheets: SheetInput[]) {
+export async function exportWorkbook(filename: string, sheets: SheetInput[]) {
+  const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
 
   for (const sheet of sheets) {

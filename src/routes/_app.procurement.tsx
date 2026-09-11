@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -25,11 +25,13 @@ import {
   createSupplier,
   deleteSupplier,
   fetchPurchaseOrders,
+    fetchGoodsReceipts,
   fetchSuppliers,
   receivePurchaseOrder,
   updatePurchaseOrderStatus,
   updateSupplier,
   type BackendPurchaseOrder,
+    type BackendGoodsReceipt,
   type BackendSupplier,
 } from "@/lib/api";
 import { toast } from "sonner";
@@ -63,7 +65,8 @@ export const Route = createFileRoute("/_app/procurement")({
 
 function Procurement() {
   const { token } = useAuth();
-  const [tab, setTab] = useState("purchase-orders");
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "purchase-orders");
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("date");
@@ -72,6 +75,7 @@ function Procurement() {
   const [orders, setOrders] = useState<BackendPurchaseOrder[]>([]);
   const [suppliersLoading, setSuppliersLoading] = useState(true);
   const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
+    const [receipts, setReceipts] = useState<BackendGoodsReceipt[]>([]);
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [supplierSaving, setSupplierSaving] = useState(false);
   const [supplierEditing, setSupplierEditing] = useState<BackendSupplier | null>(null);
@@ -97,8 +101,7 @@ function Procurement() {
     if (!token) return;
     setOrdersLoading(true);
     try {
-      const data = await fetchPurchaseOrders(token);
-      setOrders(data);
+      setOrders(await fetchPurchaseOrders(token));
     } catch (err) {
       setOrders([]);
       toast.error(err instanceof Error ? err.message : "Unable to load purchase orders");
@@ -108,9 +111,18 @@ function Procurement() {
   };
 
   useEffect(() => {
-    void loadSuppliers();
     void loadOrders();
   }, [token]);
+
+  useEffect(() => {
+    if (tab === "suppliers") void loadSuppliers();
+    if (tab === "receipts" && token) void fetchGoodsReceipts(token).then(setReceipts).catch(() => setReceipts([]));
+  }, [tab, token]);
+
+  useEffect(() => {
+    const nextTab = hash.replace(/^#/, "");
+    if (["purchase-orders", "receipts", "suppliers"].includes(nextTab)) setTab(nextTab);
+  }, [hash]);
 
   const orderRows = useMemo(
     () =>
@@ -341,9 +353,9 @@ function Procurement() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Draft / Approved", v: "1 / 1" },
-          { l: "Sent", v: "1" },
-          { l: "Received", v: "2" },
+          { l: "Draft / Approved", v: `${orders.filter((row) => row.status === "Draft").length} / ${orders.filter((row) => row.status === "Approved").length}` },
+          { l: "Sent", v: String(orders.filter((row) => row.status === "Sent").length) },
+          { l: "Received", v: String(receipts.length) },
           { l: "Suppliers", v: String(suppliers.length) },
         ].map((k) => (
           <Card key={k.l}>
@@ -400,9 +412,10 @@ function Procurement() {
         </CardContent>
       </Card>
 
-      <Tabs value={tab} onValueChange={setTab}>
+      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
         <TabsList>
           <TabsTrigger value="purchase-orders">Purchase Orders</TabsTrigger>
+          <TabsTrigger value="receipts">Goods Receipts</TabsTrigger>
           <TabsTrigger value="suppliers">Suppliers</TabsTrigger>
         </TabsList>
 
@@ -520,6 +533,16 @@ function Procurement() {
               <ListPagination page={page} totalPages={totalPages} totalItems={orderRows.length} pageSize={pageSize} onPageChange={setPage} />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="receipts" className="mt-4">
+          <Card><CardContent className="p-4">
+            <div className="mb-4"><h2 className="font-semibold">Goods receipt history</h2><p className="text-sm text-muted-foreground">Posted receipts update stock and create the procurement audit trail.</p></div>
+            <Table><TableHeader><TableRow><TableHead>GRN</TableHead><TableHead>Purchase order</TableHead><TableHead>Date</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>
+              {receipts.map((receipt) => <TableRow key={receipt.id}><TableCell className="font-mono text-xs">{receipt.grn_number}</TableCell><TableCell>{receipt.po_number || "—"}</TableCell><TableCell>{receipt.receipt_date ? fmtDate(receipt.receipt_date) : "—"}</TableCell><TableCell><StatusBadge status={receipt.status || "Posted"} /></TableCell></TableRow>)}
+              {!receipts.length && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No goods receipts posted yet.</TableCell></TableRow>}
+            </TableBody></Table>
+          </CardContent></Card>
         </TabsContent>
 
         <TabsContent value="suppliers" className="mt-4">

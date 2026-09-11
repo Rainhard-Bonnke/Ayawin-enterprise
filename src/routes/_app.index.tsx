@@ -1,30 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { KpiCard } from "@/components/KpiCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { KES, fmtDate } from "@/lib/format";
-import { Banknote, ShoppingCart, AlertTriangle, FileText, Wallet, Receipt } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
+import { Banknote, ShoppingCart, AlertTriangle, Receipt } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
 import { fetchDashboardSummary, type DashboardSummary } from "@/lib/api";
 import { toast } from "sonner";
+
+type RechartsModule = typeof import("recharts");
 
 export const Route = createFileRoute("/_app/")({
   component: Dashboard,
@@ -43,6 +30,17 @@ const COLORS = [
 function Dashboard() {
   const { token } = useAuth();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [chartLib, setChartLib] = useState<RechartsModule | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void import("recharts").then((mod) => {
+      if (active) setChartLib(mod);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -63,6 +61,21 @@ function Dashboard() {
   const revenueMtd = summary?.kpis ? Number(summary.kpis.revenue_mtd) : 0;
   const pendingOrders = summary?.kpis ? String(summary.kpis.pending_orders) : "0";
   const stockAlerts = liveAlerts.filter((alert) => alert.type === "stock").length;
+
+  const Recharts = useMemo(() => chartLib, [chartLib]);
+  const LineChart = Recharts?.LineChart ?? null;
+  const BarChart = Recharts?.BarChart ?? null;
+  const PieChart = Recharts?.PieChart ?? null;
+  const Line = Recharts?.Line ?? null;
+  const Bar = Recharts?.Bar ?? null;
+  const Pie = Recharts?.Pie ?? null;
+  const Cell = Recharts?.Cell ?? null;
+  const XAxis = Recharts?.XAxis ?? null;
+  const YAxis = Recharts?.YAxis ?? null;
+  const CartesianGrid = Recharts?.CartesianGrid ?? null;
+  const Tooltip = Recharts?.Tooltip ?? null;
+  const ResponsiveContainer = Recharts?.ResponsiveContainer ?? null;
+  const Legend = Recharts?.Legend ?? null;
 
   return (
     <div className="space-y-6">
@@ -85,22 +98,26 @@ function Dashboard() {
             <CardTitle>Monthly revenue</CardTitle>
           </CardHeader>
           <CardContent className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={liveMonthlyRevenue}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis
-                  stroke="hsl(var(--muted-foreground))"
-                  fontSize={12}
-                  tickFormatter={(v) => `${v / 1000000}M`}
-                />
-                <Tooltip
-                  formatter={(v: number) => KES(v)}
-                  contentStyle={{ borderRadius: 8, border: "1px solid var(--border)" }}
-                />
-                <Line type="monotone" dataKey="revenue" stroke="var(--primary)" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {ResponsiveContainer && LineChart && CartesianGrid && XAxis && YAxis && Tooltip && Line ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={liveMonthlyRevenue}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis
+                    stroke="hsl(var(--muted-foreground))"
+                    fontSize={12}
+                    tickFormatter={(v) => `${v / 1000000}M`}
+                  />
+                  <Tooltip
+                    formatter={(v: number) => KES(v)}
+                    contentStyle={{ borderRadius: 8, border: "1px solid var(--border)" }}
+                  />
+                  <Line type="monotone" dataKey="revenue" stroke="var(--primary)" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading chart…</div>
+            )}
           </CardContent>
         </Card>
 
@@ -109,17 +126,21 @@ function Dashboard() {
             <CardTitle>Sales by category</CardTitle>
           </CardHeader>
           <CardContent className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={liveSalesByCategory} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
-                  {liveSalesByCategory.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v: number) => KES(v)} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
+            {ResponsiveContainer && PieChart && Pie && Cell && Tooltip && Legend ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={liveSalesByCategory} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
+                    {liveSalesByCategory.map((_, i) => (
+                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v: number) => KES(v)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading chart…</div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -130,21 +151,25 @@ function Dashboard() {
             <CardTitle>Top products</CardTitle>
           </CardHeader>
           <CardContent className="h-[320px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={liveTopProducts} layout="vertical" margin={{ left: 30 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  stroke="hsl(var(--muted-foreground))"
-                  fontSize={11}
-                  width={110}
-                />
-                <Tooltip contentStyle={{ borderRadius: 8 }} />
-                <Bar dataKey="units" fill="var(--primary)" radius={[0, 2, 2, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {ResponsiveContainer && BarChart && CartesianGrid && XAxis && YAxis && Tooltip && Bar ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={liveTopProducts} layout="vertical" margin={{ left: 30 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    stroke="hsl(var(--muted-foreground))"
+                    fontSize={11}
+                    width={110}
+                  />
+                  <Tooltip contentStyle={{ borderRadius: 8 }} />
+                  <Bar dataKey="units" fill="var(--primary)" radius={[0, 2, 2, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading chart…</div>
+            )}
           </CardContent>
         </Card>
 

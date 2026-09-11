@@ -21,6 +21,7 @@ import {
   createStockIn,
   createStockTransfer,
   fetchInventoryItems,
+    fetchInventoryReorderAlerts,
   fetchMasterItems,
   fetchWarehouses,
   type BackendInventoryItem,
@@ -45,6 +46,7 @@ function InventoryPage() {
   const [items, setItems] = useState<BackendInventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
   const [masterItems, setMasterItems] = useState<BackendMasterItem[]>([]);
+    const [reorderAlerts, setReorderAlerts] = useState<Record<string, unknown>[]>([]);
   const [transferOpen, setTransferOpen] = useState(false);
   const [stockInOpen, setStockInOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -97,6 +99,14 @@ function InventoryPage() {
     void loadInventory();
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    const timer = window.setTimeout(() => {
+      void fetchInventoryReorderAlerts(token).then(setReorderAlerts).catch(() => setReorderAlerts([]));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [token]);
+
   const filtered = useMemo(
     () =>
       items
@@ -122,7 +132,8 @@ function InventoryPage() {
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const totalValue = useMemo(() => filtered.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0), [filtered]);
-  const lowStockCount = useMemo(() => filtered.filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0)).length, [filtered]);
+  const calculatedLowStockCount = useMemo(() => filtered.filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0)).length, [filtered]);
+  const lowStockCount = reorderAlerts.length || calculatedLowStockCount;
   const skuCount = useMemo(() => new Set(items.map((row) => row.sku)).size, [items]);
 
   const reorderDraft = useMemo(

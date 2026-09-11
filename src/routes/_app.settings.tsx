@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,8 @@ export const Route = createFileRoute("/_app/settings")({
 
 function SettingsPage() {
   const { token } = useAuth();
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "company");
   const [warehouseRows, setWarehouseRows] = useState<Array<{ id: string; name: string; location: string; manager: string }>>([]);
   const [warehouseQ, setWarehouseQ] = useState("");
 
@@ -46,11 +48,16 @@ function SettingsPage() {
     `${w.name} ${w.location} ${w.manager}`.toLowerCase().includes(warehouseQ.toLowerCase()),
   );
 
+  useEffect(() => {
+    const nextTab = hash.replace(/^#/, "");
+    if (["company", "tax", "warehouses", "notifications", "security"].includes(nextTab)) setTab(nextTab);
+  }, [hash]);
+
   return (
     <div>
       <PageHeader title="System Settings" description="Company profile, taxes, module access, backups and notifications." />
 
-      <Tabs defaultValue="company">
+      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
         <TabsList className="flex flex-wrap">
           <TabsTrigger value="company">Company</TabsTrigger>
           <TabsTrigger value="tax">Tax & Excise</TabsTrigger>

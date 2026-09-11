@@ -34,11 +34,11 @@ router.post('/login', async (req, res) => {
   try {
     let user = await userService.findUserByEmail(email, companyCode);
 
-    if (!user && IS_DEMO_MODE && password === 'demo' && email === 'admin@martin.co.ke') {
+    if (!user && IS_DEMO_MODE && (password === 'Bonnke@123' || password === 'demo') && email === 'bonnkereinhard654@gmail.com') {
       await pool.query('SELECT 1');
       user = await userService.findUserByEmail(email);
       if (user && !user.password_hash) {
-        await setUserPassword(user.id, 'demo');
+        await setUserPassword(user.id, 'Bonnke@123');
         user = await userService.findUserByEmail(email);
       }
     }
@@ -52,9 +52,9 @@ router.post('/login', async (req, res) => {
     }
 
     if (!user.password_hash) {
-      if (IS_DEMO_MODE && password === 'demo') {
-        await setUserPassword(user.id, 'demo');
-        user.password_hash = await bcrypt.hash('demo', 10);
+      if (IS_DEMO_MODE && (password === 'Bonnke@123' || password === 'demo')) {
+        await setUserPassword(user.id, 'Bonnke@123');
+        user.password_hash = await bcrypt.hash('Bonnke@123', 10);
       } else {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
@@ -182,9 +182,7 @@ router.post('/logout', authenticateErp, async (req, res) => {
 });
 
 router.get('/me', authenticateErp, async (req, res) => {
-  const user = await userService.findUserById(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  return res.json(userService.sanitizeUser(user));
+  return res.json(req.user);
 });
 
 router.post('/mfa/setup', authenticateErp, async (req, res) => {

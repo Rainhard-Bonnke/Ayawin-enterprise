@@ -6,14 +6,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'ayawin-enterprise-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
 const DEMO_USER = {
   id: 0,
-  username: 'admin',
+  username: 'bonnkereinhard654',
   full_name: 'System Administrator',
-  email: 'admin@martin.co.ke',
+  email: 'bonnkereinhard654@gmail.com',
   role: 'Admin',
 };
 
 const DEMO_ROLES = {
-  'admin@martin.co.ke': 'Admin',
+  'bonnkereinhard654@gmail.com': 'Admin',
   'manager@martin.co.ke': 'Manager',
   'accountant@martin.co.ke': 'Accountant',
   'hr@martin.co.ke': 'HR Officer',
@@ -23,10 +23,10 @@ const DEMO_ROLES = {
   'driver@martin.co.ke': 'Driver',
 };
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@martin.co.ke';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'bonnkereinhard654@gmail.com';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || ADMIN_EMAIL.split('@')[0];
 const ADMIN_FULL_NAME = process.env.ADMIN_FULL_NAME || 'System Administrator';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Bonnke@123';
 
 async function hashPassword(password) {
   return bcrypt.hash(password, 10);

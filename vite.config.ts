@@ -16,6 +16,10 @@ export default defineConfig({
     tsconfigPaths(),
   ],
   server: {
+    host: true,
+    watch: {
+      ignored: ["**/node_modules/**", "**/.output/**"],
+    },
     proxy: {
       "/api": {
         target: "http://localhost:4000",

@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,17 +6,16 @@ import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { cashFlowForecast } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Printer, FileDown, ArrowUpDown } from "lucide-react";
 import { exportElementAsPdf } from "@/lib/pdf";
 import { useAuth } from "@/lib/auth";
-import { fetchAccountingSnapshot, type AccountingJournalRow } from "@/lib/api";
+import { closeFinancePeriod, fetchAccountingSnapshot, fetchFinanceWorkspace, type AccountingJournalRow, type FinanceWorkspace } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/accounting")({
@@ -37,11 +36,16 @@ const defaultJournal: AccountingJournalRow[] = [];
 
 function Accounting() {
   const { token } = useAuth();
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [activeTab, setActiveTab] = useState(() => hash.replace(/^#/, "") || "pnl");
   const [liveJournal, setLiveJournal] = useState<AccountingJournalRow[] | null>(null);
   const [livePnl, setLivePnl] = useState<typeof pnl | null>(null);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
+  const [finance, setFinance] = useState<FinanceWorkspace | null>(null);
+  const [periodId, setPeriodId] = useState("");
+  const [closing, setClosing] = useState(false);
   const pageSize = 5;
 
   useEffect(() => {
@@ -57,10 +61,26 @@ function Accounting() {
       });
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    void fetchFinanceWorkspace(token, periodId || undefined)
+      .then((workspace) => {
+        setFinance(workspace);
+        if (!periodId && workspace.periods[0]?.id) setPeriodId(workspace.periods.find((period) => period.status === "open")?.id || workspace.periods[0].id);
+      })
+      .catch((err) => toast.error(err instanceof Error ? err.message : "Unable to load finance reports"));
+  }, [token, periodId]);
+
+  useEffect(() => {
+    const nextTab = hash.replace(/^#/, "");
+    if (["pnl", "aging", "vat", "ledger", "trial-balance", "balance-sheet"].includes(nextTab)) setActiveTab(nextTab);
+  }, [hash]);
+
   const journalSource = liveJournal ?? defaultJournal;
   const pnlSource = livePnl ?? pnl;
-  const revenue = pnlSource.reduce((sum, row) => sum + row.revenue, 0);
-  const expenses = pnlSource.reduce((sum, row) => sum + row.expenses, 0);
+  const liveProfitLoss = finance?.profitLoss;
+  const revenue = liveProfitLoss ? liveProfitLoss.lines.filter((row) => row.account_type === "income").reduce((sum, row) => sum + Number(row.amount || 0), 0) : pnlSource.reduce((sum, row) => sum + row.revenue, 0);
+  const expenses = liveProfitLoss ? liveProfitLoss.lines.filter((row) => row.account_type === "expense").reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0) : pnlSource.reduce((sum, row) => sum + row.expenses, 0);
   const net = revenue - expenses;
 
   const journalRows = journalSource
@@ -181,12 +201,23 @@ function Accounting() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="pnl">
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
+        <div className="text-sm font-medium">Fiscal period</div>
+        <Select value={periodId} onValueChange={setPeriodId}>
+          <SelectTrigger className="w-56"><SelectValue placeholder="Select period" /></SelectTrigger>
+          <SelectContent>{(finance?.periods || []).map((period) => <SelectItem key={period.id} value={period.id}>{period.name} · {period.status}</SelectItem>)}</SelectContent>
+        </Select>
+        {finance?.periods.find((period) => period.id === periodId)?.status === "open" && <Button variant="outline" disabled={closing} onClick={async () => { if (!token || !periodId) return; setClosing(true); try { await closeFinancePeriod(token, periodId); toast.success("Fiscal period closed"); setFinance(await fetchFinanceWorkspace(token, periodId)); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to close period"); } finally { setClosing(false); } }}>{closing ? "Closing…" : "Close period"}</Button>}
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(value) => { setActiveTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
         <TabsList>
           <TabsTrigger value="pnl">P&L</TabsTrigger>
           <TabsTrigger value="aging">Aging</TabsTrigger>
           <TabsTrigger value="vat">VAT & Excise (KRA)</TabsTrigger>
           <TabsTrigger value="ledger">General Ledger</TabsTrigger>
+          <TabsTrigger value="trial-balance">Trial Balance</TabsTrigger>
+          <TabsTrigger value="balance-sheet">Balance Sheet</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pnl" className="mt-4">
@@ -226,6 +257,14 @@ function Accounting() {
               </TableBody>
             </Table>
           </CardContent></Card>
+        </TabsContent>
+
+        <TabsContent value="trial-balance" className="mt-4">
+          <Card><CardContent className="p-4"><div className="mb-3 flex justify-between text-sm font-medium"><span>Trial balance</span><span>{KES(Number(finance?.trialBalance.totals.period_debit || 0))} debit · {KES(Number(finance?.trialBalance.totals.period_credit || 0))} credit</span></div><Table><TableHeader><TableRow><TableHead>Account</TableHead><TableHead>Name</TableHead><TableHead className="text-right">Debit</TableHead><TableHead className="text-right">Credit</TableHead></TableRow></TableHeader><TableBody>{(finance?.trialBalance.lines || []).map((row) => <TableRow key={row.account_code}><TableCell className="font-mono text-xs">{row.account_code}</TableCell><TableCell>{row.account_name}</TableCell><TableCell className="text-right">{KES(Number(row.period_debit || 0))}</TableCell><TableCell className="text-right">{KES(Number(row.period_credit || 0))}</TableCell></TableRow>)}{!finance?.trialBalance.lines.length && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No trial balance data for this period.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+        </TabsContent>
+
+        <TabsContent value="balance-sheet" className="mt-4">
+          <Card><CardContent className="p-4"><Table><TableHeader><TableRow><TableHead>Account</TableHead><TableHead>Type</TableHead><TableHead className="text-right">Balance</TableHead></TableRow></TableHeader><TableBody>{(finance?.balanceSheet || []).map((row) => <TableRow key={row.account_code}><TableCell>{row.account_code} · {row.account_name}</TableCell><TableCell className="capitalize">{row.account_type}</TableCell><TableCell className="text-right font-medium">{KES(Number(row.balance || 0))}</TableCell></TableRow>)}{!finance?.balanceSheet.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-sm text-muted-foreground">No balance sheet data for this period.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
         </TabsContent>
 
         <TabsContent value="vat" className="mt-4">

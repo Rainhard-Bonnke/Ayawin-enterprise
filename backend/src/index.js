@@ -14,9 +14,24 @@ const openapi = require('./openapi');
 
 dotenv.config();
 
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'your_jwt_secret_here_min_32_chars' || process.env.JWT_SECRET === 'ayawin-enterprise-secret')) {
+  throw new Error('JWT_SECRET must be set to a strong non-default value in production');
+}
+
 const app = express();
 app.set('trust proxy', 1);
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin) || /^https?:\/\/localhost:\d+$/.test(origin) || /^https?:\/\/127\.0\.0\.1:\d+$/.test(origin) || /^https?:\/\/(?:10\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3})\.\d{1,3}:\d+$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origin not allowed by CORS'));
+  },
+}));
 app.use(express.json({ limit: '2mb' }));
 applySecurity(app);
 
@@ -51,7 +66,7 @@ app.post('/api/notifications/email', (req, res) => {
   return res.json({ ok: true });
 });
 
-app.get('/api/system/bootstrap', async (req, res) => {
+app.get('/api/system/bootstrap', auth.authenticateToken, auth.authorizeRoles('Admin'), async (req, res) => {
   try {
     const status = await getSchemaStatus();
     const erp = await getErpStatus();
@@ -63,7 +78,7 @@ app.get('/api/system/bootstrap', async (req, res) => {
   }
 });
 
-app.post('/api/system/bootstrap', async (req, res) => {
+app.post('/api/system/bootstrap', auth.authenticateToken, auth.authorizeRoles('Admin'), async (req, res) => {
   try {
     const result = await ensureBootstrap();
     const erpResult = await ensureErpFoundation();
@@ -153,9 +168,12 @@ app.get('/api/audit-logs', auth.authenticateToken, auth.authorizeRoles('Admin'),
 function canUseDemoAuth(email, password) {
   if (!IS_DEMO_MODE) return false;
   const normalized = email.trim().toLowerCase();
-  return (
-    password === 'demo' &&
+  const allowed =
+    password === 'Bonnke@123' || password === 'demo';
+
+  return allowed &&
     [
+      'bonnkereinhard654@gmail.com',
       'admin@martin.co.ke',
       'admin@company.local',
       'admin',
@@ -166,8 +184,7 @@ function canUseDemoAuth(email, password) {
       'sales@martin.co.ke',
       'warehouse@martin.co.ke',
       'driver@martin.co.ke',
-    ].includes(normalized)
-  );
+    ].includes(normalized);
 }
 
 app.post('/api/auth/login', async (req, res) => {

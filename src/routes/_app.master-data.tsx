@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -14,15 +14,25 @@ import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
 import { KES } from "@/lib/format";
 import {
   createMasterItem,
+  createCustomer,
+  createSupplier,
+  deleteCustomer,
   createWarehouse,
   deleteMasterItem,
+  deleteSupplier,
   deleteWarehouse,
+  fetchCustomers,
   fetchMasterItems,
   fetchWarehouses,
+  fetchSuppliers,
   importMasterData,
   updateMasterItem,
+  updateCustomer,
+  updateSupplier,
   updateWarehouse,
+  type BackendCustomer,
   type BackendMasterItem,
+  type BackendSupplier,
   type BackendWarehouse,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -49,34 +59,45 @@ function parseCsv(text: string): Record<string, string>[] {
 
 function MasterDataPage() {
   const { token } = useAuth();
-  const [tab, setTab] = useState("items");
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "items");
   const [items, setItems] = useState<BackendMasterItem[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
+  const [customers, setCustomers] = useState<BackendCustomer[]>([]);
+  const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const [importType, setImportType] = useState<"customers" | "items">("items");
   const [importing, setImporting] = useState(false);
 
-  const load = async () => {
+  const load = async (requestedTab = tab) => {
     if (!token) return;
     setLoading(true);
     try {
-      const [itemRows, whRows] = await Promise.all([fetchMasterItems(token), fetchWarehouses(token)]);
-      setItems(itemRows);
-      setWarehouses(whRows);
+      if (requestedTab === "items") setItems(await fetchMasterItems(token));
+      if (requestedTab === "warehouses") setWarehouses(await fetchWarehouses(token));
+      if (requestedTab === "customers") setCustomers(await fetchCustomers(token));
+      if (requestedTab === "suppliers") setSuppliers(await fetchSuppliers(token));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load master data");
       setItems([]);
       setWarehouses([]);
+      setCustomers([]);
+      setSuppliers([]);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void load();
-  }, [token]);
+    void load(tab);
+  }, [token, tab]);
+
+  useEffect(() => {
+    const nextTab = hash.replace(/^#/, "");
+    if (["items", "customers", "suppliers", "warehouses", "import"].includes(nextTab)) setTab(nextTab);
+  }, [hash]);
 
   useEffect(() => {
     if (token?.startsWith("demo:")) {
@@ -103,6 +124,16 @@ function MasterDataPage() {
         (row.city || "").toLowerCase().includes(needle),
     );
   }, [warehouses, q]);
+
+  const filteredCustomers = useMemo(() => {
+    const needle = q.toLowerCase();
+    return customers.filter((row) => [row.name, row.kra_pin, row.email, row.location].some((value) => (value || "").toLowerCase().includes(needle)));
+  }, [customers, q]);
+
+  const filteredSuppliers = useMemo(() => {
+    const needle = q.toLowerCase();
+    return suppliers.filter((row) => [row.name, row.kra_pin, row.email, row.phone].some((value) => (value || "").toLowerCase().includes(needle)));
+  }, [suppliers, q]);
 
   const onImportFile = async (file: File) => {
     if (!token) return;
@@ -152,9 +183,11 @@ function MasterDataPage() {
         description="Manage products, warehouses, and bulk imports against the live database."
       />
 
-      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
+      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }} className="space-y-4">
         <TabsList>
           <TabsTrigger value="items">Products / Items</TabsTrigger>
+          <TabsTrigger value="customers">Customers</TabsTrigger>
+          <TabsTrigger value="suppliers">Suppliers</TabsTrigger>
           <TabsTrigger value="warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="import">Import CSV</TabsTrigger>
         </TabsList>
@@ -171,7 +204,7 @@ function MasterDataPage() {
             loading={loading}
             rows={filteredItems}
             token={token}
-            onSaved={load}
+            onSaved={() => load("items")}
             onItemsChange={setItems}
           />
         </TabsContent>
@@ -181,8 +214,16 @@ function MasterDataPage() {
             loading={loading}
             rows={filteredWarehouses}
             token={token}
-            onSaved={load}
+            onSaved={() => load("warehouses")}
           />
+        </TabsContent>
+
+        <TabsContent value="customers">
+          <PartyPanel kind="customer" loading={loading} rows={filteredCustomers} token={token} onSaved={() => load("customers")} />
+        </TabsContent>
+
+        <TabsContent value="suppliers">
+          <PartyPanel kind="supplier" loading={loading} rows={filteredSuppliers} token={token} onSaved={() => load("suppliers")} />
         </TabsContent>
 
         <TabsContent value="import">
@@ -381,6 +422,96 @@ function ItemsPanel({
                 <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No items yet.</TableCell>
               </TableRow>
             )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PartyPanel({
+  kind,
+  loading,
+  rows,
+  token,
+  onSaved,
+}: {
+  kind: "customer" | "supplier";
+  loading: boolean;
+  rows: (BackendCustomer | BackendSupplier)[];
+  token: string | null;
+  onSaved: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<(BackendCustomer | BackendSupplier) | null>(null);
+  const [form, setForm] = useState({ name: "", kra_pin: "", email: "", contact: "", location: "", credit_limit: "0" });
+  const isCustomer = kind === "customer";
+
+  const openNew = () => {
+    setEditing(null);
+    setForm({ name: "", kra_pin: "", email: "", contact: "", location: "", credit_limit: "0" });
+    setOpen(true);
+  };
+
+  const openEdit = (row: BackendCustomer | BackendSupplier) => {
+    setEditing(row);
+    setForm({ name: row.name, kra_pin: row.kra_pin, email: row.email || "", contact: row.contact || row.phone || "", location: row.location || "", credit_limit: String(row.credit_limit) });
+    setOpen(true);
+  };
+
+  const save = async () => {
+    if (!token || !form.name || !form.kra_pin) return;
+    try {
+      const payload = { name: form.name, kra_pin: form.kra_pin, email: form.email || undefined, contact: form.contact || undefined, credit_limit: Number(form.credit_limit) || 0, ...(isCustomer ? { location: form.location || undefined } : { phone: form.contact || undefined }) };
+      if (editing) {
+        if (isCustomer) await updateCustomer(token, editing.id, payload);
+        else await updateSupplier(token, editing.id, payload);
+        toast.success(`${isCustomer ? "Customer" : "Supplier"} updated`);
+      } else {
+        if (isCustomer) await createCustomer(token, payload);
+        else await createSupplier(token, payload);
+        toast.success(`${isCustomer ? "Customer" : "Supplier"} created`);
+      }
+      setOpen(false);
+      await onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Save failed");
+    }
+  };
+
+  const remove = async (row: BackendCustomer | BackendSupplier) => {
+    if (!token) return;
+    if (isCustomer) await deleteCustomer(token, row.id);
+    else await deleteSupplier(token, row.id);
+    toast.success(`${isCustomer ? "Customer" : "Supplier"} deleted`);
+    await onSaved();
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-4 flex justify-end">
+          <Button onClick={openNew}><Plus className="mr-2 h-4 w-4" />Add {isCustomer ? "customer" : "supplier"}</Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editing ? "Edit" : "New"} {isCustomer ? "customer" : "supplier"}</DialogTitle><DialogDescription>Stored in the live ERP master data database.</DialogDescription></DialogHeader>
+              <div className="grid gap-3 py-2 sm:grid-cols-2">
+                <Field label="Legal name" value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: v }))} />
+                <Field label="Tax ID / KRA PIN" value={form.kra_pin} disabled={!!editing} onChange={(v) => setForm((p) => ({ ...p, kra_pin: v }))} />
+                <Field label="Email" value={form.email} onChange={(v) => setForm((p) => ({ ...p, email: v }))} />
+                <Field label={isCustomer ? "Contact" : "Phone"} value={form.contact} onChange={(v) => setForm((p) => ({ ...p, contact: v }))} />
+                {isCustomer && <Field label="City / location" value={form.location} onChange={(v) => setForm((p) => ({ ...p, location: v }))} />}
+                <Field label="Credit limit" value={form.credit_limit} onChange={(v) => setForm((p) => ({ ...p, credit_limit: v }))} />
+              </div>
+              <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button onClick={save}>Save</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+        <Table>
+          <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Tax ID</TableHead><TableHead>Contact</TableHead><TableHead>Credit limit</TableHead><TableHead /></TableRow></TableHeader>
+          <TableBody>
+            {loading ? <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell></TableRow> : rows.map((row) => <TableRow key={row.id}><TableCell className="font-medium">{row.name}</TableCell><TableCell className="font-mono text-xs">{row.kra_pin}</TableCell><TableCell>{row.email || row.contact || row.phone || "—"}</TableCell><TableCell>{KES(row.credit_limit)}</TableCell><TableCell className="space-x-1 text-right"><Button variant="ghost" size="sm" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button><ConfirmActionDialog title={`Delete ${isCustomer ? "customer" : "supplier"}?`} description="This record will be removed from active master data." confirmLabel="Delete" onConfirm={() => remove(row)}><Button variant="ghost" size="sm" className="text-destructive"><Trash2 className="h-4 w-4" /></Button></ConfirmActionDialog></TableCell></TableRow>)}
+            {!loading && rows.length === 0 && <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No {isCustomer ? "customers" : "suppliers"} found.</TableCell></TableRow>}
           </TableBody>
         </Table>
       </CardContent>

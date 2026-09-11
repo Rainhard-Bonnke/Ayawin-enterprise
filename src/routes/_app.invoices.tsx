@@ -94,8 +94,8 @@ function InvoicesPage() {
   useEffect(() => {
     if (!token) return;
     const id = window.setInterval(() => {
-      void loadInvoices();
-    }, 20000);
+      if (!document.hidden) void loadInvoices();
+    }, 60000);
     return () => window.clearInterval(id);
   }, [token, loadInvoices]);
 

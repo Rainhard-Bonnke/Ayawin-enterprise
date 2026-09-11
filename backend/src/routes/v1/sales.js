@@ -25,14 +25,16 @@ router.post('/credit-check', requirePermission('sales.view'), async (req, res) =
 });
 
 router.get('/orders', requirePermission('sales.view'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
   const result = await pool.query(
     `SELECT so.*, c.name AS customer_name, w.name AS warehouse_name
      FROM erp_sales_orders so
      JOIN erp_customers c ON c.id = so.customer_id
      LEFT JOIN erp_warehouses w ON w.id = so.warehouse_id
      WHERE so.company_id = $1 AND so.is_deleted = FALSE
-     ORDER BY so.order_date DESC`,
-    [req.user.company_id],
+    ORDER BY so.order_date DESC
+    LIMIT $2`,
+      [req.user.company_id, limit],
   );
   return res.json(result.rows);
 });
@@ -141,11 +143,14 @@ router.post('/invoices', requirePermission('sales.create'), async (req, res) => 
 });
 
 router.get('/invoices', requirePermission('sales.view'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
   const result = await pool.query(
     `SELECT inv.*, c.name AS customer_name, c.tax_id AS customer_tax_id FROM erp_customer_invoices inv
      JOIN erp_customers c ON c.id = inv.customer_id
-     WHERE inv.company_id = $1 AND inv.is_deleted = FALSE ORDER BY inv.invoice_date DESC`,
-    [req.user.company_id],
+    WHERE inv.company_id = $1 AND inv.is_deleted = FALSE
+    ORDER BY inv.invoice_date DESC
+    LIMIT $2`,
+      [req.user.company_id, limit],
   );
   return res.json(result.rows);
 });

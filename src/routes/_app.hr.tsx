@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { fetchHrEmployees, type BackendEmployee } from "@/lib/api";
+import { fetchHrEmployees, fetchPayrollPayslips, fetchPayrollRuns, fetchPayrollStatutory, postPayroll, runPayroll, type BackendEmployee, type PayrollRun, type PayslipRow } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/hr")({
@@ -54,6 +54,13 @@ function housing(g: number) {
 function HRPage() {
   const { token } = useAuth();
   const [apiEmployees, setApiEmployees] = useState<BackendEmployee[] | null>(null);
+  const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
+  const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
+  const [payslips, setPayslips] = useState<PayslipRow[]>([]);
+  const [statutory, setStatutory] = useState<{ total_paye: number; total_nhif: number; total_nssf: number; total_housing: number; employees: number } | null>(null);
+  const [payrollMonth, setPayrollMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "employees");
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
   const [sort, setSort] = useState("name");
@@ -69,6 +76,32 @@ function HRPage() {
         setApiEmployees([]);
       });
   }, [token]);
+
+  const loadPayroll = async (run?: PayrollRun) => {
+    if (!token) return;
+    try {
+      const runs = await fetchPayrollRuns(token);
+      setPayrollRuns(runs);
+      const active = run || runs[0];
+      setSelectedRun(active || null);
+      if (active) {
+        const [slips, report] = await Promise.all([fetchPayrollPayslips(token, active.id), fetchPayrollStatutory(token, active.id)]);
+        setPayslips(slips);
+        setStatutory(report);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to load payroll runs");
+    }
+  };
+
+  useEffect(() => {
+    if (tab === "payroll") void loadPayroll();
+  }, [token, tab]);
+
+  useEffect(() => {
+    const nextTab = hash.replace(/^#/, "");
+    if (["employees", "attendance", "payroll", "recruitment", "leave"].includes(nextTab)) setTab(nextTab);
+  }, [hash]);
 
   const sourceEmployees = (apiEmployees ?? []).map((e) => ({
     id: e.id,
@@ -164,7 +197,7 @@ function HRPage() {
         className="mb-4"
       />
 
-      <Tabs defaultValue="employees">
+      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
         <TabsList>
           <TabsTrigger value="employees">Employees</TabsTrigger>
           <TabsTrigger value="attendance">Attendance</TabsTrigger>
@@ -278,7 +311,14 @@ function HRPage() {
           <Card>
             <CardContent className="p-4">
               <div className="mb-3 flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">Payroll Run - May 2026</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={selectedRun?.id || ""} onValueChange={(id) => { const run = payrollRuns.find((row) => row.id === id); if (run) void loadPayroll(run); }}>
+                    <SelectTrigger className="w-48"><SelectValue placeholder="Select payroll run" /></SelectTrigger>
+                    <SelectContent>{payrollRuns.map((run) => <SelectItem key={run.id} value={run.id}>{run.payroll_month} · {run.status}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <input className="h-9 rounded-md border border-input bg-background px-3 text-sm" type="month" value={payrollMonth} onChange={(e) => setPayrollMonth(e.target.value)} aria-label="Payroll month" />
+                  <Button variant="outline" size="sm" onClick={async () => { if (!token) return; try { const created = await runPayroll(token, payrollMonth); toast.success("Payroll run created"); await loadPayroll(created); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to run payroll"); } }}>Run payroll</Button>
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -297,9 +337,19 @@ function HRPage() {
                   <FileDown className="mr-2 h-3.5 w-3.5" />
                   Generate Payslips (XLSX)
                 </Button>
+                {selectedRun?.status !== "posted" && selectedRun && <Button size="sm" onClick={async () => { if (!token) return; try { await postPayroll(token, selectedRun.id); toast.success("Payroll posted to General Ledger"); await loadPayroll(); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to post payroll"); } }}>Post to GL</Button>}
               </div>
               <div className="mb-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
                 Verify any payroll run that deviates from the last three months before posting.
+              </div>
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {[
+                  ["Employees", statutory?.employees || 0],
+                  ["PAYE", statutory?.total_paye || 0],
+                  ["NHIF", statutory?.total_nhif || 0],
+                  ["NSSF", statutory?.total_nssf || 0],
+                  ["Housing levy", statutory?.total_housing || 0],
+                ].map(([label, value]) => <div key={String(label)} className="rounded-md border border-border p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 font-semibold">{label === "Employees" ? value : KES(Number(value))}</div></div>)}
               </div>
               <Table>
                 <TableHeader>
@@ -314,7 +364,20 @@ function HRPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sourceEmployees
+                  {payslips.length ? payslips.map((slip) => {
+                      const employeeName = `${slip.first_name || ""} ${slip.last_name || ""}`.trim() || slip.employee_code || "Employee";
+                      return (
+                        <TableRow key={slip.id}>
+                          <TableCell className="font-medium">{employeeName}</TableCell>
+                          <TableCell className="text-right">{KES(slip.gross_pay)}</TableCell>
+                          <TableCell className="text-right text-xs">{KES(slip.paye)}</TableCell>
+                          <TableCell className="text-right text-xs">{KES(slip.nssf)}</TableCell>
+                          <TableCell className="text-right text-xs">{KES(slip.nhif)}</TableCell>
+                          <TableCell className="text-right text-xs">{KES(slip.housing_levy)}</TableCell>
+                          <TableCell className="text-right font-semibold">{KES(slip.net_pay)}</TableCell>
+                        </TableRow>
+                      );
+                    }) : sourceEmployees
                     .filter((e) => e.status === "Active")
                     .map((e) => {
                       const paye = payeKE(e.salary);

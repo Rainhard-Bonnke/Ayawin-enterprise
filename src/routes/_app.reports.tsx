@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { QuietNote } from "@/components/QuietNote";
 import { exportWorkbook } from "@/lib/excel";
 import { useAuth } from "@/lib/auth";
-import { fetchReportLibrary } from "@/lib/api";
+import { fetchReportKpis, fetchReportLibrary, runStandardReport } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/reports")({
@@ -22,7 +22,10 @@ const groups: Array<{ title: string; items: string[] }> = [];
 
 function ReportsPage() {
   const { token } = useAuth();
-  const [library, setLibrary] = useState<Array<{ group: string; title: string }> | null>(null);
+  const [library, setLibrary] = useState<Array<{ code: string; group: string; title: string }> | null>(null);
+  const [selectedReport, setSelectedReport] = useState<{ code: string; title: string } | null>(null);
+  const [reportRows, setReportRows] = useState<Record<string, unknown>[]>([]);
+  const [kpis, setKpis] = useState<Array<Record<string, unknown>>>([]);
   const [q, setQ] = useState("");
   const [group, setGroup] = useState("all");
   const [page, setPage] = useState(1);
@@ -31,8 +34,10 @@ function ReportsPage() {
   useEffect(() => {
     if (!token) return;
     fetchReportLibrary(token)
-      .then((rows) => {
-        setLibrary(rows.map((r) => ({ group: r.category, title: r.name })));
+      .then(async (rows) => {
+        setLibrary(rows.map((r) => ({ code: r.code, group: r.category, title: r.name })));
+        const liveKpis = await fetchReportKpis(token);
+        setKpis(liveKpis);
       })
       .catch((err) => {
         toast.error(err instanceof Error ? err.message : "Unable to load report library");
@@ -66,6 +71,18 @@ function ReportsPage() {
     ]);
   };
 
+  const runReport = async (report: { code: string; title: string }) => {
+    if (!token) return;
+    try {
+      const result = await runStandardReport(token, report.code);
+      setSelectedReport(report);
+      setReportRows(result.rows || []);
+      toast.success(`${report.title} loaded`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to run report");
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -80,6 +97,14 @@ function ReportsPage() {
         context={{ groups: groupOptions, entries }}
         className="mb-4"
       />
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {kpis.slice(0, 4).map((kpi, index) => {
+          const label = String(kpi.label || kpi.name || kpi.code || `KPI ${index + 1}`);
+          const value = kpi.value ?? kpi.amount ?? kpi.total ?? "—";
+          return <Card key={label}><CardContent className="p-4"><div className="text-xs uppercase tracking-wider text-muted-foreground">{label}</div><div className="mt-1 text-2xl font-bold">{typeof value === "number" ? value.toLocaleString() : String(value)}</div></CardContent></Card>;
+        })}
+      </div>
 
       <Card className="mb-4">
         <CardContent className="flex flex-wrap items-center gap-3 p-4">
@@ -116,10 +141,10 @@ function ReportsPage() {
                   {report.title}
                 </div>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="h-7 w-7" title="XLSX">
+                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Run report" onClick={() => void runReport(report)}>
                     <FileDown className="h-3.5 w-3.5" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" title="XLSX">
+                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Run report" onClick={() => void runReport(report)}>
                     <FileSpreadsheet className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -128,6 +153,15 @@ function ReportsPage() {
           </Card>
         ))}
       </div>
+
+      {selectedReport && (
+        <Card className="mt-4">
+          <CardHeader><CardTitle>{selectedReport.title} results</CardTitle></CardHeader>
+          <CardContent className="overflow-x-auto p-4">
+            {reportRows.length ? <Table rows={reportRows} /> : <p className="text-sm text-muted-foreground">This report returned no rows.</p>}
+          </CardContent>
+        </Card>
+      )}
 
       {paged.length === 0 && (
         <Card className="mt-4">
@@ -146,4 +180,9 @@ function ReportsPage() {
       />
     </div>
   );
+}
+
+function Table({ rows }: { rows: Record<string, unknown>[] }) {
+  const columns = Object.keys(rows[0] || {});
+  return <table className="w-full text-sm"><thead><tr className="border-b border-border text-left">{columns.map((column) => <th key={column} className="px-3 py-2 font-medium">{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index} className="border-b border-border/60">{columns.map((column) => <td key={column} className="px-3 py-2">{String(row[column] ?? "")}</td>)}</tr>)}</tbody></table>;
 }

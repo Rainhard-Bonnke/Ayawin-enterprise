@@ -6,6 +6,7 @@ import {
   v1Logout,
   v1Me,
   apiV1Fetch,
+  clearTokens,
   masterList,
   masterCreate,
   masterUpdate,
@@ -23,7 +24,12 @@ export type User = {
   permissions?: string[];
 };
 
-const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+const localBrowser = browserHost === "localhost" || browserHost === "127.0.0.1";
+const apiBase = (
+  import.meta.env.VITE_API_BASE ||
+  (!localBrowser && browserHost ? `${window.location.protocol}//${browserHost}:4000` : "")
+).replace(/\/+$/, "");
 
 const isDemoToken = (token: string) => token.startsWith("demo:");
 
@@ -146,7 +152,24 @@ async function handleResponse<T>(response: Response): Promise<T> {
 
 export async function loginRequest(email: string, password: string) {
   if (isV1Enabled()) {
-    return v1Login(email, password);
+    clearTokens();
+    try {
+      return await v1Login(email, password);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      const shouldFallback =
+        /invalid credentials|unauthorized|not authorized|authentication service unavailable|session expired/i.test(message);
+
+      if (!shouldFallback) throw error;
+
+      const response = await fetch(buildUrl("/api/auth/login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      return handleResponse<{ token: string; user: User }>(response);
+    }
   }
 
   try {
@@ -804,7 +827,7 @@ export async function fetchInventoryItems(token: string) {
   }
 
   if (isV1Enabled()) {
-    const rows = await v1Api.inventory.stock(token);
+    const rows = await v1Api.inventory.stock(token, 50);
     return rows.map((row, index) => ({
       item_id: String(row.item_id),
       product_id: index + 1,
@@ -985,7 +1008,7 @@ export async function fetchSalesOrders(token: string) {
   }
 
   if (isV1Enabled()) {
-    const rows = await v1Api.sales.orders(token);
+    const rows = await v1Api.sales.orders(token, 25);
     return rows.map((row) => {
       const raw = String(row.status || "draft").toLowerCase();
       return {
@@ -1005,6 +1028,54 @@ export async function fetchSalesOrders(token: string) {
     headers: { Authorization: `Bearer ${token}` },
   });
   return handleResponse<BackendSalesOrder[]>(response);
+}
+
+export type SalesOrderDetail = {
+  id: string;
+  order_no: string;
+  customer_name?: string;
+  order_date?: string;
+  status?: string;
+  total_amount?: number;
+  notes?: string | null;
+  lines: Array<{ id: string; item_code?: string; item_name?: string; quantity: number; qty_delivered?: number; qty_invoiced?: number; unit_price: number; line_total?: number }>;
+};
+
+export async function fetchSalesOrderDetail(token: string, internalId: string): Promise<SalesOrderDetail> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Sales order details require API v1");
+  const row = await v1Api.sales.orderDetail(token, internalId);
+  return {
+    id: String(row.id),
+    order_no: String(row.order_no || row.id),
+    customer_name: row.customer_name ? String(row.customer_name) : undefined,
+    order_date: row.order_date ? String(row.order_date).slice(0, 10) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    total_amount: Number(row.total_amount || 0),
+    notes: row.notes ? String(row.notes) : null,
+    lines: (row.lines || []).map((line) => ({
+      id: String(line.id),
+      item_code: line.item_code ? String(line.item_code) : undefined,
+      item_name: line.item_name ? String(line.item_name) : undefined,
+      quantity: Number(line.quantity || 0),
+      qty_delivered: Number(line.qty_delivered || 0),
+      qty_invoiced: Number(line.qty_invoiced || 0),
+      unit_price: Number(line.unit_price || 0),
+      line_total: Number(line.line_total || 0),
+    })),
+  };
+}
+
+export type SalesAnalytics = {
+  orders_by_status: Array<{ status: string; count: number; total: number }>;
+  invoices_by_status: Array<{ status: string; count: number; total: number }>;
+  pipeline_forecast: number;
+};
+
+export async function fetchSalesAnalytics(token: string): Promise<SalesAnalytics> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Sales analytics requires API v1");
+  return v1Api.sales.analytics(token) as Promise<SalesAnalytics>;
 }
 
 export async function confirmSalesOrder(token: string, internalId: string) {
@@ -1084,7 +1155,7 @@ export async function fetchDashboardSummary(token: string) {
       v1Api.reports.dashboard(token, "DASH-CFO"),
       v1Api.reports.kpis(token),
       v1Api.sales.analytics(token),
-      v1Api.inventory.reorderAlerts(token),
+      v1Api.inventory.reorderAlerts(token, 50),
     ]);
     const widgetRows = Array.isArray(dash.widgets) ? dash.widgets : [];
     const widgetMap = Object.fromEntries(widgetRows.map((w) => [w.widget, w.value]));
@@ -1166,6 +1237,35 @@ export async function fetchPurchaseOrders(token: string) {
     headers: { Authorization: `Bearer ${token}` },
   });
   return handleResponse<BackendPurchaseOrder[]>(response);
+}
+
+export type BackendGoodsReceipt = {
+  id: string;
+  grn_number: string;
+  po_number?: string;
+  receipt_date?: string;
+  status?: string;
+  notes?: string | null;
+};
+
+export async function fetchGoodsReceipts(token: string): Promise<BackendGoodsReceipt[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Goods receipts require API v1");
+  const rows = await v1Api.procurement.goodsReceipts(token);
+  return rows.map((row) => ({
+    id: String(row.id),
+    grn_number: String(row.grn_number || row.id),
+    po_number: row.po_number ? String(row.po_number) : undefined,
+    receipt_date: row.receipt_date ? String(row.receipt_date).slice(0, 10) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    notes: row.notes ? String(row.notes) : null,
+  }));
+}
+
+export async function fetchInventoryReorderAlerts(token: string) {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Reorder alerts require API v1");
+  return v1Api.inventory.reorderAlerts(token, 50);
 }
 
 export async function createPurchaseOrder(
@@ -1295,6 +1395,73 @@ export async function fetchHrEmployees(token: string) {
   throw new Error("HR employees endpoint requires API v1 configuration.");
 }
 
+export type PayrollRun = {
+  id: string;
+  payroll_month: string;
+  status: string;
+  employee_count: number;
+  total_gross?: number;
+  total_net?: number;
+};
+
+export type PayslipRow = {
+  id: string;
+  employee_code?: string;
+  first_name?: string;
+  last_name?: string;
+  gross_pay: number;
+  paye: number;
+  nhif: number;
+  nssf: number;
+  housing_levy: number;
+  net_pay: number;
+};
+
+export async function fetchPayrollRuns(token: string): Promise<PayrollRun[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  const rows = await v1Api.hr.payrollRuns(token);
+  return rows.map((row) => ({
+    id: String(row.id),
+    payroll_month: String(row.payroll_month || ""),
+    status: String(row.status || "draft"),
+    employee_count: Number(row.employee_count || 0),
+    total_gross: Number(row.total_gross || 0),
+    total_net: Number(row.total_net || 0),
+  }));
+}
+
+export async function fetchPayrollPayslips(token: string, runId: string): Promise<PayslipRow[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  const rows = await v1Api.hr.payslips(token, runId);
+  return rows.map((row) => ({
+    id: String(row.id),
+    employee_code: row.employee_code ? String(row.employee_code) : undefined,
+    first_name: row.first_name ? String(row.first_name) : undefined,
+    last_name: row.last_name ? String(row.last_name) : undefined,
+    gross_pay: Number(row.gross_pay || 0),
+    paye: Number(row.paye || 0),
+    nhif: Number(row.nhif || 0),
+    nssf: Number(row.nssf || 0),
+    housing_levy: Number(row.housing_levy || 0),
+    net_pay: Number(row.net_pay || 0),
+  }));
+}
+
+export async function runPayroll(token: string, payrollMonth: string) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to run payroll.");
+  return apiV1Fetch<PayrollRun>("/payroll/runs", { method: "POST", body: JSON.stringify({ payroll_month: payrollMonth }) }, token);
+}
+
+export async function postPayroll(token: string, runId: string) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to post payroll.");
+  return apiV1Fetch<{ ok: boolean }>(`/payroll/runs/${runId}/post`, { method: "POST" }, token);
+}
+
+export async function fetchPayrollStatutory(token: string, runId: string) {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  return apiV1Fetch<{ total_paye: number; total_nhif: number; total_nssf: number; total_housing: number; employees: number }>(`/payroll/runs/${runId}/statutory-report`, {}, token);
+}
+
 export type ReportLibraryEntry = { code: string; name: string; category: string };
 
 export async function fetchReportLibrary(token: string) {
@@ -1308,6 +1475,18 @@ export async function fetchReportLibrary(token: string) {
     name: String(row.name || row.title),
     category: String(row.category || row.module || "General"),
   }));
+}
+
+export async function runStandardReport(token: string, code: string) {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Report execution requires API v1");
+  return v1Api.reports.run(token, code);
+}
+
+export async function fetchReportKpis(token: string) {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Report KPIs require API v1");
+  return v1Api.reports.kpis(token);
 }
 
 export type BackendInvoice = {
@@ -1356,13 +1535,40 @@ export async function fetchSalesInvoices(token: string) {
   }
 
   if (isV1Enabled()) {
-    const rows = await v1Api.sales.invoices(token);
+    const rows = await v1Api.sales.invoices(token, 25);
     return rows.map(mapV1Invoice);
   }
   const response = await fetch(buildUrl("/api/sales/invoices"), {
     headers: { Authorization: `Bearer ${token}` },
   });
   return handleResponse<BackendInvoice[]>(response);
+}
+
+export type BackendDelivery = {
+  id: string;
+  delivery_no: string;
+  order_no?: string;
+  delivery_date?: string;
+  status?: string;
+  driver_name?: string | null;
+  vehicle_no?: string | null;
+  route?: string | null;
+};
+
+export async function fetchSalesDeliveries(token: string): Promise<BackendDelivery[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Delivery data requires API v1");
+  const rows = await apiV1Fetch<Record<string, unknown>[]>("/sales/deliveries", {}, token);
+  return rows.map((row) => ({
+    id: String(row.id),
+    delivery_no: String(row.delivery_no || row.id),
+    order_no: row.order_no ? String(row.order_no) : undefined,
+    delivery_date: row.delivery_date ? String(row.delivery_date).slice(0, 10) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    driver_name: row.driver_name ? String(row.driver_name) : null,
+    vehicle_no: row.vehicle_no ? String(row.vehicle_no) : null,
+    route: row.route ? String(row.route) : null,
+  }));
 }
 
 export async function createSalesInvoice(
@@ -1516,4 +1722,56 @@ export async function fetchAccountingSnapshot(token: string): Promise<Accounting
     journalRows,
     pnl: [{ month: periodLabel, revenue: income, expenses: expense }],
   };
+}
+
+export type FinancePeriod = {
+  id: string;
+  name: string;
+  code?: string;
+  status: string;
+  start_date?: string;
+  end_date?: string;
+};
+
+export type FinanceReportLine = {
+  account_code: string;
+  account_name: string;
+  account_type?: string;
+  amount?: number;
+  period_debit?: number;
+  period_credit?: number;
+  balance?: number;
+};
+
+export type FinanceWorkspace = {
+  periods: FinancePeriod[];
+  trialBalance: { lines: FinanceReportLine[]; totals: { period_debit: number; period_credit: number } };
+  balanceSheet: FinanceReportLine[];
+  profitLoss: { lines: FinanceReportLine[]; net_profit: number };
+};
+
+export async function fetchFinanceWorkspace(token: string, periodId?: string): Promise<FinanceWorkspace> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Finance reports require API v1");
+  const periods = (await v1Api.finance.fiscalPeriods(token)).map((row) => ({
+    id: String(row.id),
+    name: String(row.name || row.code || row.id),
+    code: row.code ? String(row.code) : undefined,
+    status: String(row.status || "open"),
+    start_date: row.start_date ? String(row.start_date).slice(0, 10) : undefined,
+    end_date: row.end_date ? String(row.end_date).slice(0, 10) : undefined,
+  }));
+  const selected = periodId || String(periods.find((period) => period.status === "open")?.id || periods[0]?.id || "");
+  if (!selected) return { periods, trialBalance: { lines: [], totals: { period_debit: 0, period_credit: 0 } }, balanceSheet: [], profitLoss: { lines: [], net_profit: 0 } };
+  const [trialBalance, balanceSheet, profitLoss] = await Promise.all([
+    apiV1Fetch<{ lines: FinanceReportLine[]; totals: { period_debit: number; period_credit: number } }>(`/finance/reports/trial-balance?fiscal_period_id=${selected}`, {}, token),
+    apiV1Fetch<FinanceReportLine[]>(`/finance/reports/balance-sheet?fiscal_period_id=${selected}`, {}, token),
+    v1Api.finance.profitLoss(token, selected),
+  ]);
+  return { periods, trialBalance, balanceSheet, profitLoss };
+}
+
+export async function closeFinancePeriod(token: string, periodId: string) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to close fiscal periods.");
+  return apiV1Fetch<FinancePeriod>(`/finance/fiscal-periods/${periodId}/close`, { method: "POST" }, token);
 }

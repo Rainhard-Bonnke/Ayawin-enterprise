@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -48,12 +48,15 @@ import {
   fetchCustomers,
   fetchMasterItems,
   fetchSalesOrders,
+  fetchSalesOrderDetail,
+  fetchSalesAnalytics,
   fetchWarehouses,
   type BackendCustomer,
   type BackendMasterItem,
   type BackendSalesOrder,
   type BackendWarehouse,
 } from "@/lib/api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export const Route = createFileRoute("/_app/sales")({
   component: SalesPage,
@@ -71,6 +74,10 @@ function SalesPage() {
   const [status, setStatus] = useState<string>("all");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const [view, setView] = useState(() => hash.replace(/^#/, "") || "orders");
+  const [analytics, setAnalytics] = useState<Awaited<ReturnType<typeof fetchSalesAnalytics>> | null>(null);
+  const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchSalesOrderDetail>> | null>(null);
   const pageSize = 5;
 
   const reloadSalesOrders = async () => {
@@ -93,6 +100,16 @@ function SalesPage() {
   }, [token]);
 
   useEffect(() => {
+    const nextView = hash.replace(/^#/, "");
+    if (["orders", "credit"].includes(nextView)) setView(nextView);
+  }, [hash]);
+
+  useEffect(() => {
+    if (!token || view !== "credit" || analytics) return;
+    void fetchSalesAnalytics(token).then(setAnalytics).catch(() => setAnalytics(null));
+  }, [token, view, analytics]);
+
+  useEffect(() => {
     if (!token) return;
     void fetchWarehouses(token)
       .then((whs) => setWarehouseIds(whs.map((w) => String(w.id))))
@@ -102,8 +119,8 @@ function SalesPage() {
   useEffect(() => {
     if (!token) return;
     const id = window.setInterval(() => {
-      void reloadSalesOrders();
-    }, 20000);
+      if (!document.hidden) void reloadSalesOrders();
+    }, 60000);
     return () => window.clearInterval(id);
   }, [token]);
 
@@ -244,10 +261,10 @@ function SalesPage() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Open Orders", v: "14", t: "5 confirmed, 9 draft" },
-          { l: "In Transit", v: "3", t: "Awaiting delivery" },
-          { l: "Invoiced (MTD)", v: KES(7280000), t: "42 orders" },
-          { l: "Avg Order Value", v: KES(286500), t: "+8% vs last month" },
+          { l: "Open Orders", v: String((analytics?.orders_by_status || []).filter((r) => !["invoiced", "cancelled"].includes(r.status.toLowerCase())).reduce((sum, r) => sum + r.count, 0)), t: "Draft and confirmed" },
+          { l: "In Transit", v: String(analytics?.orders_by_status.find((r) => r.status.toLowerCase() === "partial")?.count || 0), t: "Awaiting delivery" },
+          { l: "Invoiced (MTD)", v: KES(Number(analytics?.invoices_by_status.reduce((sum, r) => sum + Number(r.total || 0), 0) || 0)), t: "Live invoice total" },
+          { l: "Pipeline Forecast", v: KES(Number(analytics?.pipeline_forecast || 0)), t: "Weighted open opportunities" },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
@@ -266,6 +283,49 @@ function SalesPage() {
         className="mb-4"
       />
 
+      <Tabs value={view} onValueChange={(value) => { setView(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }} className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="orders">Orders & fulfilment</TabsTrigger>
+          <TabsTrigger value="credit">Credit & pipeline</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="credit">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardContent className="p-4">
+                <h2 className="font-semibold">Order status summary</h2>
+                <div className="mt-4 grid gap-2">
+                  {(analytics?.orders_by_status || []).map((row) => (
+                    <div key={row.status} className="flex items-center justify-between border-b border-border py-2 text-sm">
+                      <span className="capitalize">{row.status}</span>
+                      <span className="font-medium">{row.count} orders · {KES(Number(row.total || 0))}</span>
+                    </div>
+                  ))}
+                  {!analytics && <p className="text-sm text-muted-foreground">Sign in to load live sales analytics.</p>}
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <h2 className="font-semibold">Invoice exposure</h2>
+                <div className="mt-4 grid gap-2">
+                  {(analytics?.invoices_by_status || []).map((row) => (
+                    <div key={row.status} className="flex items-center justify-between border-b border-border py-2 text-sm">
+                      <span className="capitalize">{row.status}</span>
+                      <span className="font-medium">{row.count} invoices · {KES(Number(row.total || 0))}</span>
+                    </div>
+                  ))}
+                  <div className="mt-3 flex items-center justify-between rounded-md bg-muted p-3 text-sm">
+                    <span>Weighted pipeline</span>
+                    <strong>{KES(Number(analytics?.pipeline_forecast || 0))}</strong>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="orders">
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -330,7 +390,7 @@ function SalesPage() {
               ) : (
                 <>
                   {paged.map((o) => (
-                    <TableRow key={o.id} className="cursor-pointer hover:bg-muted/40">
+                    <TableRow key={o.id} className="cursor-pointer hover:bg-muted/40" onClick={async () => { if (!token || !o.internal_id) return; try { setDetail(await fetchSalesOrderDetail(token, o.internal_id)); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to load order details"); } }}>
                       <TableCell className="font-mono text-xs">{o.id}</TableCell>
                       <TableCell>{fmtDate(o.date)}</TableCell>
                       <TableCell className="font-medium">{o.customer}</TableCell>
@@ -438,6 +498,18 @@ function SalesPage() {
           />
         </CardContent>
       </Card>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={!!detail} onOpenChange={(open) => !open && setDetail(null)}>
+        <DialogContent className="max-w-3xl">
+          {detail && <>
+            <DialogHeader><DialogTitle>Sales Order {detail.order_no}</DialogTitle><DialogDescription>{detail.customer_name || "Customer"} · {detail.order_date || ""} · {detail.status || ""}</DialogDescription></DialogHeader>
+            <Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Invoiced</TableHead><TableHead className="text-right">Unit price</TableHead><TableHead className="text-right">Line total</TableHead></TableRow></TableHeader><TableBody>{detail.lines.map((line) => <TableRow key={line.id}><TableCell>{line.item_code || ""} {line.item_name || ""}</TableCell><TableCell className="text-right">{line.quantity}</TableCell><TableCell className="text-right">{line.qty_delivered || 0}</TableCell><TableCell className="text-right">{line.qty_invoiced || 0}</TableCell><TableCell className="text-right">{KES(line.unit_price)}</TableCell><TableCell className="text-right">{KES(line.line_total || line.quantity * line.unit_price)}</TableCell></TableRow>)}</TableBody></Table>
+            <DialogFooter><div className="mr-auto text-sm font-semibold">Total: {KES(detail.total_amount || 0)}</div><Button variant="outline" onClick={() => setDetail(null)}>Close</Button></DialogFooter>
+          </>}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

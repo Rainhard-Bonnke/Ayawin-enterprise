@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { deliveries } from "@/lib/mock-data";
 import { fmtDate } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -15,7 +14,10 @@ import { Badge } from "@/components/ui/badge";
 import { deliveryRouteHint } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/lib/auth";
+import { fetchSalesDeliveries, type BackendDelivery } from "@/lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/delivery")({
   component: DeliveryPage,
@@ -23,17 +25,26 @@ export const Route = createFileRoute("/_app/delivery")({
 });
 
 function DeliveryPage() {
+  const { token } = useAuth();
+  const [deliveries, setDeliveries] = useState<BackendDelivery[]>([]);
+  const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
   const pageSize = 5;
+  useEffect(() => {
+    if (!token) return;
+    void fetchSalesDeliveries(token).then(setDeliveries).catch((err) => {
+      toast.error(err instanceof Error ? err.message : "Unable to load deliveries");
+      setDeliveries([]);
+    }).finally(() => setLoading(false));
+  }, [token]);
   const filtered = deliveries
-    .filter((d) => (status === "all" || d.status === status) && (d.id.toLowerCase().includes(q.toLowerCase()) || d.customer.toLowerCase().includes(q.toLowerCase())))
+    .filter((d) => (status === "all" || d.status === status) && (`${d.delivery_no} ${d.order_no || ""}`.toLowerCase().includes(q.toLowerCase())))
     .sort((a, b) => {
-      if (sort === "customer") return a.customer.localeCompare(b.customer);
-      if (sort === "status") return a.status.localeCompare(b.status);
-      return b.date.localeCompare(a.date);
+      if (sort === "status") return String(a.status).localeCompare(String(b.status));
+      return String(b.delivery_date || "").localeCompare(String(a.delivery_date || ""));
     });
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
@@ -51,13 +62,12 @@ function DeliveryPage() {
       {
         name: "Deliveries",
         rows: filtered.map((d) => ({
-          "Delivery #": d.id,
-          "Order #": d.order,
-          Customer: d.customer,
-          Driver: d.driver,
-          Vehicle: d.vehicle,
+          "Delivery #": d.delivery_no,
+          "Order #": d.order_no,
+          Driver: d.driver_name,
+          Vehicle: d.vehicle_no,
           Route: d.route,
-          Date: fmtDate(d.date),
+          Date: d.delivery_date ? fmtDate(d.delivery_date) : "",
           Status: d.status,
         })),
       },
@@ -172,26 +182,26 @@ function DeliveryPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paged.map((d) => (
+              {loading ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">Loading live deliveries…</TableCell></TableRow> : paged.map((d) => (
                 <TableRow key={d.id}>
-                  <TableCell className="font-mono text-xs">{d.id}</TableCell>
-                  <TableCell className="font-mono text-xs">{d.order}</TableCell>
-                  <TableCell className="font-medium">{d.customer}</TableCell>
+                  <TableCell className="font-mono text-xs">{d.delivery_no}</TableCell>
+                  <TableCell className="font-mono text-xs">{d.order_no || "—"}</TableCell>
+                  <TableCell className="font-medium">{d.order_no || "Sales delivery"}</TableCell>
                   <TableCell className="text-xs">
-                    {d.driver}
+                    {d.driver_name || "Unassigned"}
                     <br />
-                    <span className="text-muted-foreground">{d.vehicle}</span>
+                    <span className="text-muted-foreground">{d.vehicle_no || "—"}</span>
                   </TableCell>
                   <TableCell className="text-xs">
                     <MapPin className="mr-1 inline h-3 w-3 text-muted-foreground" />
-                    {d.route}
+                    {d.route || "—"}
                   </TableCell>
-                  <TableCell>{fmtDate(d.date)}</TableCell>
+                  <TableCell>{d.delivery_date ? fmtDate(d.delivery_date) : "—"}</TableCell>
                   <TableCell>
-                    <StatusBadge status={d.status} />
+                    <StatusBadge status={d.status || "Pending"} />
                   </TableCell>
                   <TableCell>
-                    {d.status === "Delivered" ? (
+                    {String(d.status).toLowerCase() === "delivered" ? (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -201,7 +211,7 @@ function DeliveryPage() {
                             action: "delivery_pod_viewed",
                             entityType: "delivery",
                             entityId: d.id,
-                            details: { order: d.order, customer: d.customer },
+                            details: { order: d.order_no },
                             scenario: "delivery",
                             context: { delivery: d },
                           });
@@ -219,7 +229,7 @@ function DeliveryPage() {
                             action: "delivery_pod_upload_opened",
                             entityType: "delivery",
                             entityId: d.id,
-                            details: { order: d.order, customer: d.customer },
+                            details: { order: d.order_no },
                             scenario: "delivery",
                             context: { delivery: d },
                           });

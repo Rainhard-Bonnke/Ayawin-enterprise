@@ -1,4 +1,9 @@
-const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+const localBrowser = browserHost === "localhost" || browserHost === "127.0.0.1";
+const apiBase = (
+  import.meta.env.VITE_API_BASE ||
+  (!localBrowser && browserHost ? `${window.location.protocol}//${browserHost}:4000` : "")
+).replace(/\/+$/, "");
 const ACCESS_KEY = "ayawin-erp-access-token";
 const REFRESH_KEY = "ayawin-erp-refresh-token";
 
@@ -85,9 +90,18 @@ export class ApiAuthError extends Error {
 
 /** Prefer the latest access token from storage (e.g. after refresh) over a stale React state token. */
 export function resolveApiToken(token?: string | null): string | null {
+  if (token === null) return null;
+  if (typeof token === "string" && token && !token.startsWith("demo:")) return token;
+
+  if (typeof token === "undefined") {
+    const stored = getStoredTokens().access;
+    if (stored && !stored.startsWith("demo:")) return stored;
+    return null;
+  }
+
   const stored = getStoredTokens().access;
   if (stored && !stored.startsWith("demo:")) return stored;
-  return token ?? null;
+  return null;
 }
 
 export async function apiV1Fetch<T>(path: string, init: RequestInit = {}, token?: string | null): Promise<T> {
@@ -247,8 +261,8 @@ export const v1Api = {
       apiV1Fetch<Record<string, unknown>[]>(`/audit?q=${encodeURIComponent(q)}&limit=${limit}`, {}, token),
   },
   inventory: {
-    stock: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/inventory/stock", {}, token),
-    reorderAlerts: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/inventory/reorder-alerts", {}, token),
+    stock: (token: string, limit = 50) => apiV1Fetch<Record<string, unknown>[]>(`/inventory/stock?limit=${limit}`, {}, token),
+    reorderAlerts: (token: string, limit = 50) => apiV1Fetch<Record<string, unknown>[]>(`/inventory/reorder-alerts?limit=${limit}`, {}, token),
     stockIn: (
       token: string,
       body: {
@@ -286,7 +300,7 @@ export const v1Api = {
     goodsReceipts: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/procurement/goods-receipts", {}, token),
   },
   sales: {
-    orders: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/sales/orders", {}, token),
+    orders: (token: string, limit = 25) => apiV1Fetch<Record<string, unknown>[]>(`/sales/orders?limit=${limit}`, {}, token),
     createOrder: (
       token: string,
       body: {
@@ -318,7 +332,7 @@ export const v1Api = {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       }, token),
-    invoices: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/sales/invoices", {}, token),
+    invoices: (token: string, limit = 25) => apiV1Fetch<Record<string, unknown>[]>(`/sales/invoices?limit=${limit}`, {}, token),
     createInvoice: (
       token: string,
       body: {

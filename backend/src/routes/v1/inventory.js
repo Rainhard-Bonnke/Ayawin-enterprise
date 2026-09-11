@@ -11,12 +11,13 @@ router.get('/stock', requirePermission('procurement.view'), async (req, res) => 
     warehouseId: req.query.warehouse_id,
     itemId: req.query.item_id,
     q: req.query.q,
+    limit: req.query.limit || 50,
   });
   return res.json(rows);
 });
 
 router.get('/reorder-alerts', requirePermission('procurement.view'), async (req, res) => {
-  const rows = await inventory.getReorderAlerts(req.user.company_id);
+  const rows = await inventory.getReorderAlerts(req.user.company_id, req.query.limit || 50);
   return res.json(rows);
 });
 

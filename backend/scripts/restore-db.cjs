@@ -18,6 +18,12 @@ if (!fs.existsSync(backupPath)) {
   process.exit(1);
 }
 
+const psql = process.env.PSQL_PATH || (
+  process.platform === 'win32' && fs.existsSync(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PostgreSQL', '18', 'bin', 'psql.exe'))
+    ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PostgreSQL', '18', 'bin', 'psql.exe')
+    : 'psql'
+);
+
 const env = {
   ...process.env,
   PGPASSWORD: process.env.DATABASE_PASSWORD || process.env.PGPASSWORD || 'postgres',
@@ -32,7 +38,7 @@ const args = [
   '--set', 'ON_ERROR_STOP=on',
 ];
 
-const child = spawn('psql', args, { env, stdio: 'inherit', shell: process.platform === 'win32' });
+const child = spawn(psql, args, { env, stdio: 'inherit' });
 
 child.on('exit', (code) => {
   if (code === 0) {

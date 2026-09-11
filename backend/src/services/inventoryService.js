@@ -1,6 +1,6 @@
 const pool = require('../db');
 
-async function getStockOnHand(companyId, { warehouseId, itemId, q = '' } = {}) {
+async function getStockOnHand(companyId, { warehouseId, itemId, q = '', limit = 100 } = {}) {
   const params = [companyId];
   let filter = '';
   if (warehouseId) {
@@ -24,8 +24,9 @@ async function getStockOnHand(companyId, { warehouseId, itemId, q = '' } = {}) {
      JOIN erp_items i ON i.id = s.item_id
      JOIN erp_warehouses w ON w.id = s.warehouse_id
      WHERE s.company_id = $1 AND s.is_deleted = FALSE ${filter}
-     ORDER BY w.name, i.item_code`,
-    params,
+    ORDER BY w.name, i.item_code
+    LIMIT $${params.length + 1}`,
+      [...params, Math.min(Number(limit) || 100, 200)],
   );
   return result.rows;
 }
@@ -101,15 +102,16 @@ async function recordIssue(client, {
   return cost;
 }
 
-async function getReorderAlerts(companyId) {
+async function getReorderAlerts(companyId, limit = 100) {
   const result = await pool.query(
     `SELECT s.*, i.item_code, i.name AS item_name, i.reorder_point, w.name AS warehouse_name
      FROM erp_stock_on_hand s
      JOIN erp_items i ON i.id = s.item_id
      JOIN erp_warehouses w ON w.id = s.warehouse_id
      WHERE s.company_id = $1 AND i.reorder_point > 0 AND s.quantity <= i.reorder_point
-     ORDER BY s.quantity ASC`,
-    [companyId],
+    ORDER BY s.quantity ASC
+    LIMIT $2`,
+      [companyId, Math.min(Number(limit) || 100, 200)],
   );
   return result.rows;
 }

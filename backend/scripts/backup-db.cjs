@@ -11,6 +11,12 @@ fs.mkdirSync(backupDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const output = path.join(backupDir, `ayawin-enterprise-${stamp}.sql`);
 
+const pgDump = process.env.PG_DUMP_PATH || (
+  process.platform === 'win32' && fs.existsSync(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PostgreSQL', '18', 'bin', 'pg_dump.exe'))
+    ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PostgreSQL', '18', 'bin', 'pg_dump.exe')
+    : 'pg_dump'
+);
+
 const env = {
   ...process.env,
   PGPASSWORD: process.env.DATABASE_PASSWORD || process.env.PGPASSWORD || 'postgres',
@@ -27,7 +33,7 @@ const args = [
   '--no-privileges',
 ];
 
-const child = spawn('pg_dump', args, { env, stdio: 'inherit', shell: process.platform === 'win32' });
+const child = spawn(pgDump, args, { env, stdio: 'inherit' });
 
 child.on('exit', (code) => {
   if (code === 0) {

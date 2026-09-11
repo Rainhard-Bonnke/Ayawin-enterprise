@@ -1,12 +1,18 @@
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
+async function loadPdfTools() {
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+    import("html2canvas"),
+    import("jspdf"),
+  ]);
+
+  return { html2canvas, jsPDF };
+}
 
 export async function exportElementAsPdf(filename: string, element: HTMLElement) {
-  // Render the element to a canvas
+  const { html2canvas, jsPDF } = await loadPdfTools();
+
   const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
   const imgData = canvas.toDataURL('image/png');
 
-  // Create a PDF and add the image sized to fit
   const pdf = new jsPDF('p', 'pt', 'a4');
   const pdfWidth = pdf.internal.pageSize.getWidth();
   const pdfHeight = pdf.internal.pageSize.getHeight();
@@ -18,7 +24,7 @@ export async function exportElementAsPdf(filename: string, element: HTMLElement)
   const renderHeight = imgHeight * ratio;
 
   const x = (pdfWidth - renderWidth) / 2;
-  const y = 20; // small top margin
+  const y = 20;
 
   pdf.addImage(imgData, 'PNG', x, y, renderWidth, renderHeight);
   pdf.save(filename);
@@ -38,7 +44,8 @@ export type InvoicePdfPayload = {
   currency?: string;
 };
 
-export function exportInvoicePdf(filename: string, payload: InvoicePdfPayload) {
+export async function exportInvoicePdf(filename: string, payload: InvoicePdfPayload) {
+  const { jsPDF } = await loadPdfTools();
   const pdf = new jsPDF('p', 'pt', 'a4');
   const pageWidth = pdf.internal.pageSize.getWidth();
   const margin = 40;
@@ -104,10 +111,11 @@ export function exportInvoicePdf(filename: string, payload: InvoicePdfPayload) {
   pdf.save(filename);
 }
 
-export function exportReceiptPdf(
+export async function exportReceiptPdf(
   filename: string,
   payload: InvoicePdfPayload & { paymentRef?: string; receivedFrom?: string },
 ) {
+  const { jsPDF } = await loadPdfTools();
   const pdf = new jsPDF('p', 'pt', 'a4');
   const pageWidth = pdf.internal.pageSize.getWidth();
   const margin = 40;
@@ -155,7 +163,7 @@ export function exportReceiptPdf(
   pdf.save(filename);
 }
 
-export function exportVerificationCertificatePdf(
+export async function exportVerificationCertificatePdf(
   filename: string,
   payload: {
     invoiceNo: string;
@@ -166,6 +174,7 @@ export function exportVerificationCertificatePdf(
     verifiedBy?: string;
   },
 ) {
+  const { jsPDF } = await loadPdfTools();
   const pdf = new jsPDF('p', 'pt', 'a4');
   const pageWidth = pdf.internal.pageSize.getWidth();
   const margin = 40;

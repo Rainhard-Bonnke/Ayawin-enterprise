@@ -61,7 +61,7 @@ function requirePermission(...codes) {
     const perms = req.user?.permissions || [];
     const isLegacyAdmin = req.user?.role === 'Admin';
     const hasAll = codes.every((code) => perms.includes(code));
-    if (hasAll || isLegacyAdmin || perms.includes('foundation.edit')) {
+    if (hasAll || isLegacyAdmin) {
       return next();
     }
     return res.status(403).json({ error: 'Forbidden', required: codes });
