@@ -1,41 +1,5 @@
 services:
   - type: web
-    name: martin-enterprise-backend
-    runtime: node
-    rootDir: backend
-    plan: free
-    buildCommand: npm ci
-    startCommand: npm start
-    healthCheckPath: /health
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 4000
-      - key: ENABLE_DEMO_MODE
-        value: "false"
-      - key: DATABASE_URL
-        sync: false
-      - key: DATABASE_SSL
-        value: "true"
-      - key: JWT_SECRET
-        generateValue: true
-      - key: DOC_VERIFY_SECRET
-        generateValue: true
-      - key: APP_BASE_URL
-        sync: false
-      - key: CORS_ORIGIN
-        sync: false
-      - key: ADMIN_EMAIL
-        sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
-      - key: POS_USER_EMAIL
-        sync: false
-      - key: POS_PASSWORD
-        sync: false
-
-  - type: web
     name: martin-enterprise-frontend
     runtime: static
     plan: free
