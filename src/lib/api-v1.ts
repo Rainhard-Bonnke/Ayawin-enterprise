@@ -216,6 +216,35 @@ export async function v1Login(email: string, password: string, mfaToken?: string
   return { token: data.access_token, user };
 }
 
+export async function v1PosLogin(password: string) {
+  const response = await fetch(buildUrl("/auth/pos-login"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+
+  if (!response.ok) await parseError(response);
+
+  const data = await response.json() as {
+    access_token: string;
+    refresh_token: string;
+    user: ErpUser & { role_name?: string };
+  };
+
+  storeTokens(data.access_token, data.refresh_token);
+  return {
+    token: data.access_token,
+    user: {
+      id: data.user.id,
+      username: data.user.username,
+      full_name: data.user.full_name,
+      email: data.user.email,
+      role: data.user.role_name || "POS Operator",
+      permissions: data.user.permissions,
+    } satisfies ErpUser,
+  };
+}
+
 export async function v1Me(token: string) {
   const user = await apiV1Fetch<ErpUser & { role_name?: string }>("/auth/me", {}, token);
   return {

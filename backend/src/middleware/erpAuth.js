@@ -19,13 +19,14 @@ async function authenticateErp(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  let payload;
   try {
     if (token.startsWith('demo:')) {
       if (!IS_DEMO_MODE) return res.status(401).json({ error: 'Demo tokens are not allowed' });
       return legacyAuth.authenticateToken(req, res, next);
     }
 
-    const payload = tokenService.verifyAccessToken(token);
+    payload = tokenService.verifyAccessToken(token);
     if (payload.type !== 'access') {
       return res.status(401).json({ error: 'Invalid token type' });
     }
@@ -48,9 +49,29 @@ async function authenticateErp(req, res, next) {
     }
 
     req.user = userService.sanitizeUser(user);
+    if (payload.session_type === 'pos') {
+      req.user.role_name = 'POS Operator';
+      req.user.role = 'POS Operator';
+      req.user.permissions = payload.permissions || ['sales.view', 'sales.create', 'sales.approve', 'master_data.view'];
+      req.user.session_type = 'pos';
+    }
     req.clientIp = ip;
     return next();
   } catch {
+    if (payload?.session_type === 'pos') {
+      req.user = {
+        id: payload.sub,
+        company_id: payload.companyId,
+        default_branch_id: payload.branchId,
+        role_id: payload.roleId,
+        email: payload.email,
+        role_name: 'POS Operator',
+        role: 'POS Operator',
+        permissions: payload.permissions || ['sales.view', 'sales.create', 'sales.approve', 'master_data.view'],
+        session_type: 'pos',
+      };
+      return next();
+    }
     // Fall back to legacy JWT for existing frontend routes
     return legacyAuth.authenticateToken(req, res, next);
   }

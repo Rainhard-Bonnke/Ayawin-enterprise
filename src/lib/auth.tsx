@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { User } from "./api";
-import { loginRequest, logoutRequest } from "./api";
+import { loginRequest, logoutRequest, posLoginRequest } from "./api";
 import {
   parseAccessToken,
   getStoredTokens,
@@ -15,6 +15,7 @@ type AuthContextValue = {
   user: User | null;
   token: string | null;
   login: (email: string, password: string) => Promise<void>;
+  loginPos: (password: string) => Promise<void>;
   logout: () => void;
   loading: boolean;
 };
@@ -117,6 +118,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(currentUser);
   };
 
+  const loginPos = async (password: string) => {
+    const { token: newToken, user: currentUser } = await posLoginRequest(password);
+    localStorage.setItem(STORAGE_KEY, newToken);
+    setToken(newToken);
+    setUser(currentUser);
+  };
+
   const logout = async () => {
     if (token) {
       try {
@@ -133,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const value = useMemo(
-    () => ({ user, token, login, logout, loading }),
+    () => ({ user, token, login, loginPos, logout, loading }),
     [user, token, loading],
   );
 

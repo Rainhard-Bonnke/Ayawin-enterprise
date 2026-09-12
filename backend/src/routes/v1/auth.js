@@ -11,6 +11,8 @@ const router = express.Router();
 
 const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.NODE_ENV !== 'production');
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS) || 5;
+const POS_USER_EMAIL = (process.env.POS_USER_EMAIL || process.env.ADMIN_EMAIL || 'bonnkereinhard654@gmail.com').toLowerCase();
+const POS_PASSWORD = process.env.POS_PASSWORD || '';
 
 async function setUserPassword(userId, password) {
   const hash = await bcrypt.hash(password, 10);
@@ -126,6 +128,38 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(503).json({ error: 'Authentication service unavailable' });
+  }
+});
+
+router.post('/pos-login', async (req, res) => {
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!password || !POS_PASSWORD) return res.status(401).json({ error: 'POS login is not configured' });
+
+  try {
+    const user = await userService.findUserByEmail(POS_USER_EMAIL);
+    if (!user || user.status !== 'active' || !(await bcrypt.compare(password, POS_PASSWORD.startsWith('$2') ? POS_PASSWORD : await bcrypt.hash(POS_PASSWORD, 10)))) {
+      return res.status(401).json({ error: 'Invalid POS password' });
+    }
+
+    const posUser = {
+      ...user,
+      permissions: ['sales.view', 'sales.create', 'sales.approve', 'master_data.view'],
+      role_name: 'POS Operator',
+    };
+    const refreshToken = tokenService.generateRefreshToken();
+    await tokenService.storeRefreshToken({ user, token: refreshToken, ipAddress: getClientIp(req), deviceInfo: req.headers['user-agent'] || null });
+    const accessToken = tokenService.generateAccessToken(posUser, { sessionType: 'pos' });
+    return res.json({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_type: 'Bearer',
+      expires_in: process.env.JWT_ACCESS_EXPIRES || '15m',
+      user: userService.sanitizeUser(posUser),
+      session_type: 'pos',
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(503).json({ error: 'POS authentication service unavailable' });
   }
 });
 

@@ -7,7 +7,6 @@ import { canAccessPath, firstAllowedPath } from "@/lib/rbac";
 import { useRouterState } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { LiveConnectivityBadge } from "@/components/LiveConnectivityBadge";
 
 export const Route = createFileRoute("/_app")({
   component: AppLayout,
@@ -17,6 +16,7 @@ function AppLayout() {
   const navigate = useNavigate();
   const { user, loading, logout } = useAuth();
   const path = useRouterState({ select: (state) => state.location.pathname });
+  const isPos = path.startsWith("/pos");
 
   useEffect(() => {
     if (!loading && !user) {
@@ -41,11 +41,10 @@ function AppLayout() {
 
   return (
     <SidebarProvider>
-      <AppSidebar />
+      {!isPos && <AppSidebar />}
       <SidebarInset className="min-h-svh">
         <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-background px-4">
           <SidebarTrigger />
-          <LiveConnectivityBadge />
           <div className="ml-auto flex items-center gap-2">
             <Button variant="ghost" size="icon" aria-label="Search">
               <Search className="h-4 w-4" />

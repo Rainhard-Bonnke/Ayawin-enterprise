@@ -8,11 +8,13 @@ export type RoleName =
   | "Store Manager"
   | "Sales Rep"
   | "Warehouse"
-  | "Driver";
+  | "Driver"
+  | "POS Operator";
 
 const pathAccess: Record<string, RoleName[]> = {
   "/": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager", "Sales Rep", "Warehouse", "Driver"],
   "/sales": ["Admin", "Manager", "Sales Rep"],
+  "/pos": ["POS Operator"],
   "/customers": ["Admin", "Manager", "Sales Rep", "Accountant"],
   "/invoices": ["Admin", "Manager", "Accountant", "Sales Rep"],
   "/accounting": ["Admin", "Manager", "Accountant"],
@@ -36,6 +38,7 @@ export const roleLabels: Record<RoleName, string> = {
   "Sales Rep": "Customers, orders and sales workflows",
   Warehouse: "Stock, warehouse and delivery support",
   Driver: "Delivery execution and proof of delivery",
+  "POS Operator": "Point-of-sale checkout and receipts",
 };
 
 export const demoRoleAccounts: Record<string, RoleName> = {
@@ -70,7 +73,7 @@ export function canAccessPath(user: Pick<User, "role"> | null | undefined, path:
 export function firstAllowedPath(user: Pick<User, "role"> | null | undefined) {
   if (!user) return "/login";
   const role = normalizeRole(user.role);
-  return Object.entries(pathAccess).find(([, roles]) => roles.includes(role))?.[0] ?? "/";
+  return role === "POS Operator" ? "/pos" : Object.entries(pathAccess).find(([, roles]) => roles.includes(role))?.[0] ?? "/";
 }
 
 export function navigationAllowedForRole(role: string | null | undefined, url: string) {

@@ -3,6 +3,7 @@ import {
   isV1Enabled,
   v1Api,
   v1Login,
+  v1PosLogin,
   v1Logout,
   v1Me,
   apiV1Fetch,
@@ -183,6 +184,12 @@ export async function loginRequest(email: string, password: string) {
   } catch {
     throw new Error("Authentication service is unavailable. Start the backend and try again.");
   }
+}
+
+export async function posLoginRequest(password: string) {
+  if (!isV1Enabled()) throw new Error("POS requires the live API");
+  clearTokens();
+  return v1PosLogin(password);
 }
 
 export async function fetchCurrentUser(token: string) {

@@ -10,7 +10,7 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function generateAccessToken(user) {
+function generateAccessToken(user, options = {}) {
   return jwt.sign(
     {
       sub: user.id,
@@ -19,6 +19,7 @@ function generateAccessToken(user) {
       roleId: user.role_id,
       email: user.email,
       permissions: user.permissions || [],
+      session_type: options.sessionType || 'user',
       type: 'access',
     },
     JWT_SECRET,

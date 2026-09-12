@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
+import { KeyRound, ShoppingCart } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,8 @@ export const Route = createFileRoute("/login")({
 
 function LoginPage() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, loginPos } = useAuth();
+  const [mode, setMode] = useState<"licensed" | "pos">("licensed");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +30,13 @@ function LoginPage() {
     setLoading(true);
 
     try {
-      await login(email, password);
-      navigate({ to: "/" });
+      if (mode === "pos") {
+        await loginPos(password);
+        navigate({ to: "/pos" });
+      } else {
+        await login(email, password);
+        navigate({ to: "/" });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -48,15 +55,24 @@ function LoginPage() {
         <Card className="w-full max-w-md">
           <CardContent className="p-6">
             <h1 className="text-lg font-semibold">Sign in</h1>
-            <p className="mt-1 text-sm text-muted-foreground">Ayawin Enterprise ERP</p>
+            <p className="mt-1 text-sm text-muted-foreground">Choose your workspace to continue</p>
+
+            <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
+              <Button type="button" variant={mode === "licensed" ? "default" : "ghost"} onClick={() => { setMode("licensed"); setError(null); }}>
+                <KeyRound className="mr-2 h-4 w-4" /> ERP workspace
+              </Button>
+              <Button type="button" variant={mode === "pos" ? "default" : "ghost"} onClick={() => { setMode("pos"); setError(null); }}>
+                <ShoppingCart className="mr-2 h-4 w-4" /> Point of sale
+              </Button>
+            </div>
 
             <form className="mt-6 space-y-4" onSubmit={handleSignIn}>
-              <div className="space-y-1.5">
+              {mode === "licensed" && <div className="space-y-1.5">
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-              </div>
+              </div>}
               <div className="space-y-1.5">
-                <Label htmlFor="password">Password</Label>
+                <Label htmlFor="password">{mode === "pos" ? "POS password" : "Password"}</Label>
                 <Input
                   id="password"
                   type="password"
@@ -65,14 +81,14 @@ function LoginPage() {
                   required
                 />
               </div>
-              <div className="flex items-center gap-2">
+              {mode === "licensed" && <div className="flex items-center gap-2">
                 <Checkbox id="remember" />
                 <Label htmlFor="remember" className="text-sm font-normal text-muted-foreground">
                   Remember me
                 </Label>
-              </div>
+              </div>}
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? "Signing in…" : "Sign in"}
+                {loading ? "Opening workspace…" : mode === "pos" ? "Open POS" : "Sign in"}
               </Button>
               {error && <p className="text-sm text-destructive">{error}</p>}
             </form>

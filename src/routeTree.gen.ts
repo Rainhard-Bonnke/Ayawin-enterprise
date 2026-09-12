@@ -17,6 +17,7 @@ import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSalesRouteImport } from './routes/_app.sales'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
 import { Route as AppProcurementRouteImport } from './routes/_app.procurement'
+import { Route as AppPosRouteImport } from './routes/_app.pos'
 import { Route as AppMasterDataRouteImport } from './routes/_app.master-data'
 import { Route as AppInvoicesRouteImport } from './routes/_app.invoices'
 import { Route as AppInventoryRouteImport } from './routes/_app.inventory'
@@ -63,6 +64,11 @@ const AppReportsRoute = AppReportsRouteImport.update({
 const AppProcurementRoute = AppProcurementRouteImport.update({
   id: '/procurement',
   path: '/procurement',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPosRoute = AppPosRouteImport.update({
+  id: '/pos',
+  path: '/pos',
   getParentRoute: () => AppRoute,
 } as any)
 const AppMasterDataRoute = AppMasterDataRouteImport.update({
@@ -117,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/inventory': typeof AppInventoryRoute
   '/invoices': typeof AppInvoicesRoute
   '/master-data': typeof AppMasterDataRoute
+  '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByTo {
   '/inventory': typeof AppInventoryRoute
   '/invoices': typeof AppInvoicesRoute
   '/master-data': typeof AppMasterDataRoute
+  '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
@@ -152,6 +160,7 @@ export interface FileRoutesById {
   '/_app/inventory': typeof AppInventoryRoute
   '/_app/invoices': typeof AppInvoicesRoute
   '/_app/master-data': typeof AppMasterDataRoute
+  '/_app/pos': typeof AppPosRoute
   '/_app/procurement': typeof AppProcurementRoute
   '/_app/reports': typeof AppReportsRoute
   '/_app/sales': typeof AppSalesRoute
@@ -172,6 +181,7 @@ export interface FileRouteTypes {
     | '/inventory'
     | '/invoices'
     | '/master-data'
+    | '/pos'
     | '/procurement'
     | '/reports'
     | '/sales'
@@ -188,6 +198,7 @@ export interface FileRouteTypes {
     | '/inventory'
     | '/invoices'
     | '/master-data'
+    | '/pos'
     | '/procurement'
     | '/reports'
     | '/sales'
@@ -206,6 +217,7 @@ export interface FileRouteTypes {
     | '/_app/inventory'
     | '/_app/invoices'
     | '/_app/master-data'
+    | '/_app/pos'
     | '/_app/procurement'
     | '/_app/reports'
     | '/_app/sales'
@@ -277,6 +289,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProcurementRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/pos': {
+      id: '/_app/pos'
+      path: '/pos'
+      fullPath: '/pos'
+      preLoaderRoute: typeof AppPosRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/master-data': {
       id: '/_app/master-data'
       path: '/master-data'
@@ -345,6 +364,7 @@ interface AppRouteChildren {
   AppInventoryRoute: typeof AppInventoryRoute
   AppInvoicesRoute: typeof AppInvoicesRoute
   AppMasterDataRoute: typeof AppMasterDataRoute
+  AppPosRoute: typeof AppPosRoute
   AppProcurementRoute: typeof AppProcurementRoute
   AppReportsRoute: typeof AppReportsRoute
   AppSalesRoute: typeof AppSalesRoute
@@ -362,6 +382,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppInventoryRoute: AppInventoryRoute,
   AppInvoicesRoute: AppInvoicesRoute,
   AppMasterDataRoute: AppMasterDataRoute,
+  AppPosRoute: AppPosRoute,
   AppProcurementRoute: AppProcurementRoute,
   AppReportsRoute: AppReportsRoute,
   AppSalesRoute: AppSalesRoute,
