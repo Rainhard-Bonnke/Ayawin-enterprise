@@ -5,7 +5,7 @@ const gl = require('../src/services/glPostingService');
 
 (async () => {
   const u = await pool.query(
-    "SELECT u.id, u.company_id FROM erp_users u WHERE u.email = 'admin@martin.co.ke' LIMIT 1",
+    "SELECT u.id, u.company_id FROM erp_users u WHERE u.email = 'bonnkereinhard654@gmail.com' LIMIT 1",
   );
   const companyId = u.rows[0].company_id;
   const userId = u.rows[0].id;

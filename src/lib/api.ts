@@ -1,4 +1,12 @@
-import { customers, products, purchaseOrders, salesOrders, suppliers, users, warehouses } from "./mock-data";
+import {
+  customers,
+  products,
+  purchaseOrders,
+  salesOrders,
+  suppliers,
+  users,
+  warehouses,
+} from "./mock-data";
 import {
   isV1Enabled,
   v1Api,
@@ -25,51 +33,45 @@ export type User = {
   permissions?: string[];
 };
 
-const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
-const localBrowser = browserHost === "localhost" || browserHost === "127.0.0.1";
-const apiBase = (
-  import.meta.env.VITE_API_BASE ||
-  (!localBrowser && browserHost ? `${window.location.protocol}//${browserHost}:4000` : "")
-).replace(/\/+$/, "");
+const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 const isDemoToken = (token: string) => token.startsWith("demo:");
 
-const seededUsers = (): BackendUser[] =>
-  [
-    ...users.map((user, index) => ({
-      id: index + 1,
-      username: user.email.split("@")[0],
-      full_name: user.name,
-      email: user.email,
-      role: user.role,
-      status: user.status.toLowerCase(),
-      phone: `+254 700 000 00${index + 1}`,
-      two_factor_enabled: ["Admin", "Manager", "Accountant"].includes(user.role),
-      last_login: user.lastLogin,
-    })),
-    {
-      id: 101,
-      username: "hr",
-      full_name: "HR Officer Demo User",
-      email: "hr@martin.co.ke",
-      role: "HR Officer",
-      status: "active",
-      phone: "+254 700 000 101",
-      two_factor_enabled: true,
-      last_login: "2026-05-21T09:10:00",
-    },
-    {
-      id: 102,
-      username: "store",
-      full_name: "Store Manager Demo User",
-      email: "store@martin.co.ke",
-      role: "Store Manager",
-      status: "active",
-      phone: "+254 700 000 102",
-      two_factor_enabled: true,
-      last_login: "2026-05-21T08:40:00",
-    },
-  ];
+const seededUsers = (): BackendUser[] => [
+  ...users.map((user, index) => ({
+    id: index + 1,
+    username: user.email.split("@")[0],
+    full_name: user.name,
+    email: user.email,
+    role: user.role,
+    status: user.status.toLowerCase(),
+    phone: `+254 700 000 00${index + 1}`,
+    two_factor_enabled: ["Admin", "Manager", "Accountant"].includes(user.role),
+    last_login: user.lastLogin,
+  })),
+  {
+    id: 101,
+    username: "hr",
+    full_name: "HR Officer Demo User",
+    email: "hr@martin.co.ke",
+    role: "HR Officer",
+    status: "active",
+    phone: "+254 700 000 101",
+    two_factor_enabled: true,
+    last_login: "2026-05-21T09:10:00",
+  },
+  {
+    id: 102,
+    username: "store",
+    full_name: "Store Manager Demo User",
+    email: "store@martin.co.ke",
+    role: "Store Manager",
+    status: "active",
+    phone: "+254 700 000 102",
+    two_factor_enabled: true,
+    last_login: "2026-05-21T08:40:00",
+  },
+];
 
 const seededCustomers = (): BackendCustomer[] =>
   customers.map((customer, index) => ({
@@ -154,23 +156,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 export async function loginRequest(email: string, password: string) {
   if (isV1Enabled()) {
     clearTokens();
-    try {
-      return await v1Login(email, password);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error ?? "");
-      const shouldFallback =
-        /invalid credentials|unauthorized|not authorized|authentication service unavailable|session expired/i.test(message);
-
-      if (!shouldFallback) throw error;
-
-      const response = await fetch(buildUrl("/api/auth/login"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-
-      return handleResponse<{ token: string; user: User }>(response);
-    }
+    return v1Login(email, password);
   }
 
   try {
@@ -279,18 +265,22 @@ export async function createUser(
       const roles = await v1FetchRoles(token);
       roleId = roles.find((r) => r.name === payload.role)?.id;
     }
-    const row = await apiV1Fetch<Record<string, unknown>>("/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        username: payload.username,
-        email: payload.email,
-        full_name: payload.full_name,
-        phone: payload.phone,
-        role_id: roleId,
-        password: payload.password,
-      }),
-    }, token);
+    const row = await apiV1Fetch<Record<string, unknown>>(
+      "/users",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          username: payload.username,
+          email: payload.email,
+          full_name: payload.full_name,
+          phone: payload.phone,
+          role_id: roleId,
+          password: payload.password,
+        }),
+      },
+      token,
+    );
     const user = mapV1User(row);
     if (!row.role_name && payload.role) user.role = payload.role;
     return user;
@@ -310,7 +300,14 @@ export async function createUser(
 export async function updateUser(
   token: string,
   id: string | number,
-  payload: { status?: string; role?: string; role_id?: string; full_name?: string; phone?: string; two_factor_enabled?: boolean },
+  payload: {
+    status?: string;
+    role?: string;
+    role_id?: string;
+    full_name?: string;
+    phone?: string;
+    two_factor_enabled?: boolean;
+  },
 ) {
   if (isDemoToken(token)) {
     throw new Error("Update users against the live API (disable demo mode).");
@@ -322,16 +319,20 @@ export async function updateUser(
       const roles = await v1FetchRoles(token);
       roleId = roles.find((r) => r.name === payload.role)?.id;
     }
-    const row = await apiV1Fetch<Record<string, unknown>>(`/users/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        full_name: payload.full_name,
-        phone: payload.phone,
-        status: payload.status,
-        role_id: roleId,
-      }),
-    }, token);
+    const row = await apiV1Fetch<Record<string, unknown>>(
+      `/users/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          full_name: payload.full_name,
+          phone: payload.phone,
+          status: payload.status,
+          role_id: roleId,
+        }),
+      },
+      token,
+    );
     return mapV1User(row);
   }
 
@@ -368,6 +369,7 @@ export type BackendCustomer = {
   name: string;
   kra_pin: string;
   contact?: string | null;
+  phone?: string | null;
   email?: string | null;
   address?: string | null;
   location?: string | null;
@@ -380,7 +382,9 @@ export type BackendCustomer = {
 
 export async function fetchCustomers(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -429,21 +433,25 @@ export async function createCustomer(
 
   if (isV1Enabled()) {
     const code = payload.kra_pin || `C-${Date.now()}`;
-    const row = await apiV1Fetch<Record<string, unknown>>("/master/customers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        customer_code: code,
-        name: payload.name,
-        tax_id: payload.kra_pin,
-        email: payload.email,
-        phone: payload.contact,
-        address_line1: payload.address,
-        city: payload.location,
-        customer_type: payload.segment || payload.type,
-        credit_limit: payload.credit_limit,
-      }),
-    }, token);
+    const row = await apiV1Fetch<Record<string, unknown>>(
+      "/master/customers",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          customer_code: code,
+          name: payload.name,
+          tax_id: payload.kra_pin,
+          email: payload.email,
+          phone: payload.contact,
+          address_line1: payload.address,
+          city: payload.location,
+          customer_type: payload.segment || payload.type,
+          credit_limit: payload.credit_limit,
+        }),
+      },
+      token,
+    );
     return mapV1Customer(row);
   }
 
@@ -476,22 +484,27 @@ export async function updateCustomer(
   }>,
 ) {
   if (isDemoToken(token)) {
-    const existing = seededCustomers().find((customer) => customer.id === id) ?? seededCustomers()[0];
+    const existing =
+      seededCustomers().find((customer) => customer.id === id) ?? seededCustomers()[0];
     return { ...existing, ...payload };
   }
 
   if (isV1Enabled()) {
-    const row = await apiV1Fetch<Record<string, unknown>>(`/master/customers/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        name: payload.name,
-        tax_id: payload.kra_pin,
-        email: payload.email,
-        phone: payload.contact,
-        credit_limit: payload.credit_limit,
-      }),
-    }, token);
+    const row = await apiV1Fetch<Record<string, unknown>>(
+      `/master/customers/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          name: payload.name,
+          tax_id: payload.kra_pin,
+          email: payload.email,
+          phone: payload.contact,
+          credit_limit: payload.credit_limit,
+        }),
+      },
+      token,
+    );
     return mapV1Customer(row);
   }
 
@@ -510,7 +523,11 @@ export async function deleteCustomer(token: string, id: string | number) {
   if (isDemoToken(token)) return { ok: true as const };
 
   if (isV1Enabled()) {
-    await apiV1Fetch(`/master/customers/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }, token);
+    await apiV1Fetch(
+      `/master/customers/${id}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+      token,
+    );
     return { ok: true as const };
   }
 
@@ -544,6 +561,7 @@ export type BackendSupplier = {
   contact?: string | null;
   email?: string | null;
   phone?: string | null;
+  location?: string | null;
   payment_terms?: string | null;
   credit_limit: number;
   balance: number;
@@ -561,6 +579,101 @@ export async function fetchSuppliers(token: string) {
     headers: { Authorization: `Bearer ${token}` },
   });
   return handleResponse<BackendSupplier[]>(response);
+}
+
+export type SupplierBill = {
+  id: string;
+  bill_no: string;
+  supplier_invoice_no: string;
+  vendor_id: string;
+  vendor_name: string;
+  bill_date: string;
+  due_date: string;
+  total_amount: number;
+  amount_paid: number;
+  balance_due: number;
+  journal_id?: string | null;
+  status: string;
+  display_status?: string;
+  days_overdue: number;
+  purchase_order_id?: string | null;
+  goods_receipt_id?: string | null;
+  po_number?: string | null;
+  grn_number?: string | null;
+};
+
+export async function fetchSupplierBills(token: string): Promise<SupplierBill[]> {
+  if (isDemoToken(token)) throw new Error("Supplier bills require a live ERP account.");
+  return apiV1Fetch<SupplierBill[]>("/procurement/supplier-bills", {}, token);
+}
+
+export async function createSupplierBill(
+  token: string,
+  payload: {
+    vendor_id: string;
+    supplier_invoice_no: string;
+    bill_date: string;
+    due_date: string;
+    notes?: string;
+    purchase_order_id?: string;
+    goods_receipt_id?: string;
+    lines: Array<{
+      description: string;
+      quantity: number;
+      unit_price: number;
+      tax_rate: number;
+      account_id: string;
+      goods_receipt_line_id?: string;
+    }>;
+  },
+) {
+  return apiV1Fetch<SupplierBill>(
+    "/procurement/supplier-bills",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function postSupplierBill(token: string, billId: string) {
+  return apiV1Fetch<{ bill: SupplierBill; journal_id: string }>(
+    `/procurement/supplier-bills/${billId}/post`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export async function createSupplierPayment(token: string, payload: Record<string, unknown>) {
+  return apiV1Fetch<{ id: string; payment_no: string; amount: number; status: string }>(
+    "/procurement/supplier-payments",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function postSupplierPayment(token: string, paymentId: string) {
+  return apiV1Fetch<{ ok: boolean; journal_id: string }>(
+    `/procurement/supplier-payments/${paymentId}/post`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export async function fetchSupplierPayments(
+  token: string,
+): Promise<Array<Record<string, unknown>>> {
+  return apiV1Fetch<Array<Record<string, unknown>>>("/procurement/supplier-payments", {}, token);
+}
+
+export async function fetchChartOfAccounts(token: string): Promise<Array<Record<string, unknown>>> {
+  return apiV1Fetch<Array<Record<string, unknown>>>("/master/chart-of-accounts", {}, token);
 }
 
 export async function createSupplier(
@@ -667,6 +780,7 @@ export type BackendWarehouse = {
   city?: string | null;
   manager?: string | null;
   phone?: string | null;
+  is_active?: boolean;
 };
 
 export type BackendMasterItem = {
@@ -676,7 +790,29 @@ export type BackendMasterItem = {
   barcode?: string | null;
   standard_cost: number;
   reorder_point: number;
+  tax_group_id?: string | null;
+  lot_tracking_enabled: boolean;
+  is_stock_item: boolean;
   is_active: boolean;
+};
+
+export type BackendTaxGroup = {
+  id: string;
+  code: string;
+  name: string;
+  tax_treatment: "standard" | "zero_rated" | "exempt" | "out_of_scope";
+};
+
+export type BackendTaxRate = {
+  id: string;
+  code: string;
+  name: string;
+  rate: number;
+  tax_type: string;
+  basis: string;
+  effective_from: string;
+  effective_to?: string | null;
+  tax_groups: string[];
 };
 
 function mapV1Item(row: Record<string, unknown>): BackendMasterItem {
@@ -687,20 +823,61 @@ function mapV1Item(row: Record<string, unknown>): BackendMasterItem {
     barcode: (row.barcode as string) || null,
     standard_cost: Number(row.standard_cost || 0),
     reorder_point: Number(row.reorder_point || 0),
+    tax_group_id: row.tax_group_id ? String(row.tax_group_id) : null,
+    lot_tracking_enabled: row.lot_tracking_enabled === true,
+    is_stock_item: row.is_stock_item !== false,
     is_active: row.is_active !== false,
   };
 }
 
-export async function fetchMasterItems(token: string) {
+export async function fetchTaxGroups(token: string): Promise<BackendTaxGroup[]> {
+  if (isDemoToken(token) || !isV1Enabled()) return [];
+  const rows = await v1Api.master.taxGroups(token);
+  return rows.map((row) => ({
+    id: String(row.id),
+    code: String(row.code),
+    name: String(row.name),
+    tax_treatment: String(row.tax_treatment || "standard") as BackendTaxGroup["tax_treatment"],
+  }));
+}
+
+export async function fetchTaxRates(token: string): Promise<BackendTaxRate[]> {
+  if (isDemoToken(token) || !isV1Enabled()) return [];
+  const rows = await v1Api.master.taxRates(token);
+  return rows.map((row) => ({
+    id: String(row.id), code: String(row.code), name: String(row.name), rate: Number(row.rate || 0),
+    tax_type: String(row.tax_type || "vat"), basis: String(row.basis || "percentage"),
+    effective_from: String(row.effective_from || "").slice(0, 10),
+    effective_to: row.effective_to ? String(row.effective_to).slice(0, 10) : null,
+    tax_groups: Array.isArray(row.tax_groups) ? row.tax_groups.map(String) : [],
+  }));
+}
+
+export async function createTaxRateVersion(token: string, payload: {
+  code: string; name: string; rate: number; tax_type: string; basis: string; effective_from: string;
+}) {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Tax settings require the live ERP API");
+  return v1Api.master.createTaxRateVersion(token, payload);
+}
+
+export async function fetchMasterItems(token: string, q = "", limit = 100) {
   if (isDemoToken(token)) return [];
   if (!isV1Enabled()) return [];
-  const rows = await masterList(token, "items");
+  const rows = await masterList(token, "items", q, limit);
   return rows.map(mapV1Item);
 }
 
 export async function createMasterItem(
   token: string,
-  payload: { item_code: string; name: string; barcode?: string; standard_cost?: number; reorder_point?: number },
+  payload: {
+    item_code: string;
+    name: string;
+    barcode?: string;
+    standard_cost?: number;
+    reorder_point?: number;
+    tax_group_id: string;
+    lot_tracking_enabled?: boolean;
+  },
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for items");
   const row = await masterCreate(token, "items", payload);
@@ -710,7 +887,15 @@ export async function createMasterItem(
 export async function updateMasterItem(
   token: string,
   id: string,
-  payload: Partial<{ name: string; barcode: string; standard_cost: number; reorder_point: number; is_active: boolean }>,
+  payload: Partial<{
+    name: string;
+    barcode: string;
+    standard_cost: number;
+    reorder_point: number;
+    tax_group_id: string;
+    lot_tracking_enabled?: boolean;
+    is_active: boolean;
+  }>,
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for items");
   const row = await masterUpdate(token, "items", id, payload);
@@ -725,7 +910,9 @@ export async function deleteMasterItem(token: string, id: string) {
 
 export async function fetchWarehouses(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -748,12 +935,20 @@ function mapV1Warehouse(row: Record<string, unknown>): BackendWarehouse {
     city: (row.city as string) || null,
     manager: (row.manager_name as string) || null,
     phone: (row.phone as string) || null,
+    is_active: row.is_active !== false,
   };
 }
 
 export async function createWarehouse(
   token: string,
-  payload: { code: string; name: string; address_line1?: string; city?: string; manager_name?: string; phone?: string },
+  payload: {
+    code: string;
+    name: string;
+    address_line1?: string;
+    city?: string;
+    manager_name?: string;
+    phone?: string;
+  },
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for warehouses");
   if (isV1Enabled()) {
@@ -771,7 +966,14 @@ export async function createWarehouse(
 export async function updateWarehouse(
   token: string,
   id: string,
-  payload: Partial<{ code: string; name: string; address_line1: string; city: string; manager_name: string; phone: string }>,
+  payload: Partial<{
+    code: string;
+    name: string;
+    address_line1: string;
+    city: string;
+    manager_name: string;
+    phone: string;
+  }>,
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for warehouses");
   if (isV1Enabled()) {
@@ -825,23 +1027,27 @@ export type BackendInventoryItem = {
   warehouse_id: string;
   warehouse: string;
   stock: number;
+  reserved_quantity?: number;
+  available_quantity?: number;
   expiry_date?: string | null;
 };
 
 export async function fetchInventoryItems(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
-    const rows = await v1Api.inventory.stock(token, 50);
+    const rows = await v1Api.inventory.stock(token, 1000);
     return rows.map((row, index) => ({
       item_id: String(row.item_id),
       product_id: index + 1,
       name: String(row.item_name || row.name),
       sku: String(row.item_code),
       barcode: null,
-      category: "",
+      category: String(row.category || ""),
       brand: null,
       abv: 0,
       pack_size: null,
@@ -851,6 +1057,8 @@ export async function fetchInventoryItems(token: string) {
       warehouse_id: String(row.warehouse_id),
       warehouse: String(row.warehouse_name || row.warehouse_code),
       stock: Number(row.quantity || 0),
+      reserved_quantity: Number(row.reserved_quantity || 0),
+      available_quantity: Number(row.available_quantity ?? row.quantity ?? 0),
       expiry_date: null,
     }));
   }
@@ -869,9 +1077,12 @@ export async function createStockIn(
     quantity: number;
     unit_cost?: number;
     notes?: string;
+    batch_no?: string;
+    expiry_date?: string;
   },
 ) {
-  if (isDemoToken(token)) throw new Error("Sign in with the API to post stock (demo mode is read-only).");
+  if (isDemoToken(token))
+    throw new Error("Sign in with the API to post stock (demo mode is read-only).");
   if (!isV1Enabled()) throw new Error("API v1 is not configured");
   return v1Api.inventory.stockIn(token, payload);
 }
@@ -885,9 +1096,25 @@ export async function createStockTransfer(
     notes?: string;
   },
 ) {
-  if (isDemoToken(token)) throw new Error("Sign in with the API to transfer stock (demo mode is read-only).");
+  if (isDemoToken(token))
+    throw new Error("Sign in with the API to transfer stock (demo mode is read-only).");
   if (!isV1Enabled()) throw new Error("API v1 is not configured");
-  return v1Api.inventory.transfer(token, payload);
+  return v1Api.inventory.dispatchTransfer(token, payload);
+}
+
+export async function adjustStock(
+  token: string,
+  payload: {
+    warehouse_id: string;
+    item_id: string;
+    physical_quantity: number;
+    unit_cost?: number;
+    reason: string;
+  },
+) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to adjust stock.");
+  if (!isV1Enabled()) throw new Error("API v1 is not configured");
+  return v1Api.inventory.adjust(token, payload);
 }
 
 export type ProductSaleWorkflowPayload = {
@@ -913,13 +1140,28 @@ export type ProductSaleWorkflowResult = {
   paid: boolean;
 };
 
-export async function createProductSaleWorkflow(token: string, payload: ProductSaleWorkflowPayload) {
+export async function createProductSaleWorkflow(
+  token: string,
+  payload: ProductSaleWorkflowPayload,
+) {
   if (isDemoToken(token)) {
     const item = payload.items[0];
     const product = products.find((row) => row.sku === item?.sku);
     const customer = customers.find((row) => row.kraPin === payload.customer_kra_pin);
-    const subtotal = (product?.wholesalePrice ?? 0) * (item?.quantity ?? 0) * (1 - payload.discount_percent / 100);
-    const excise = (product?.litresPerUnit ?? 0) * (item?.quantity ?? 0) * (product?.category === "Beer" ? 121.85 : product?.category === "Spirits" ? 356.28 : product?.category === "Wine" ? 229.85 : product?.category === "Soft Drinks" ? 10.68 : 0);
+    const subtotal =
+      (product?.wholesalePrice ?? 0) * (item?.quantity ?? 0) * (1 - payload.discount_percent / 100);
+    const excise =
+      (product?.litresPerUnit ?? 0) *
+      (item?.quantity ?? 0) *
+      (product?.category === "Beer"
+        ? 121.85
+        : product?.category === "Spirits"
+          ? 356.28
+          : product?.category === "Wine"
+            ? 229.85
+            : product?.category === "Soft Drinks"
+              ? 10.68
+              : 0);
     const vat = (subtotal + excise) * 0.16;
 
     return {
@@ -957,7 +1199,14 @@ export type DashboardSummary = {
   topProducts: Array<{ name: string; units: number }>;
   salesByCategory: Array<{ name: string; value: number }>;
   alerts: Array<{ type: string; severity: string; message: string }>;
-  recentTransactions: Array<{ id: string; date: string; customer: string; rep: string; total: number; status: string }>;
+  recentTransactions: Array<{
+    id: string;
+    date: string;
+    customer: string;
+    rep: string;
+    total: number;
+    status: string;
+  }>;
 };
 
 export type BackendSalesOrder = {
@@ -968,16 +1217,16 @@ export type BackendSalesOrder = {
   rep: string;
   items: number;
   total: number;
-  status: "Draft" | "Confirmed" | "Dispatched" | "Delivered" | "Invoiced";
+  status: "Draft" | "Confirmed" | "Partial" | "Dispatched" | "Delivered" | "Invoiced" | "Cancelled";
 };
 
 const salesStatusMap: Record<string, BackendSalesOrder["status"]> = {
   draft: "Draft",
   confirmed: "Confirmed",
-  partial: "Confirmed",
+  partial: "Partial",
   delivered: "Delivered",
   invoiced: "Invoiced",
-  cancelled: "Draft",
+  cancelled: "Cancelled",
 };
 
 export async function createSalesOrder(
@@ -1011,7 +1260,9 @@ export async function createSalesOrder(
 
 export async function fetchSalesOrders(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -1045,10 +1296,22 @@ export type SalesOrderDetail = {
   status?: string;
   total_amount?: number;
   notes?: string | null;
-  lines: Array<{ id: string; item_code?: string; item_name?: string; quantity: number; qty_delivered?: number; qty_invoiced?: number; unit_price: number; line_total?: number }>;
+  lines: Array<{
+    id: string;
+    item_code?: string;
+    item_name?: string;
+    quantity: number;
+    qty_delivered?: number;
+    qty_invoiced?: number;
+    unit_price: number;
+    line_total?: number;
+  }>;
 };
 
-export async function fetchSalesOrderDetail(token: string, internalId: string): Promise<SalesOrderDetail> {
+export async function fetchSalesOrderDetail(
+  token: string,
+  internalId: string,
+): Promise<SalesOrderDetail> {
   if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
   if (!isV1Enabled()) throw new Error("Sales order details require API v1");
   const row = await v1Api.sales.orderDetail(token, internalId);
@@ -1085,24 +1348,46 @@ export async function fetchSalesAnalytics(token: string): Promise<SalesAnalytics
   return v1Api.sales.analytics(token) as Promise<SalesAnalytics>;
 }
 
+export async function previewSalesTax(
+  token: string,
+  lines: Array<{ item_id: string; quantity: number; unit_price: number; tax_group_id?: string }>,
+  taxDate?: string,
+) {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Tax preview requires the live ERP API");
+  return v1Api.sales.taxPreview(token, lines, taxDate);
+}
+
 export async function confirmSalesOrder(token: string, internalId: string) {
   if (isDemoToken(token)) return { ok: true as const };
 
   if (isV1Enabled()) {
-    return apiV1Fetch<{ ok: boolean }>(`/sales/orders/${internalId}/confirm`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    }, token);
+    return apiV1Fetch<{ ok: boolean; reason?: "atp_failed" | "credit_limit_exceeded"; shortages?: Array<{ item_id: string; requested: number; available: number }> }>(
+      `/sales/orders/${internalId}/confirm`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      token,
+    );
   }
 
   throw new Error("Sales order confirmation requires API v1");
 }
 
-export async function dispatchSalesOrder(token: string, internalId: string, warehouseId: string) {
-  if (isDemoToken(token)) throw new Error("Sign in with your email and password to dispatch orders.");
+export async function cancelSalesOrder(token: string, internalId: string) {
+  if (isDemoToken(token)) throw new Error("Order cancellation requires a live ERP account.");
+  if (!isV1Enabled()) throw new Error("Sales order cancellation requires API v1");
+  return v1Api.sales.cancelOrder(token, internalId);
+}
+
+export async function dispatchSalesOrder(token: string, internalId: string) {
+  if (isDemoToken(token))
+    throw new Error("Sign in with your email and password to dispatch orders.");
   if (!isV1Enabled()) throw new Error("Sales delivery posting requires API v1");
 
   const order = await v1Api.sales.orderDetail(token, internalId);
+  const reservedWarehouseId = String(order.warehouse_id || "");
+  if (!reservedWarehouseId) throw new Error("This order has no warehouse. Set its warehouse and recreate or update the order before dispatch.");
   const lines = (order.lines || [])
     .map((line) => {
       const qty = Number(line.quantity || 0) - Number(line.qty_delivered || 0);
@@ -1118,14 +1403,15 @@ export async function dispatchSalesOrder(token: string, internalId: string, ware
 
   return v1Api.sales.createDelivery(token, {
     sales_order_id: internalId,
-    warehouse_id: warehouseId,
+    warehouse_id: reservedWarehouseId,
     delivery_date: new Date().toISOString().slice(0, 10),
     lines,
   });
 }
 
 export async function createInvoiceFromSalesOrder(token: string, internalId: string) {
-  if (isDemoToken(token)) throw new Error("Sign in with your email and password to create invoices.");
+  if (isDemoToken(token))
+    throw new Error("Sign in with your email and password to create invoices.");
   if (!isV1Enabled()) throw new Error("Sales invoicing requires API v1");
 
   const order = await v1Api.sales.orderDetail(token, internalId);
@@ -1158,35 +1444,7 @@ export async function fetchDashboardSummary(token: string) {
   if (isDemoToken(token)) throw new Error("Demo mode uses local dashboard data");
 
   if (isV1Enabled()) {
-    const [dash, kpis, salesAnalytics, alerts] = await Promise.all([
-      v1Api.reports.dashboard(token, "DASH-CFO"),
-      v1Api.reports.kpis(token),
-      v1Api.sales.analytics(token),
-      v1Api.inventory.reorderAlerts(token, 50),
-    ]);
-    const widgetRows = Array.isArray(dash.widgets) ? dash.widgets : [];
-    const widgetMap = Object.fromEntries(widgetRows.map((w) => [w.widget, w.value]));
-    return {
-      kpis: {
-        todays_sales: 0,
-        revenue_mtd: Number(widgetMap.revenue_mtd || 0),
-        pending_orders: Number(
-          (Array.isArray(salesAnalytics.orders_by_status)
-            ? salesAnalytics.orders_by_status.find((r: { status: string; count: number }) => r.status === "confirmed")
-            : null)?.count || 0,
-        ),
-        outstanding_invoices: Number(widgetMap.ar_outstanding || 0),
-      },
-      monthlyRevenue: [{ month: "May", revenue: Number(widgetMap.revenue_mtd || 0) }],
-      topProducts: [],
-      salesByCategory: [],
-      alerts: alerts.map((a) => ({
-        type: "stock",
-        severity: "warning",
-        message: `Low stock: ${a.item_name} (${a.warehouse_name})`,
-      })),
-      recentTransactions: [],
-    } satisfies DashboardSummary;
+    return apiV1Fetch<DashboardSummary>("/reports/dashboard/summary", {}, token);
   }
 
   const response = await fetch(buildUrl("/api/dashboard/summary"), {
@@ -1232,7 +1490,9 @@ function mapV1PurchaseOrder(row: Record<string, unknown>): BackendPurchaseOrder 
 
 export async function fetchPurchaseOrders(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -1253,6 +1513,26 @@ export type BackendGoodsReceipt = {
   receipt_date?: string;
   status?: string;
   notes?: string | null;
+  vendor_id?: string;
+  vendor_name?: string;
+  purchase_order_id?: string;
+};
+
+export type BackendGoodsReceiptLine = {
+  goods_receipt_line_id: string;
+  item_id: string;
+  item_code: string;
+  item_name: string;
+  quantity: number;
+  unit_price: number;
+  unbilled_quantity: number;
+};
+
+export type BackendGoodsReceiptDetail = BackendGoodsReceipt & {
+  purchase_order_id: string;
+  vendor_id: string;
+  vendor_name: string;
+  lines: BackendGoodsReceiptLine[];
 };
 
 export async function fetchGoodsReceipts(token: string): Promise<BackendGoodsReceipt[]> {
@@ -1263,16 +1543,101 @@ export async function fetchGoodsReceipts(token: string): Promise<BackendGoodsRec
     id: String(row.id),
     grn_number: String(row.grn_number || row.id),
     po_number: row.po_number ? String(row.po_number) : undefined,
-    receipt_date: row.receipt_date ? String(row.receipt_date).slice(0, 10) : undefined,
+    receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : undefined,
     status: row.status ? String(row.status) : undefined,
     notes: row.notes ? String(row.notes) : null,
+    vendor_id: row.vendor_id ? String(row.vendor_id) : undefined,
+    vendor_name: row.vendor_name ? String(row.vendor_name) : undefined,
+    purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : undefined,
   }));
+}
+
+export async function fetchGoodsReceiptDetail(token: string, receiptId: string): Promise<BackendGoodsReceiptDetail> {
+  if (isDemoToken(token)) throw new Error("Goods receipt details require a live ERP account.");
+  return apiV1Fetch<BackendGoodsReceiptDetail>(`/procurement/goods-receipts/${receiptId}`, {}, token);
 }
 
 export async function fetchInventoryReorderAlerts(token: string) {
   if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
   if (!isV1Enabled()) throw new Error("Reorder alerts require API v1");
   return v1Api.inventory.reorderAlerts(token, 50);
+}
+
+export type BackendInventoryLot = {
+  id: string;
+  warehouse_id: string;
+  warehouse_code: string;
+  warehouse_name: string;
+  item_id: string;
+  item_code: string;
+  item_name: string;
+  batch_no: string;
+  expiry_date: string;
+  days_to_expiry: number;
+  quantity: number;
+  available_quantity: number;
+  quarantined_quantity: number;
+  unit_cost: number;
+};
+
+export async function fetchInventoryLots(token: string, includeExpired = true): Promise<BackendInventoryLot[]> {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Lot balances require a live ERP account.");
+  return apiV1Fetch<BackendInventoryLot[]>(`/inventory/lots?include_expired=${includeExpired}`, {}, token);
+}
+
+export async function reconcileOpeningLots(token: string, body: {
+  warehouse_id: string;
+  item_id: string;
+  notes: string;
+  lines: Array<{ batch_no: string; expiry_date: string; quantity: number; unit_cost: number }>;
+}): Promise<{ id: string; stock_quantity: number; lot_count: number }> {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Opening lot reconciliation requires a live ERP account.");
+  return apiV1Fetch("/inventory/lots/opening-reconciliation", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }, token);
+}
+
+export async function changeInventoryLotQuarantine(token: string, lotId: string, action: "quarantine" | "release", quantity: number, reason: string) {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Lot quarantine requires a live ERP account.");
+  return apiV1Fetch<{ event_type: string; quantity: number; available_quantity: number; quarantined_quantity: number }>(
+    `/inventory/lots/${lotId}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantity, reason }) }, token,
+  );
+}
+
+export async function fetchInventoryLotEvents(token: string, lotId: string) {
+  if (isDemoToken(token) || !isV1Enabled()) throw new Error("Lot event history requires a live ERP account.");
+  return apiV1Fetch<Array<{ id: string; event_type: string; quantity: number; reason: string; created_at: string; created_by_name?: string }>>(
+    `/inventory/lots/${lotId}/events`, {}, token,
+  );
+}
+
+export async function fetchInventoryMovements(token: string): Promise<Record<string, unknown>[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Stock movements require API v1");
+  return v1Api.inventory.movements(token, 100);
+}
+
+export async function fetchLeaveApplications(token: string): Promise<Record<string, unknown>[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Leave applications require API v1");
+  return apiV1Fetch<Record<string, unknown>[]>("/hr/leave-applications", {}, token);
+}
+
+export async function fetchAttendance(
+  token: string,
+  from?: string,
+  to?: string,
+): Promise<Record<string, unknown>[]> {
+  if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+  if (!isV1Enabled()) throw new Error("Attendance requires API v1");
+  const query = new URLSearchParams();
+  if (from) query.set("from", from);
+  if (to) query.set("to", to);
+  return apiV1Fetch<Record<string, unknown>[]>(
+    `/hr/attendance${query.size ? `?${query}` : ""}`,
+    {},
+    token,
+  );
 }
 
 export async function createPurchaseOrder(
@@ -1290,11 +1655,15 @@ export async function createPurchaseOrder(
   }
 
   if (isV1Enabled()) {
-    const row = await apiV1Fetch<Record<string, unknown>>("/procurement/purchase-orders", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(payload),
-    }, token);
+    const row = await apiV1Fetch<Record<string, unknown>>(
+      "/procurement/purchase-orders",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      },
+      token,
+    );
     return mapV1PurchaseOrder(row);
   }
 
@@ -1309,16 +1678,24 @@ export async function createPurchaseOrder(
   return handleResponse<{ id: string; status: string; total: number }>(response);
 }
 
-export async function updatePurchaseOrderStatus(token: string, internalId: string | number, status: BackendPurchaseOrder["status"]) {
+export async function updatePurchaseOrderStatus(
+  token: string,
+  internalId: string | number,
+  status: BackendPurchaseOrder["status"],
+) {
   if (isDemoToken(token)) {
     throw new Error("Sign in with your email and password to update purchase order status.");
   }
 
   if (isV1Enabled() && status === "Approved") {
-    await apiV1Fetch(`/procurement/purchase-orders/${internalId}/approve`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    }, token);
+    await apiV1Fetch(
+      `/procurement/purchase-orders/${internalId}/approve`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      token,
+    );
     return { ok: true, id: String(internalId), status: "approved" };
   }
 
@@ -1333,7 +1710,11 @@ export async function updatePurchaseOrderStatus(token: string, internalId: strin
   return handleResponse<{ ok: true; id: string; status: string }>(response);
 }
 
-export async function receivePurchaseOrder(token: string, internalId: string | number, _received_by: string) {
+export async function receivePurchaseOrder(
+  token: string,
+  internalId: string | number,
+  _received_by: string,
+) {
   if (isDemoToken(token)) {
     throw new Error("Sign in with your email and password to receive purchase orders.");
   }
@@ -1344,23 +1725,35 @@ export async function receivePurchaseOrder(token: string, internalId: string | n
       {},
       token,
     );
-    const lines = (po.lines || []).map((line) => ({
-      po_line_id: line.id,
-      item_id: line.item_id,
-      quantity: Number(line.quantity) - Number(line.qty_received || 0),
-      unit_cost: line.unit_cost,
-    })).filter((l) => l.quantity > 0);
+    const lines = (po.lines || [])
+      .map((line) => ({
+        po_line_id: line.id,
+        item_id: line.item_id,
+        quantity: Number(line.quantity) - Number(line.qty_received || 0),
+        unit_cost: line.unit_cost,
+      }))
+      .filter((l) => l.quantity > 0);
 
-    const result = await apiV1Fetch<{ ok: boolean }>("/procurement/goods-receipts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        purchase_order_id: internalId,
-        warehouse_id: po.warehouse_id,
-        lines,
-      }),
-    }, token);
-    return { ok: true, grn_number: "posted", po_number: String(internalId), received_items: lines.length, ...result };
+    const result = await apiV1Fetch<{ ok: boolean }>(
+      "/procurement/goods-receipts",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          purchase_order_id: internalId,
+          warehouse_id: po.warehouse_id,
+          lines,
+        }),
+      },
+      token,
+    );
+    return {
+      ...result,
+      ok: true,
+      grn_number: "posted",
+      po_number: String(internalId),
+      received_items: lines.length,
+    };
   }
 
   const response = await fetch(buildUrl(`/api/procurement/purchase-orders/${internalId}/receive`), {
@@ -1371,7 +1764,12 @@ export async function receivePurchaseOrder(token: string, internalId: string | n
     },
     body: JSON.stringify({ received_by: _received_by }),
   });
-  return handleResponse<{ ok: true; grn_number: string; po_number: string; received_items: number }>(response);
+  return handleResponse<{
+    ok: true;
+    grn_number: string;
+    po_number: string;
+    received_items: number;
+  }>(response);
 }
 
 export type BackendEmployee = {
@@ -1385,7 +1783,9 @@ export type BackendEmployee = {
 
 export async function fetchHrEmployees(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -1418,9 +1818,18 @@ export type PayslipRow = {
   last_name?: string;
   gross_pay: number;
   paye: number;
+  shif: number;
   nhif: number;
   nssf: number;
+  nssf_tier1?: number;
+  nssf_tier2?: number;
+  nssf_employer?: number;
   housing_levy: number;
+  housing_levy_employer?: number;
+  taxable_income?: number;
+  personal_relief?: number;
+  insurance_relief?: number;
+  employer_cost?: number;
   net_pay: number;
 };
 
@@ -1447,16 +1856,29 @@ export async function fetchPayrollPayslips(token: string, runId: string): Promis
     last_name: row.last_name ? String(row.last_name) : undefined,
     gross_pay: Number(row.gross_pay || 0),
     paye: Number(row.paye || 0),
+    shif: Number(row.shif || 0),
     nhif: Number(row.nhif || 0),
     nssf: Number(row.nssf || 0),
+    nssf_tier1: Number(row.nssf_tier1 || 0),
+    nssf_tier2: Number(row.nssf_tier2 || 0),
+    nssf_employer: Number(row.nssf_employer || 0),
     housing_levy: Number(row.housing_levy || 0),
+    housing_levy_employer: Number(row.housing_levy_employer || 0),
+    taxable_income: Number(row.taxable_income || 0),
+    personal_relief: Number(row.personal_relief || 0),
+    insurance_relief: Number(row.insurance_relief || 0),
+    employer_cost: Number(row.employer_cost || 0),
     net_pay: Number(row.net_pay || 0),
   }));
 }
 
 export async function runPayroll(token: string, payrollMonth: string) {
   if (isDemoToken(token)) throw new Error("Sign in with the API to run payroll.");
-  return apiV1Fetch<PayrollRun>("/payroll/runs", { method: "POST", body: JSON.stringify({ payroll_month: payrollMonth }) }, token);
+  return apiV1Fetch<PayrollRun>(
+    "/payroll/runs",
+    { method: "POST", body: JSON.stringify({ payroll_month: payrollMonth }) },
+    token,
+  );
 }
 
 export async function postPayroll(token: string, runId: string) {
@@ -1466,14 +1888,26 @@ export async function postPayroll(token: string, runId: string) {
 
 export async function fetchPayrollStatutory(token: string, runId: string) {
   if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
-  return apiV1Fetch<{ total_paye: number; total_nhif: number; total_nssf: number; total_housing: number; employees: number }>(`/payroll/runs/${runId}/statutory-report`, {}, token);
+  return apiV1Fetch<{
+    total_paye: number;
+    total_shif: number;
+    total_legacy_nhif: number;
+    total_nssf_employee: number;
+    total_nssf_employer: number;
+    total_housing_employee: number;
+    total_housing_employer: number;
+    total_employer_cost: number;
+    employees: number;
+  }>(`/payroll/runs/${runId}/statutory-report`, {}, token);
 }
 
 export type ReportLibraryEntry = { code: string; name: string; category: string };
 
 export async function fetchReportLibrary(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
   if (!isV1Enabled()) throw new Error("Report library requires API v1 configuration.");
   const rows = await v1Api.reports.library(token);
@@ -1538,7 +1972,9 @@ function mapV1Invoice(row: Record<string, unknown>): BackendInvoice {
 
 export async function fetchSalesInvoices(token: string) {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
 
   if (isV1Enabled()) {
@@ -1584,6 +2020,8 @@ export async function createSalesInvoice(
     customer_id: string;
     invoice_date?: string;
     due_date?: string;
+    sales_order_id?: string;
+    delivery_note_id?: string;
     lines: Array<{ item_id: string; quantity: number; unit_price: number }>;
   },
 ) {
@@ -1604,8 +2042,15 @@ export async function paySalesInvoice(
     throw new Error("Sign in with the API to post invoice payments.");
   }
   if (!isV1Enabled()) throw new Error("API v1 is not configured");
-  if (!payload.amount || payload.amount <= 0) throw new Error("Payment amount must be greater than zero");
+  if (!payload.amount || payload.amount <= 0)
+    throw new Error("Payment amount must be greater than zero");
   return v1Api.sales.payInvoice(token, invoiceId, payload);
+}
+
+export async function postSalesInvoice(token: string, invoiceNo: string) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to post invoices.");
+  if (!isV1Enabled()) throw new Error("API v1 is not configured");
+  return v1Api.sales.postInvoice(token, invoiceNo);
 }
 
 function saveBlob(filename: string, blob: Blob) {
@@ -1619,6 +2064,12 @@ function saveBlob(filename: string, blob: Blob) {
   URL.revokeObjectURL(url);
 }
 
+export async function fetchReceiptPdf(token: string, invoiceNo: string) {
+  if (isDemoToken(token)) throw new Error("Sign in with the API to fetch receipt PDFs.");
+  if (!isV1Enabled()) throw new Error("API v1 is not configured");
+  return v1Api.sales.downloadReceiptPdf(token, invoiceNo);
+}
+
 export async function downloadInvoicePdf(token: string, invoiceNo: string) {
   if (isDemoToken(token)) throw new Error("Sign in with the API to download invoice PDFs.");
   if (!isV1Enabled()) throw new Error("API v1 is not configured");
@@ -1627,10 +2078,19 @@ export async function downloadInvoicePdf(token: string, invoiceNo: string) {
 }
 
 export async function downloadReceiptPdf(token: string, invoiceNo: string) {
-  if (isDemoToken(token)) throw new Error("Sign in with the API to download receipt PDFs.");
-  if (!isV1Enabled()) throw new Error("API v1 is not configured");
-  const blob = await v1Api.sales.downloadReceiptPdf(token, invoiceNo);
+  const blob = await fetchReceiptPdf(token, invoiceNo);
   saveBlob(`receipt-${invoiceNo}.pdf`, blob);
+}
+
+export async function printReceiptPdf(token: string, invoiceNo: string) {
+  const blob = await fetchReceiptPdf(token, invoiceNo);
+  const url = URL.createObjectURL(blob);
+  const printWindow = window.open(url, "_blank", "noopener,noreferrer");
+  if (!printWindow) {
+    URL.revokeObjectURL(url);
+    throw new Error("Allow pop-ups to print the receipt.");
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export async function verifyInvoiceDocument(token: string, invoiceNo: string, hash?: string) {
@@ -1669,9 +2129,12 @@ export async function fetchAuditLogs(token: string, q = "", limit = 100) {
     }));
   }
 
-  const response = await fetch(buildUrl(`/api/audit-logs?q=${encodeURIComponent(q)}&limit=${limit}`), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await fetch(
+    buildUrl(`/api/audit-logs?q=${encodeURIComponent(q)}&limit=${limit}`),
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
   return handleResponse<AuditLogRow[]>(response);
 }
 
@@ -1690,7 +2153,9 @@ export type AccountingSnapshot = {
 
 export async function fetchAccountingSnapshot(token: string): Promise<AccountingSnapshot> {
   if (isDemoToken(token)) {
-    throw new Error("Real-time mode requires API authentication. Sign in with your email and password.");
+    throw new Error(
+      "Real-time mode requires API authentication. Sign in with your email and password.",
+    );
   }
   if (!isV1Enabled()) throw new Error("Accounting snapshot requires API v1 configuration.");
 
@@ -1752,12 +2217,18 @@ export type FinanceReportLine = {
 
 export type FinanceWorkspace = {
   periods: FinancePeriod[];
-  trialBalance: { lines: FinanceReportLine[]; totals: { period_debit: number; period_credit: number } };
+  trialBalance: {
+    lines: FinanceReportLine[];
+    totals: { period_debit: number; period_credit: number };
+  };
   balanceSheet: FinanceReportLine[];
   profitLoss: { lines: FinanceReportLine[]; net_profit: number };
 };
 
-export async function fetchFinanceWorkspace(token: string, periodId?: string): Promise<FinanceWorkspace> {
+export async function fetchFinanceWorkspace(
+  token: string,
+  periodId?: string,
+): Promise<FinanceWorkspace> {
   if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
   if (!isV1Enabled()) throw new Error("Finance reports require API v1");
   const periods = (await v1Api.finance.fiscalPeriods(token)).map((row) => ({
@@ -1768,17 +2239,137 @@ export async function fetchFinanceWorkspace(token: string, periodId?: string): P
     start_date: row.start_date ? String(row.start_date).slice(0, 10) : undefined,
     end_date: row.end_date ? String(row.end_date).slice(0, 10) : undefined,
   }));
-  const selected = periodId || String(periods.find((period) => period.status === "open")?.id || periods[0]?.id || "");
-  if (!selected) return { periods, trialBalance: { lines: [], totals: { period_debit: 0, period_credit: 0 } }, balanceSheet: [], profitLoss: { lines: [], net_profit: 0 } };
+  const today = new Date().toISOString().slice(0, 10);
+  const current = periods.find(
+    (period) =>
+      period.status === "open" &&
+      period.start_date &&
+      period.end_date &&
+      period.start_date <= today &&
+      period.end_date >= today,
+  );
+  const selected =
+    periodId ||
+    String(
+      current?.id || periods.find((period) => period.status === "open")?.id || periods[0]?.id || "",
+    );
+  if (!selected)
+    return {
+      periods,
+      trialBalance: { lines: [], totals: { period_debit: 0, period_credit: 0 } },
+      balanceSheet: [],
+      profitLoss: { lines: [], net_profit: 0 },
+    };
   const [trialBalance, balanceSheet, profitLoss] = await Promise.all([
-    apiV1Fetch<{ lines: FinanceReportLine[]; totals: { period_debit: number; period_credit: number } }>(`/finance/reports/trial-balance?fiscal_period_id=${selected}`, {}, token),
-    apiV1Fetch<FinanceReportLine[]>(`/finance/reports/balance-sheet?fiscal_period_id=${selected}`, {}, token),
-    v1Api.finance.profitLoss(token, selected),
+    apiV1Fetch<{
+      lines: FinanceReportLine[];
+      totals: { period_debit: number; period_credit: number };
+    }>(`/finance/reports/trial-balance?fiscal_period_id=${selected}`, {}, token),
+    apiV1Fetch<FinanceReportLine[]>(
+      `/finance/reports/balance-sheet?fiscal_period_id=${selected}`,
+      {},
+      token,
+    ),
+    v1Api.finance.profitLoss(token, selected) as Promise<{
+      lines: FinanceReportLine[];
+      net_profit: number;
+    }>,
   ]);
   return { periods, trialBalance, balanceSheet, profitLoss };
 }
 
 export async function closeFinancePeriod(token: string, periodId: string) {
   if (isDemoToken(token)) throw new Error("Sign in with the API to close fiscal periods.");
-  return apiV1Fetch<FinancePeriod>(`/finance/fiscal-periods/${periodId}/close`, { method: "POST" }, token);
+  return apiV1Fetch<FinancePeriod>(
+    `/finance/fiscal-periods/${periodId}/close`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export type BankStatementLine = {
+  id: string;
+  line_no: number;
+  transaction_date: string;
+  reference?: string | null;
+  description: string;
+  debit: number;
+  credit: number;
+  journal_line_id?: string | null;
+  journal_no?: string | null;
+  matched_entry_date?: string | null;
+  matched_account_code?: string | null;
+};
+
+export type BankLedgerCandidate = {
+  journal_line_id: string;
+  journal_no: string;
+  entry_date: string;
+  reference_no?: string | null;
+  journal_description?: string | null;
+  line_description?: string | null;
+  debit: number;
+  credit: number;
+  account_code: string;
+  account_name: string;
+};
+
+export type BankReconciliation = {
+  id: string;
+  bank_account_id: string;
+  account_code: string;
+  account_name: string;
+  currency_code?: string;
+  statement_reference: string;
+  statement_start: string;
+  statement_end: string;
+  opening_balance: number;
+  closing_balance: number;
+  status: "draft" | "reconciled";
+  line_count: number;
+  matched_count: number;
+  lines?: BankStatementLine[];
+  outstanding_book_lines?: BankLedgerCandidate[];
+};
+
+export async function fetchBankAccounts(token: string) {
+  return apiV1Fetch<Array<{ id: string; account_code: string; account_name: string; currency_code: string }>>(
+    "/finance/bank-accounts", {}, token,
+  );
+}
+
+export async function fetchBankReconciliations(token: string) {
+  return apiV1Fetch<BankReconciliation[]>("/finance/bank-reconciliations", {}, token);
+}
+
+export async function createBankReconciliation(token: string, payload: {
+  bank_account_id: string;
+  statement_reference: string;
+  statement_start: string;
+  statement_end: string;
+  opening_balance: number;
+  closing_balance: number;
+  lines: Array<{ transaction_date: string; reference?: string; description: string; debit: number; credit: number }>;
+}) {
+  return apiV1Fetch<BankReconciliation>("/finance/bank-reconciliations", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  }, token);
+}
+
+export async function fetchBankReconciliation(token: string, id: string) {
+  return apiV1Fetch<BankReconciliation>(`/finance/bank-reconciliations/${id}`, {}, token);
+}
+
+export async function fetchBankCandidates(token: string, id: string) {
+  return apiV1Fetch<BankLedgerCandidate[]>(`/finance/bank-reconciliations/${id}/candidates`, {}, token);
+}
+
+export async function matchBankStatementLine(token: string, id: string, lineId: string, journalLineId: string) {
+  return apiV1Fetch<{ ok: boolean }>(`/finance/bank-reconciliations/${id}/lines/${lineId}/match`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ journal_line_id: journalLineId }),
+  }, token);
+}
+
+export async function completeBankReconciliation(token: string, id: string) {
+  return apiV1Fetch<BankReconciliation>(`/finance/bank-reconciliations/${id}/complete`, { method: "POST" }, token);
 }

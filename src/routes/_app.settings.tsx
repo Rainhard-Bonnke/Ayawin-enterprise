@@ -10,7 +10,14 @@ import { useAuth } from "@/lib/auth";
 import { fetchWarehouses, type BackendWarehouse } from "@/lib/api";
 import { useEffect } from "react";
 import { KES } from "@/lib/format";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { SearchBar } from "@/components/SearchBar";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
 import { useState } from "react";
@@ -19,14 +26,16 @@ import { trackEvent } from "@/lib/event-tracker";
 
 export const Route = createFileRoute("/_app/settings")({
   component: SettingsPage,
-  head: () => ({ meta: [{ title: "Settings - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Settings - Ayawin Stock Solution" }] }),
 });
 
 function SettingsPage() {
   const { token } = useAuth();
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "company");
-  const [warehouseRows, setWarehouseRows] = useState<Array<{ id: string; name: string; location: string; manager: string }>>([]);
+  const [warehouseRows, setWarehouseRows] = useState<
+    Array<{ id: string; name: string; location: string; manager: string }>
+  >([]);
   const [warehouseQ, setWarehouseQ] = useState("");
 
   useEffect(() => {
@@ -34,12 +43,14 @@ function SettingsPage() {
     void fetchWarehouses(token)
       .then((rows: BackendWarehouse[]) => {
         if (!rows.length) return;
-        setWarehouseRows(rows.map((w) => ({
-          id: String(w.id),
-          name: w.name,
-          location: w.address,
-          manager: w.manager || "—",
-        })));
+        setWarehouseRows(
+          rows.map((w) => ({
+            id: String(w.id),
+            name: w.name,
+            location: w.address,
+            manager: w.manager || "—",
+          })),
+        );
       })
       .catch(() => undefined);
   }, [token]);
@@ -50,14 +61,24 @@ function SettingsPage() {
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
-    if (["company", "tax", "warehouses", "notifications", "security"].includes(nextTab)) setTab(nextTab);
+    if (["company", "tax", "warehouses", "notifications", "security"].includes(nextTab))
+      setTab(nextTab);
   }, [hash]);
 
   return (
     <div>
-      <PageHeader title="System Settings" description="Company profile, taxes, module access, backups and notifications." />
+      <PageHeader
+        title="System Settings"
+        description="Company profile, taxes, module access, backups and notifications."
+      />
 
-      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value);
+          window.history.replaceState({}, "", `${window.location.pathname}#${value}`);
+        }}
+      >
         <TabsList className="flex flex-wrap">
           <TabsTrigger value="company">Company</TabsTrigger>
           <TabsTrigger value="tax">Tax & Excise</TabsTrigger>
@@ -72,24 +93,27 @@ function SettingsPage() {
               <CardTitle>Company Profile</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
-              <Field label="Company Name" value="Ayawin Enterprise ERP Ltd" />
+              <Field label="Company Name" value="Ayawin Stock Solution Ltd" />
               <Field label="Company PIN" value="P051999999Z" />
               <Field label="VAT Registration" value="0123456789" />
               <Field label="ETR / TIMS Serial" value="KRACU0010000123" />
               <Field label="Phone" value="+254 711 100 200" />
               <Field label="Email" value="info@ayawinenterprise.co.ke" />
-              <Field label="Physical Address" value="Industrial Area, Nairobi" className="sm:col-span-2" />
+              <Field
+                label="Physical Address"
+                value="Industrial Area, Nairobi"
+                className="sm:col-span-2"
+              />
               <Field label="Financial Year Start" value="01/01/2026" />
               <Field label="Default Currency" value="KES" />
               <div className="sm:col-span-2">
                 <Button
-                 
                   onClick={() => {
                     void trackEvent({
                       action: "settings_company_saved",
                       entityType: "settings",
                       entityId: "company",
-                      details: { company: "Ayawin Enterprise ERP Ltd", currency: "KES" },
+                      details: { company: "Ayawin Stock Solution Ltd", currency: "KES" },
                       scenario: "reports",
                       context: { tab: "company" },
                     });
@@ -142,7 +166,11 @@ function SettingsPage() {
           <Card>
             <CardContent className="p-4">
               <div className="mb-4 flex flex-wrap items-center gap-3">
-                <SearchBar value={warehouseQ} onChange={setWarehouseQ} placeholder="Search warehouse or manager..." />
+                <SearchBar
+                  value={warehouseQ}
+                  onChange={setWarehouseQ}
+                  placeholder="Search warehouse or manager..."
+                />
                 <div className="ml-auto text-xs text-muted-foreground">
                   {filteredWarehouses.length} warehouses
                 </div>
@@ -165,7 +193,10 @@ function SettingsPage() {
                   ))}
                   {filteredWarehouses.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={3} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={3}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         No warehouses match your filters.
                       </TableCell>
                     </TableRow>
@@ -240,7 +271,6 @@ function SettingsPage() {
               <Toggle label="Enable password rotation reminders" />
               <div className="sm:col-span-2 flex flex-wrap gap-2 pt-2">
                 <Button
-                 
                   onClick={() => {
                     void trackEvent({
                       action: "settings_security_saved",
@@ -260,9 +290,6 @@ function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
-      <div className="mt-4 text-xs text-muted-foreground">
-        Stock value tracked: {KES(warehouseRows.length * 12000000)} approx | Last backup: 20/05/2026 03:00 EAT
-      </div>
     </div>
   );
 }

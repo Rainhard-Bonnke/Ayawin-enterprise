@@ -5,7 +5,7 @@ const pool = require('../src/db');
   const login = await fetch('http://localhost:4000/api/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'admin@martin.co.ke', password: 'demo' }),
+    body: JSON.stringify({ email: 'bonnkereinhard654@gmail.com', password: 'demo' }),
   });
   const loginBody = await login.json();
   const token = loginBody.access_token;

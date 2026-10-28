@@ -12,16 +12,45 @@ export type RoleName =
   | "POS Operator";
 
 const pathAccess: Record<string, RoleName[]> = {
-  "/": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager", "Sales Rep", "Warehouse", "Driver"],
+  "/": [
+    "Admin",
+    "Manager",
+    "Accountant",
+    "HR Officer",
+    "Store Manager",
+    "Sales Rep",
+    "Warehouse",
+    "Driver",
+  ],
   "/sales": ["Admin", "Manager", "Sales Rep"],
   "/pos": ["POS Operator"],
   "/customers": ["Admin", "Manager", "Sales Rep", "Accountant"],
   "/invoices": ["Admin", "Manager", "Accountant", "Sales Rep"],
   "/accounting": ["Admin", "Manager", "Accountant"],
   "/inventory": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/inventory-master": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/material-requisitions": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/material-issues": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/material-returns": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/stock-analysis": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/stock-adjustments": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/driver-stock": ["Admin", "Manager", "Store Manager", "Warehouse", "Driver"],
   "/procurement": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/delivery": ["Admin", "Manager", "Driver", "Warehouse"],
+  "/goods-received": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
+  "/suppliers": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
+  "/stock-movements": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/quarantine": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/transfers": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/reorder-alerts": ["Admin", "Manager", "Store Manager", "Warehouse"],
+  "/accounts-receivable": ["Admin", "Manager", "Accountant"],
+  "/accounts-payable": ["Admin", "Manager", "Accountant"],
+  "/supplier-credit-notes": ["Admin", "Manager", "Accountant"],
   "/hr": ["Admin", "Manager", "HR Officer"],
+  "/leave-attendance": ["Admin", "Manager", "HR Officer"],
+  "/payroll": ["Admin", "Manager", "HR Officer", "Accountant"],
+  "/assets": ["Admin", "Manager", "Accountant"],
+  "/depreciation": ["Admin", "Manager", "Accountant"],
   "/reports": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager"],
   "/users": ["Admin"],
   "/master-data": ["Admin", "Manager", "Store Manager"],
@@ -73,7 +102,9 @@ export function canAccessPath(user: Pick<User, "role"> | null | undefined, path:
 export function firstAllowedPath(user: Pick<User, "role"> | null | undefined) {
   if (!user) return "/login";
   const role = normalizeRole(user.role);
-  return role === "POS Operator" ? "/pos" : Object.entries(pathAccess).find(([, roles]) => roles.includes(role))?.[0] ?? "/";
+  return role === "POS Operator"
+    ? "/pos"
+    : (Object.entries(pathAccess).find(([, roles]) => roles.includes(role))?.[0] ?? "/");
 }
 
 export function navigationAllowedForRole(role: string | null | undefined, url: string) {

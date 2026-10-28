@@ -43,6 +43,7 @@ import { useAuth } from "@/lib/auth";
 import {
   createInvoiceFromSalesOrder,
   createSalesOrder,
+  cancelSalesOrder,
   confirmSalesOrder,
   dispatchSalesOrder,
   fetchCustomers,
@@ -60,7 +61,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export const Route = createFileRoute("/_app/sales")({
   component: SalesPage,
-  head: () => ({ meta: [{ title: "Sales & Orders - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Sales & Orders - Ayawin Stock Solution" }] }),
 });
 
 function SalesPage() {
@@ -76,8 +77,12 @@ function SalesPage() {
   const [page, setPage] = useState(1);
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [view, setView] = useState(() => hash.replace(/^#/, "") || "orders");
-  const [analytics, setAnalytics] = useState<Awaited<ReturnType<typeof fetchSalesAnalytics>> | null>(null);
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchSalesOrderDetail>> | null>(null);
+  const [analytics, setAnalytics] = useState<Awaited<
+    ReturnType<typeof fetchSalesAnalytics>
+  > | null>(null);
+  const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchSalesOrderDetail>> | null>(
+    null,
+  );
   const pageSize = 5;
 
   const reloadSalesOrders = async () => {
@@ -106,7 +111,9 @@ function SalesPage() {
 
   useEffect(() => {
     if (!token || view !== "credit" || analytics) return;
-    void fetchSalesAnalytics(token).then(setAnalytics).catch(() => setAnalytics(null));
+    void fetchSalesAnalytics(token)
+      .then(setAnalytics)
+      .catch(() => setAnalytics(null));
   }, [token, view, analytics]);
 
   useEffect(() => {
@@ -148,7 +155,7 @@ function SalesPage() {
       scenario: "sales",
       context: { query, status, sort, rows: filtered.length },
     });
-    exportWorkbook("ayawin-enterprise-sales.xlsx", [
+    exportWorkbook("ayawin-stock-solution-sales.xlsx", [
       {
         name: "Sales Orders",
         rows: filtered.map((o) => ({
@@ -166,12 +173,6 @@ function SalesPage() {
 
   const processOrder = async (order: BackendSalesOrder): Promise<boolean> => {
     if (!token || !order.internal_id) return false;
-    const firstWarehouse = warehouseIds[0] || "";
-    if (!firstWarehouse) {
-      toast.error("No warehouse found to process the order.");
-      return;
-    }
-
     setProcessingOrderId(order.id);
     try {
       let currentStatus = order.status;
@@ -180,8 +181,8 @@ function SalesPage() {
         if (!confirmed.ok) throw new Error("Order confirmation failed.");
         currentStatus = "Confirmed";
       }
-      if (currentStatus === "Confirmed") {
-        await dispatchSalesOrder(token, order.internal_id, firstWarehouse);
+      if (currentStatus === "Confirmed" || currentStatus === "Partial") {
+        await dispatchSalesOrder(token, order.internal_id);
         currentStatus = "Delivered";
       }
       if (currentStatus === "Delivered") {
@@ -203,17 +204,12 @@ function SalesPage() {
     const ready = filtered.filter(
       (o) =>
         o.internal_id &&
-        (o.status === "Draft" || o.status === "Confirmed" || o.status === "Delivered"),
+        (o.status === "Draft" || o.status === "Confirmed" || o.status === "Partial" || o.status === "Delivered"),
     );
     if (!ready.length) {
       toast.message("No ready orders to process.");
       return;
     }
-    if (!warehouseIds[0]) {
-      toast.error("No warehouse found to process orders.");
-      return;
-    }
-
     setProcessingAll(true);
     let success = 0;
     let failed = 0;
@@ -261,10 +257,38 @@ function SalesPage() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Open Orders", v: String((analytics?.orders_by_status || []).filter((r) => !["invoiced", "cancelled"].includes(r.status.toLowerCase())).reduce((sum, r) => sum + r.count, 0)), t: "Draft and confirmed" },
-          { l: "In Transit", v: String(analytics?.orders_by_status.find((r) => r.status.toLowerCase() === "partial")?.count || 0), t: "Awaiting delivery" },
-          { l: "Invoiced (MTD)", v: KES(Number(analytics?.invoices_by_status.reduce((sum, r) => sum + Number(r.total || 0), 0) || 0)), t: "Live invoice total" },
-          { l: "Pipeline Forecast", v: KES(Number(analytics?.pipeline_forecast || 0)), t: "Weighted open opportunities" },
+          {
+            l: "Open Orders",
+            v: String(
+              (analytics?.orders_by_status || [])
+                .filter((r) => !["invoiced", "cancelled"].includes(r.status.toLowerCase()))
+                .reduce((sum, r) => sum + r.count, 0),
+            ),
+            t: "Draft and confirmed",
+          },
+          {
+            l: "In Transit",
+            v: String(
+              analytics?.orders_by_status.find((r) => r.status.toLowerCase() === "partial")
+                ?.count || 0,
+            ),
+            t: "Awaiting delivery",
+          },
+          {
+            l: "Invoiced (MTD)",
+            v: KES(
+              Number(
+                analytics?.invoices_by_status.reduce((sum, r) => sum + Number(r.total || 0), 0) ||
+                  0,
+              ),
+            ),
+            t: "Live invoice total",
+          },
+          {
+            l: "Pipeline Forecast",
+            v: KES(Number(analytics?.pipeline_forecast || 0)),
+            t: "Weighted open opportunities",
+          },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
@@ -283,7 +307,14 @@ function SalesPage() {
         className="mb-4"
       />
 
-      <Tabs value={view} onValueChange={(value) => { setView(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }} className="space-y-4">
+      <Tabs
+        value={view}
+        onValueChange={(value) => {
+          setView(value);
+          window.history.replaceState({}, "", `${window.location.pathname}#${value}`);
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="orders">Orders & fulfilment</TabsTrigger>
           <TabsTrigger value="credit">Credit & pipeline</TabsTrigger>
@@ -296,12 +327,21 @@ function SalesPage() {
                 <h2 className="font-semibold">Order status summary</h2>
                 <div className="mt-4 grid gap-2">
                   {(analytics?.orders_by_status || []).map((row) => (
-                    <div key={row.status} className="flex items-center justify-between border-b border-border py-2 text-sm">
+                    <div
+                      key={row.status}
+                      className="flex items-center justify-between border-b border-border py-2 text-sm"
+                    >
                       <span className="capitalize">{row.status}</span>
-                      <span className="font-medium">{row.count} orders · {KES(Number(row.total || 0))}</span>
+                      <span className="font-medium">
+                        {row.count} orders · {KES(Number(row.total || 0))}
+                      </span>
                     </div>
                   ))}
-                  {!analytics && <p className="text-sm text-muted-foreground">Sign in to load live sales analytics.</p>}
+                  {!analytics && (
+                    <p className="text-sm text-muted-foreground">
+                      Sign in to load live sales analytics.
+                    </p>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -310,9 +350,14 @@ function SalesPage() {
                 <h2 className="font-semibold">Invoice exposure</h2>
                 <div className="mt-4 grid gap-2">
                   {(analytics?.invoices_by_status || []).map((row) => (
-                    <div key={row.status} className="flex items-center justify-between border-b border-border py-2 text-sm">
+                    <div
+                      key={row.status}
+                      className="flex items-center justify-between border-b border-border py-2 text-sm"
+                    >
                       <span className="capitalize">{row.status}</span>
-                      <span className="font-medium">{row.count} invoices · {KES(Number(row.total || 0))}</span>
+                      <span className="font-medium">
+                        {row.count} invoices · {KES(Number(row.total || 0))}
+                      </span>
                     </div>
                   ))}
                   <div className="mt-3 flex items-center justify-between rounded-md bg-muted p-3 text-sm">
@@ -326,188 +371,271 @@ function SalesPage() {
         </TabsContent>
 
         <TabsContent value="orders">
-      <Card>
-        <CardContent className="p-4">
-          <div className="mb-4 flex flex-wrap items-center gap-3">
-            <SearchBar
-              value={query}
-              onChange={(value) => {
-                setQuery(value);
-                setPage(1);
-              }}
-              placeholder="Search by order # or customer..."
-            />
-            <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                {["Draft", "Confirmed", "Dispatched", "Delivered", "Invoiced"].map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={sort} onValueChange={setSort}>
-              <SelectTrigger className="w-40">
-                <ArrowUpDown className="mr-2 h-4 w-4" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="date">Sort by date</SelectItem>
-                <SelectItem value="total">Highest total</SelectItem>
-                <SelectItem value="status">Sort by status</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button variant="outline" size="sm" className="ml-auto" onClick={exportSales}>
-              <Download className="mr-2 h-3.5 w-3.5" />
-              XLSX
-            </Button>
-          </div>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <SearchBar
+                  value={query}
+                  onChange={(value) => {
+                    setQuery(value);
+                    setPage(1);
+                  }}
+                  placeholder="Search by order # or customer..."
+                />
+                <Select value={status} onValueChange={setStatus}>
+                  <SelectTrigger className="w-44">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    {["Draft", "Confirmed", "Dispatched", "Delivered", "Invoiced"].map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={sort} onValueChange={setSort}>
+                  <SelectTrigger className="w-40">
+                    <ArrowUpDown className="mr-2 h-4 w-4" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date">Sort by date</SelectItem>
+                    <SelectItem value="total">Highest total</SelectItem>
+                    <SelectItem value="status">Sort by status</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button variant="outline" size="sm" className="ml-auto" onClick={exportSales}>
+                  <Download className="mr-2 h-3.5 w-3.5" />
+                  XLSX
+                </Button>
+              </div>
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Order #</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Sales Rep</TableHead>
-                <TableHead className="text-right">Items</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
-                    Loading sales orders…
-                  </TableCell>
-                </TableRow>
-              ) : (
-                <>
-                  {paged.map((o) => (
-                    <TableRow key={o.id} className="cursor-pointer hover:bg-muted/40" onClick={async () => { if (!token || !o.internal_id) return; try { setDetail(await fetchSalesOrderDetail(token, o.internal_id)); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to load order details"); } }}>
-                      <TableCell className="font-mono text-xs">{o.id}</TableCell>
-                      <TableCell>{fmtDate(o.date)}</TableCell>
-                      <TableCell className="font-medium">{o.customer}</TableCell>
-                      <TableCell className="text-muted-foreground">{o.rep}</TableCell>
-                      <TableCell className="text-right">{o.items}</TableCell>
-                      <TableCell className="text-right font-semibold">{KES(o.total)}</TableCell>
-                      <TableCell>
-                        <StatusBadge status={o.status} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          {o.status === "Draft" && o.internal_id && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={async () => {
-                                if (!token) return;
-                                try {
-                                  const result = await confirmSalesOrder(token, o.internal_id);
-                                  if (result.ok) {
-                                    toast.success(`${o.id} confirmed`);
-                                    await reloadSalesOrders();
-                                  } else {
-                                    toast.error("Order confirmation failed");
-                                  }
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "Could not confirm order");
-                                }
-                              }}
-                            >
-                              Confirm
-                            </Button>
-                          )}
-                          {(o.status === "Draft" || o.status === "Confirmed" || o.status === "Delivered") &&
-                            o.internal_id && (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                disabled={processingOrderId === o.id}
-                                onClick={() => void processOrder(o)}
-                              >
-                                {processingOrderId === o.id ? "Processing..." : "Process Order"}
-                              </Button>
-                            )}
-                          {o.status === "Confirmed" && o.internal_id && (
-                            <Button
-                              size="sm"
-                              onClick={async () => {
-                                if (!token) return;
-                                try {
-                                  const firstWarehouse = warehouseIds[0] || "";
-                                  if (!firstWarehouse) {
-                                    toast.error("No warehouse found to dispatch from.");
-                                    return;
-                                  }
-                                  await dispatchSalesOrder(token, o.internal_id, firstWarehouse);
-                                  toast.success(`${o.id} dispatched`);
-                                  await reloadSalesOrders();
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "Could not dispatch order");
-                                }
-                              }}
-                            >
-                              Dispatch
-                            </Button>
-                          )}
-                          {o.status === "Delivered" && o.internal_id && (
-                            <Button
-                              size="sm"
-                              onClick={async () => {
-                                if (!token) return;
-                                try {
-                                  await createInvoiceFromSalesOrder(token, o.internal_id);
-                                  toast.success(`Invoice created for ${o.id}`);
-                                  await reloadSalesOrders();
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "Could not create invoice");
-                                }
-                              }}
-                            >
-                              Create Invoice
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {paged.length === 0 && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Order #</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Sales Rep</TableHead>
+                    <TableHead className="text-right">Items</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
-                        No orders yet. Create a sales order to see it here.
+                      <TableCell
+                        colSpan={8}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
+                        Loading sales orders…
                       </TableCell>
                     </TableRow>
+                  ) : (
+                    <>
+                      {paged.map((o) => (
+                        <TableRow
+                          key={o.id}
+                          className="cursor-pointer hover:bg-muted/40"
+                          onClick={async () => {
+                            if (!token || !o.internal_id) return;
+                            try {
+                              setDetail(await fetchSalesOrderDetail(token, o.internal_id));
+                            } catch (err) {
+                              toast.error(
+                                err instanceof Error ? err.message : "Unable to load order details",
+                              );
+                            }
+                          }}
+                        >
+                          <TableCell className="font-mono text-xs">{o.id}</TableCell>
+                          <TableCell>{fmtDate(o.date)}</TableCell>
+                          <TableCell className="font-medium">{o.customer}</TableCell>
+                          <TableCell className="text-muted-foreground">{o.rep}</TableCell>
+                          <TableCell className="text-right">{o.items}</TableCell>
+                          <TableCell className="text-right font-semibold">{KES(o.total)}</TableCell>
+                          <TableCell>
+                            <StatusBadge status={o.status} />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              {o.status === "Draft" && o.internal_id && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={async () => {
+                                    if (!token) return;
+                                    try {
+                                      const result = await confirmSalesOrder(token, o.internal_id!);
+                                      if (result.ok) {
+                                        toast.success(`${o.id} confirmed`);
+                                        await reloadSalesOrders();
+                                      } else {
+                                        toast.error("Order confirmation failed");
+                                      }
+                                    } catch (e) {
+                                      toast.error(
+                                        e instanceof Error ? e.message : "Could not confirm order",
+                                      );
+                                    }
+                                  }}
+                                >
+                                  Confirm
+                                </Button>
+                              )}
+                              {(o.status === "Draft" ||
+                                o.status === "Confirmed" ||
+                                o.status === "Partial" ||
+                                o.status === "Delivered") &&
+                                o.internal_id && (
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    disabled={processingOrderId === o.id}
+                                    onClick={() => void processOrder(o)}
+                                  >
+                                    {processingOrderId === o.id ? "Processing..." : "Process Order"}
+                                  </Button>
+                                )}
+                              {(o.status === "Confirmed" || o.status === "Partial") && o.internal_id && (
+                                <Button
+                                  size="sm"
+                                  onClick={async () => {
+                                    if (!token) return;
+                                    try {
+                                      await dispatchSalesOrder(token, o.internal_id!);
+                                      toast.success(`${o.id} dispatched`);
+                                      await reloadSalesOrders();
+                                    } catch (e) {
+                                      toast.error(
+                                        e instanceof Error ? e.message : "Could not dispatch order",
+                                      );
+                                    }
+                                  }}
+                                >
+                                  Dispatch
+                                </Button>
+                              )}
+                              {["Draft", "Confirmed", "Partial"].includes(o.status) && o.internal_id && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={processingOrderId === o.id}
+                                  onClick={async (event) => {
+                                    event.stopPropagation();
+                                    if (!token || !window.confirm(`Cancel ${o.id}? Any remaining stock reservation will be released.`)) return;
+                                    try {
+                                      await cancelSalesOrder(token, o.internal_id!);
+                                      toast.success(`${o.id} cancelled and remaining reserved stock released`);
+                                      await reloadSalesOrders();
+                                    } catch (error) {
+                                      toast.error(error instanceof Error ? error.message : "Could not cancel this order");
+                                    }
+                                  }}
+                                >Cancel</Button>
+                              )}
+                              {o.status === "Delivered" && o.internal_id && (
+                                <Button
+                                  size="sm"
+                                  onClick={async () => {
+                                    if (!token) return;
+                                    try {
+                                      await createInvoiceFromSalesOrder(token, o.internal_id!);
+                                      toast.success(`Invoice created for ${o.id}`);
+                                      await reloadSalesOrders();
+                                    } catch (e) {
+                                      toast.error(
+                                        e instanceof Error ? e.message : "Could not create invoice",
+                                      );
+                                    }
+                                  }}
+                                >
+                                  Create Invoice
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {paged.length === 0 && (
+                        <TableRow>
+                          <TableCell
+                            colSpan={8}
+                            className="py-10 text-center text-sm text-muted-foreground"
+                          >
+                            No orders yet. Create a sales order to see it here.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </TableBody>
-          </Table>
-          <ListPagination
-            page={page}
-            totalPages={totalPages}
-            totalItems={filtered.length}
-            pageSize={pageSize}
-            onPageChange={setPage}
-          />
-        </CardContent>
-      </Card>
+                </TableBody>
+              </Table>
+              <ListPagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={filtered.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+              />
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 
       <Dialog open={!!detail} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogContent className="max-w-3xl">
-          {detail && <>
-            <DialogHeader><DialogTitle>Sales Order {detail.order_no}</DialogTitle><DialogDescription>{detail.customer_name || "Customer"} · {detail.order_date || ""} · {detail.status || ""}</DialogDescription></DialogHeader>
-            <Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Invoiced</TableHead><TableHead className="text-right">Unit price</TableHead><TableHead className="text-right">Line total</TableHead></TableRow></TableHeader><TableBody>{detail.lines.map((line) => <TableRow key={line.id}><TableCell>{line.item_code || ""} {line.item_name || ""}</TableCell><TableCell className="text-right">{line.quantity}</TableCell><TableCell className="text-right">{line.qty_delivered || 0}</TableCell><TableCell className="text-right">{line.qty_invoiced || 0}</TableCell><TableCell className="text-right">{KES(line.unit_price)}</TableCell><TableCell className="text-right">{KES(line.line_total || line.quantity * line.unit_price)}</TableCell></TableRow>)}</TableBody></Table>
-            <DialogFooter><div className="mr-auto text-sm font-semibold">Total: {KES(detail.total_amount || 0)}</div><Button variant="outline" onClick={() => setDetail(null)}>Close</Button></DialogFooter>
-          </>}
+          {detail && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Sales Order {detail.order_no}</DialogTitle>
+                <DialogDescription>
+                  {detail.customer_name || "Customer"} · {detail.order_date || ""} ·{" "}
+                  {detail.status || ""}
+                </DialogDescription>
+              </DialogHeader>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Delivered</TableHead>
+                    <TableHead className="text-right">Invoiced</TableHead>
+                    <TableHead className="text-right">Unit price</TableHead>
+                    <TableHead className="text-right">Line total</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {detail.lines.map((line) => (
+                    <TableRow key={line.id}>
+                      <TableCell>
+                        {line.item_code || ""} {line.item_name || ""}
+                      </TableCell>
+                      <TableCell className="text-right">{line.quantity}</TableCell>
+                      <TableCell className="text-right">{line.qty_delivered || 0}</TableCell>
+                      <TableCell className="text-right">{line.qty_invoiced || 0}</TableCell>
+                      <TableCell className="text-right">{KES(line.unit_price)}</TableCell>
+                      <TableCell className="text-right">
+                        {KES(line.line_total || line.quantity * line.unit_price)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <DialogFooter>
+                <div className="mr-auto text-sm font-semibold">
+                  Total: {KES(detail.total_amount || 0)}
+                </div>
+                <Button variant="outline" onClick={() => setDetail(null)}>
+                  Close
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
@@ -545,7 +673,10 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         setUnitPrice(String(firstItem?.standard_cost ?? ""));
       })
       .catch((err) => {
-        notify("Could not load form", err instanceof Error ? err.message : "Unable to load customers or products.");
+        notify(
+          "Could not load form",
+          err instanceof Error ? err.message : "Unable to load customers or products.",
+        );
       })
       .finally(() => setFormLoading(false));
   }, [open, token]);
@@ -589,7 +720,10 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
       await onCompleted();
       setOpen(false);
     } catch (error) {
-      notify("Could not create order", error instanceof Error ? error.message : "Unable to save sales order.");
+      notify(
+        "Could not create order",
+        error instanceof Error ? error.message : "Unable to save sales order.",
+      );
     } finally {
       setSaving(false);
     }
@@ -612,7 +746,9 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         </DialogHeader>
         <form className="grid gap-4 py-2 sm:grid-cols-2" id="sales-order-form" onSubmit={submit}>
           {formLoading ? (
-            <p className="text-sm text-muted-foreground sm:col-span-2">Loading customers and products…</p>
+            <p className="text-sm text-muted-foreground sm:col-span-2">
+              Loading customers and products…
+            </p>
           ) : null}
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="customer">Customer</Label>
@@ -710,14 +846,23 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="notes">Notes</Label>
-            <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+            <Input
+              id="notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional"
+            />
           </div>
         </form>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button type="submit" form="sales-order-form" disabled={saving || formLoading || !apiItems.length}>
+          <Button
+            type="submit"
+            form="sales-order-form"
+            disabled={saving || formLoading || !apiItems.length}
+          >
             {saving ? "Saving..." : "Create draft order"}
           </Button>
         </DialogFooter>

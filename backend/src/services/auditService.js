@@ -1,4 +1,4 @@
-const pool = require('../db');
+const pool = require("../db");
 
 async function logAudit({
   companyId,
@@ -33,7 +33,7 @@ async function logAudit({
   );
 }
 
-async function listAuditLogs({ companyId, q = '', limit = 50, offset = 0 }) {
+async function listAuditLogs({ companyId, q = "", limit = 50, offset = 0 }) {
   const safeLimit = Math.min(Math.max(limit, 1), 200);
   const safeOffset = Math.max(offset, 0);
 

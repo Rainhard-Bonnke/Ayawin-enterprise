@@ -4,10 +4,23 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtDate } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Truck, MapPin, Upload, ArrowUpDown, Printer } from "lucide-react";
 import { SearchBar } from "@/components/SearchBar";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +34,7 @@ import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/delivery")({
   component: DeliveryPage,
-  head: () => ({ meta: [{ title: "Delivery & Logistics - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Delivery & Logistics - Ayawin Stock Solution" }] }),
 });
 
 function DeliveryPage() {
@@ -35,13 +48,20 @@ function DeliveryPage() {
   const pageSize = 5;
   useEffect(() => {
     if (!token) return;
-    void fetchSalesDeliveries(token).then(setDeliveries).catch((err) => {
-      toast.error(err instanceof Error ? err.message : "Unable to load deliveries");
-      setDeliveries([]);
-    }).finally(() => setLoading(false));
+    void fetchSalesDeliveries(token)
+      .then(setDeliveries)
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Unable to load deliveries");
+        setDeliveries([]);
+      })
+      .finally(() => setLoading(false));
   }, [token]);
   const filtered = deliveries
-    .filter((d) => (status === "all" || d.status === status) && (`${d.delivery_no} ${d.order_no || ""}`.toLowerCase().includes(q.toLowerCase())))
+    .filter(
+      (d) =>
+        (status === "all" || d.status === status) &&
+        `${d.delivery_no} ${d.order_no || ""}`.toLowerCase().includes(q.toLowerCase()),
+    )
     .sort((a, b) => {
       if (sort === "status") return String(a.status).localeCompare(String(b.status));
       return String(b.delivery_date || "").localeCompare(String(a.delivery_date || ""));
@@ -58,7 +78,7 @@ function DeliveryPage() {
       scenario: "delivery",
       context: { q, status, sort, rows: filtered.length },
     });
-    exportWorkbook("ayawin-enterprise-deliveries.xlsx", [
+    exportWorkbook("ayawin-stock-solution-deliveries.xlsx", [
       {
         name: "Deliveries",
         rows: filtered.map((d) => ({
@@ -81,9 +101,11 @@ function DeliveryPage() {
         description="Driver assignments, route planning, proof of delivery and vehicle tracking."
         actions={
           <>
-            <Button variant="outline" onClick={exportDeliveries}><Printer className="mr-2 h-4 w-4" />Export XLSX</Button>
+            <Button variant="outline" onClick={exportDeliveries}>
+              <Printer className="mr-2 h-4 w-4" />
+              Export XLSX
+            </Button>
             <Button
-             
               onClick={() => {
                 void trackEvent({
                   action: "delivery_batch_scheduled",
@@ -127,7 +149,9 @@ function DeliveryPage() {
 
       <Card className="mb-4">
         <CardContent className="p-4">
-          <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">Route sequence</div>
+          <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">
+            Route sequence
+          </div>
           <div className="flex flex-wrap gap-2">
             {routeHints.map((route) => (
               <Badge key={route} variant="outline" className="">
@@ -136,7 +160,8 @@ function DeliveryPage() {
             ))}
           </div>
           <div className="mt-3 text-xs text-muted-foreground">
-            Delivery batches are grouped by geography so dispatch can accept or rearrange the sequence.
+            Delivery batches are grouped by geography so dispatch can accept or rearrange the
+            sequence.
           </div>
         </CardContent>
       </Card>
@@ -144,7 +169,14 @@ function DeliveryPage() {
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
-            <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search delivery or customer..." />
+            <SearchBar
+              value={q}
+              onChange={(value) => {
+                setQ(value);
+                setPage(1);
+              }}
+              placeholder="Search delivery or customer..."
+            />
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className="w-40">
                 <SelectValue />
@@ -152,7 +184,9 @@ function DeliveryPage() {
               <SelectContent>
                 <SelectItem value="all">All statuses</SelectItem>
                 {["Pending", "In Transit", "Delivered", "Failed"].map((s) => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -182,76 +216,96 @@ function DeliveryPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">Loading live deliveries…</TableCell></TableRow> : paged.map((d) => (
-                <TableRow key={d.id}>
-                  <TableCell className="font-mono text-xs">{d.delivery_no}</TableCell>
-                  <TableCell className="font-mono text-xs">{d.order_no || "—"}</TableCell>
-                  <TableCell className="font-medium">{d.order_no || "Sales delivery"}</TableCell>
-                  <TableCell className="text-xs">
-                    {d.driver_name || "Unassigned"}
-                    <br />
-                    <span className="text-muted-foreground">{d.vehicle_no || "—"}</span>
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    <MapPin className="mr-1 inline h-3 w-3 text-muted-foreground" />
-                    {d.route || "—"}
-                  </TableCell>
-                  <TableCell>{d.delivery_date ? fmtDate(d.delivery_date) : "—"}</TableCell>
-                  <TableCell>
-                    <StatusBadge status={d.status || "Pending"} />
-                  </TableCell>
-                  <TableCell>
-                    {String(d.status).toLowerCase() === "delivered" ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => {
-                          void trackEvent({
-                            action: "delivery_pod_viewed",
-                            entityType: "delivery",
-                            entityId: d.id,
-                            details: { order: d.order_no },
-                            scenario: "delivery",
-                            context: { delivery: d },
-                          });
-                        }}
-                      >
-                        View
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => {
-                          void trackEvent({
-                            action: "delivery_pod_upload_opened",
-                            entityType: "delivery",
-                            entityId: d.id,
-                            details: { order: d.order_no },
-                            scenario: "delivery",
-                            context: { delivery: d },
-                          });
-                        }}
-                      >
-                        <Upload className="mr-1 h-3 w-3" />
-                        Upload
-                      </Button>
-                    )}
+              {loading ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
+                    Loading live deliveries…
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : (
+                paged.map((d) => (
+                  <TableRow key={d.id}>
+                    <TableCell className="font-mono text-xs">{d.delivery_no}</TableCell>
+                    <TableCell className="font-mono text-xs">{d.order_no || "—"}</TableCell>
+                    <TableCell className="font-medium">{d.order_no || "Sales delivery"}</TableCell>
+                    <TableCell className="text-xs">
+                      {d.driver_name || "Unassigned"}
+                      <br />
+                      <span className="text-muted-foreground">{d.vehicle_no || "—"}</span>
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <MapPin className="mr-1 inline h-3 w-3 text-muted-foreground" />
+                      {d.route || "—"}
+                    </TableCell>
+                    <TableCell>{d.delivery_date ? fmtDate(d.delivery_date) : "—"}</TableCell>
+                    <TableCell>
+                      <StatusBadge status={d.status || "Pending"} />
+                    </TableCell>
+                    <TableCell>
+                      {String(d.status).toLowerCase() === "delivered" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            void trackEvent({
+                              action: "delivery_pod_viewed",
+                              entityType: "delivery",
+                              entityId: d.id,
+                              details: { order: d.order_no },
+                              scenario: "delivery",
+                              context: { delivery: d },
+                            });
+                          }}
+                        >
+                          View
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            void trackEvent({
+                              action: "delivery_pod_upload_opened",
+                              entityType: "delivery",
+                              entityId: d.id,
+                              details: { order: d.order_no },
+                              scenario: "delivery",
+                              context: { delivery: d },
+                            });
+                          }}
+                        >
+                          <Upload className="mr-1 h-3 w-3" />
+                          Upload
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
               {paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     No deliveries match your filters.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
     </div>

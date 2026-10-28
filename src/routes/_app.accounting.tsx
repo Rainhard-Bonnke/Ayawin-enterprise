@@ -5,32 +5,46 @@ import { Button } from "@/components/ui/button";
 import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
-import { cashFlowForecast } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { useEffect, useMemo, useState } from "react";
 import { Printer, FileDown, ArrowUpDown } from "lucide-react";
 import { exportElementAsPdf } from "@/lib/pdf";
 import { useAuth } from "@/lib/auth";
-import { closeFinancePeriod, fetchAccountingSnapshot, fetchFinanceWorkspace, type AccountingJournalRow, type FinanceWorkspace } from "@/lib/api";
+import {
+  closeFinancePeriod,
+  fetchAccountingSnapshot,
+  fetchFinanceWorkspace,
+  type AccountingJournalRow,
+  type FinanceWorkspace,
+} from "@/lib/api";
 import { toast } from "sonner";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 export const Route = createFileRoute("/_app/accounting")({
   component: Accounting,
-  head: () => ({ meta: [{ title: "Accounting & Finance — Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Accounting & Finance — Ayawin Stock Solution" }] }),
 });
 
 const pnl: Array<{ month: string; revenue: number; expenses: number }> = [];
 
-const aging = [
-  { bucket: "Current (0–30)", ar: 2840000, ap: 4100000 },
-  { bucket: "31–60 days", ar: 1280000, ap: 1200000 },
-  { bucket: "61–90 days", ar: 540000, ap: 380000 },
-  { bucket: "90+ days", ar: 287500, ap: 0 },
-];
+const aging: Array<{ bucket: string; ar: number; ap: number }> = [];
 
 const defaultJournal: AccountingJournalRow[] = [];
 
@@ -66,34 +80,65 @@ function Accounting() {
     void fetchFinanceWorkspace(token, periodId || undefined)
       .then((workspace) => {
         setFinance(workspace);
-        if (!periodId && workspace.periods[0]?.id) setPeriodId(workspace.periods.find((period) => period.status === "open")?.id || workspace.periods[0].id);
+        if (!periodId && workspace.periods[0]?.id) {
+          const today = new Date().toISOString().slice(0, 10);
+          const current = workspace.periods.find(
+            (period) =>
+              period.status === "open" &&
+              period.start_date &&
+              period.end_date &&
+              period.start_date <= today &&
+              period.end_date >= today,
+          );
+          setPeriodId(
+            current?.id ||
+              workspace.periods.find((period) => period.status === "open")?.id ||
+              workspace.periods[0].id,
+          );
+        }
       })
-      .catch((err) => toast.error(err instanceof Error ? err.message : "Unable to load finance reports"));
+      .catch((err) =>
+        toast.error(err instanceof Error ? err.message : "Unable to load finance reports"),
+      );
   }, [token, periodId]);
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
-    if (["pnl", "aging", "vat", "ledger", "trial-balance", "balance-sheet"].includes(nextTab)) setActiveTab(nextTab);
+    if (["pnl", "aging", "vat", "ledger", "trial-balance", "balance-sheet"].includes(nextTab))
+      setActiveTab(nextTab);
   }, [hash]);
 
   const journalSource = liveJournal ?? defaultJournal;
   const pnlSource = livePnl ?? pnl;
   const liveProfitLoss = finance?.profitLoss;
-  const revenue = liveProfitLoss ? liveProfitLoss.lines.filter((row) => row.account_type === "income").reduce((sum, row) => sum + Number(row.amount || 0), 0) : pnlSource.reduce((sum, row) => sum + row.revenue, 0);
-  const expenses = liveProfitLoss ? liveProfitLoss.lines.filter((row) => row.account_type === "expense").reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0) : pnlSource.reduce((sum, row) => sum + row.expenses, 0);
+  const revenue = liveProfitLoss
+    ? liveProfitLoss.lines
+        .filter((row) => row.account_type === "income")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    : pnlSource.reduce((sum, row) => sum + row.revenue, 0);
+  const expenses = liveProfitLoss
+    ? liveProfitLoss.lines
+        .filter((row) => row.account_type === "expense")
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0)
+    : pnlSource.reduce((sum, row) => sum + row.expenses, 0);
   const net = revenue - expenses;
 
   const journalRows = journalSource
-    .filter((j) => j.d.includes(q) || j.a.toLowerCase().includes(q.toLowerCase()) || j.desc.toLowerCase().includes(q.toLowerCase()))
+    .filter(
+      (j) =>
+        j.d.includes(q) ||
+        j.a.toLowerCase().includes(q.toLowerCase()) ||
+        j.desc.toLowerCase().includes(q.toLowerCase()),
+    )
     .sort((a, b) => {
       if (sort === "account") return a.a.localeCompare(b.a);
       return b.d.localeCompare(a.d);
     });
   const totalPages = Math.max(1, Math.ceil(journalRows.length / pageSize));
   const paged = journalRows.slice((page - 1) * pageSize, page * pageSize);
-  const forecast = cashFlowForecast();
+  const forecast: Array<{ label: string; value: number }> = [];
   const exportAccounting = () => {
-    exportWorkbook("ayawin-enterprise-accounting.xlsx", [
+    exportWorkbook("ayawin-stock-solution-accounting.xlsx", [
       {
         name: "Journal",
         rows: journalRows.map((j) => ({
@@ -145,10 +190,10 @@ function Accounting() {
             <Button
               variant="outline"
               onClick={async () => {
-                const el = document.querySelector('.printable');
+                const el = document.querySelector(".printable");
                 if (!el) return;
                 try {
-                  await exportElementAsPdf('accounting-report.pdf', el as HTMLElement);
+                  await exportElementAsPdf("accounting-report.pdf", el as HTMLElement);
                 } catch (e) {
                   // eslint-disable-next-line no-console
                   console.error(e);
@@ -173,10 +218,12 @@ function Accounting() {
           { l: "Net Result", v: KES(net) },
           { l: "Journal Entries", v: String(journalRows.length) },
         ].map((k) => (
-          <Card key={k.l}><CardContent className="p-4">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-            <div className="mt-1 text-2xl font-bold">{k.v}</div>
-          </CardContent></Card>
+          <Card key={k.l}>
+            <CardContent className="p-4">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
+              <div className="mt-1 text-2xl font-bold">{k.v}</div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
@@ -192,25 +239,64 @@ function Accounting() {
           <CardTitle>Next 30 Days Cash Flow</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-4">
-          {forecast.map((item) => (
-            <div key={item.label} className="rounded-xl border border-border/70 bg-background/60 p-3">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">{item.label}</div>
+          {forecast.length ? forecast.map((item) => (
+            <div
+              key={item.label}
+              className="rounded-xl border border-border/70 bg-background/60 p-3"
+            >
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                {item.label}
+              </div>
               <div className="mt-1 text-xl font-bold">{KES(item.value)}</div>
             </div>
-          ))}
+          )) : <div className="text-sm text-muted-foreground">Cash flow forecast is unavailable until bank balances and due movements are connected.</div>}
         </CardContent>
       </Card>
 
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
         <div className="text-sm font-medium">Fiscal period</div>
         <Select value={periodId} onValueChange={setPeriodId}>
-          <SelectTrigger className="w-56"><SelectValue placeholder="Select period" /></SelectTrigger>
-          <SelectContent>{(finance?.periods || []).map((period) => <SelectItem key={period.id} value={period.id}>{period.name} · {period.status}</SelectItem>)}</SelectContent>
+          <SelectTrigger className="w-56">
+            <SelectValue placeholder="Select period" />
+          </SelectTrigger>
+          <SelectContent>
+            {(finance?.periods || []).map((period) => (
+              <SelectItem key={period.id} value={period.id}>
+                {period.name} · {period.status}
+              </SelectItem>
+            ))}
+          </SelectContent>
         </Select>
-        {finance?.periods.find((period) => period.id === periodId)?.status === "open" && <Button variant="outline" disabled={closing} onClick={async () => { if (!token || !periodId) return; setClosing(true); try { await closeFinancePeriod(token, periodId); toast.success("Fiscal period closed"); setFinance(await fetchFinanceWorkspace(token, periodId)); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to close period"); } finally { setClosing(false); } }}>{closing ? "Closing…" : "Close period"}</Button>}
+        {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
+          <Button
+            variant="outline"
+            disabled={closing}
+            onClick={async () => {
+              if (!token || !periodId) return;
+              setClosing(true);
+              try {
+                await closeFinancePeriod(token, periodId);
+                toast.success("Fiscal period closed");
+                setFinance(await fetchFinanceWorkspace(token, periodId));
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Unable to close period");
+              } finally {
+                setClosing(false);
+              }
+            }}
+          >
+            {closing ? "Closing…" : "Close period"}
+          </Button>
+        )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => { setActiveTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          setActiveTab(value);
+          window.history.replaceState({}, "", `${window.location.pathname}#${value}`);
+        }}
+      >
         <TabsList>
           <TabsTrigger value="pnl">P&L</TabsTrigger>
           <TabsTrigger value="aging">Aging</TabsTrigger>
@@ -222,8 +308,10 @@ function Accounting() {
 
         <TabsContent value="pnl" className="mt-4">
           <Card>
-            <CardHeader><CardTitle>Profit & Loss — Last 5 months</CardTitle></CardHeader>
-            <CardContent className="h-[320px]">
+            <CardHeader>
+              <CardTitle>Profit & Loss — Last 5 months</CardTitle>
+            </CardHeader>
+            <CardContent className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={pnlSource}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
@@ -239,101 +327,203 @@ function Accounting() {
         </TabsContent>
 
         <TabsContent value="aging" className="mt-4">
-          <Card><CardContent className="p-4">
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Bucket</TableHead>
-                <TableHead className="text-right">Receivable</TableHead>
-                <TableHead className="text-right">Payable</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {aging.map((a) => (
-                  <TableRow key={a.bucket}>
-                    <TableCell className="font-medium">{a.bucket}</TableCell>
-                    <TableCell className="text-right">{KES(a.ar)}</TableCell>
-                    <TableCell className="text-right">{KES(a.ap)}</TableCell>
+          <Card>
+            <CardContent className="p-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Bucket</TableHead>
+                    <TableHead className="text-right">Receivable</TableHead>
+                    <TableHead className="text-right">Payable</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent></Card>
+                </TableHeader>
+                <TableBody>
+                  {aging.map((a) => (
+                    <TableRow key={a.bucket}>
+                      <TableCell className="font-medium">{a.bucket}</TableCell>
+                      <TableCell className="text-right">{KES(a.ar)}</TableCell>
+                      <TableCell className="text-right">{KES(a.ap)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {aging.length === 0 && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No live receivables and payables aging data is available yet.</TableCell></TableRow>}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="trial-balance" className="mt-4">
-          <Card><CardContent className="p-4"><div className="mb-3 flex justify-between text-sm font-medium"><span>Trial balance</span><span>{KES(Number(finance?.trialBalance.totals.period_debit || 0))} debit · {KES(Number(finance?.trialBalance.totals.period_credit || 0))} credit</span></div><Table><TableHeader><TableRow><TableHead>Account</TableHead><TableHead>Name</TableHead><TableHead className="text-right">Debit</TableHead><TableHead className="text-right">Credit</TableHead></TableRow></TableHeader><TableBody>{(finance?.trialBalance.lines || []).map((row) => <TableRow key={row.account_code}><TableCell className="font-mono text-xs">{row.account_code}</TableCell><TableCell>{row.account_name}</TableCell><TableCell className="text-right">{KES(Number(row.period_debit || 0))}</TableCell><TableCell className="text-right">{KES(Number(row.period_credit || 0))}</TableCell></TableRow>)}{!finance?.trialBalance.lines.length && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No trial balance data for this period.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-3 flex justify-between text-sm font-medium">
+                <span>Trial balance</span>
+                <span>
+                  {KES(Number(finance?.trialBalance.totals.period_debit || 0))} debit ·{" "}
+                  {KES(Number(finance?.trialBalance.totals.period_credit || 0))} credit
+                </span>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Account</TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead className="text-right">Debit</TableHead>
+                    <TableHead className="text-right">Credit</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(finance?.trialBalance.lines || []).map((row) => (
+                    <TableRow key={row.account_code}>
+                      <TableCell className="font-mono text-xs">{row.account_code}</TableCell>
+                      <TableCell>{row.account_name}</TableCell>
+                      <TableCell className="text-right">
+                        {KES(Number(row.period_debit || 0))}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {KES(Number(row.period_credit || 0))}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!finance?.trialBalance.lines.length && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={4}
+                        className="py-8 text-center text-sm text-muted-foreground"
+                      >
+                        No trial balance data for this period.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="balance-sheet" className="mt-4">
-          <Card><CardContent className="p-4"><Table><TableHeader><TableRow><TableHead>Account</TableHead><TableHead>Type</TableHead><TableHead className="text-right">Balance</TableHead></TableRow></TableHeader><TableBody>{(finance?.balanceSheet || []).map((row) => <TableRow key={row.account_code}><TableCell>{row.account_code} · {row.account_name}</TableCell><TableCell className="capitalize">{row.account_type}</TableCell><TableCell className="text-right font-medium">{KES(Number(row.balance || 0))}</TableCell></TableRow>)}{!finance?.balanceSheet.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-sm text-muted-foreground">No balance sheet data for this period.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+          <Card>
+            <CardContent className="p-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Account</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead className="text-right">Balance</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(finance?.balanceSheet || []).map((row) => (
+                    <TableRow key={row.account_code}>
+                      <TableCell>
+                        {row.account_code} · {row.account_name}
+                      </TableCell>
+                      <TableCell className="capitalize">{row.account_type}</TableCell>
+                      <TableCell className="text-right font-medium">
+                        {KES(Number(row.balance || 0))}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!finance?.balanceSheet.length && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="py-8 text-center text-sm text-muted-foreground"
+                      >
+                        No balance sheet data for this period.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="vat" className="mt-4">
           <div className="grid gap-4 md:grid-cols-2">
             <Card>
-              <CardHeader><CardTitle>VAT Return — May 2026</CardTitle></CardHeader>
+              <CardHeader>
+                <CardTitle>VAT Return</CardTitle>
+              </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <Row label="Output VAT (Sales)" value={KES(2208000)} />
-                <Row label="Input VAT (Purchases)" value={KES(1515600)} />
-                <div className="my-2 border-t border-border" />
-                <Row label="Net VAT Payable" value={KES(692400)} bold />
-                <div className="mt-3 text-xs text-muted-foreground">Due to KRA by 20 June 2026</div>
+                <div className="text-muted-foreground">VAT return reporting is not connected to a live tax period yet. No filing amounts are shown.</div>
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle>Excise Duty Return</CardTitle></CardHeader>
+              <CardHeader>
+                <CardTitle>Excise Duty Return</CardTitle>
+              </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <Row label="Beer (KES 121.85/L)" value={KES(412000)} />
-                <Row label="Spirits (KES 356.28/L)" value={KES(298000)} />
-                <Row label="Wine (KES 229.85/L)" value={KES(58000)} />
-                <Row label="Soft Drinks (KES 10.68/L)" value={KES(38500)} />
-                <div className="my-2 border-t border-border" />
-                <Row label="Total Excise Duty" value={KES(806500)} bold />
+                <div className="text-muted-foreground">Excise classifications and rates must be configured against current tax rules before a return can be calculated.</div>
               </CardContent>
             </Card>
           </div>
         </TabsContent>
 
         <TabsContent value="ledger" className="mt-4">
-          <Card><CardContent className="p-4">
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search journal entries..." />
-              <Select value={sort} onValueChange={setSort}>
-                <SelectTrigger className="w-40">
-                  <ArrowUpDown className="mr-2 h-4 w-4" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="date">Sort by date</SelectItem>
-                  <SelectItem value="account">Sort by account</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Date</TableHead><TableHead>Account</TableHead><TableHead>Description</TableHead>
-                <TableHead className="text-right">Debit</TableHead><TableHead className="text-right">Credit</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {paged.map((j, i) => (
-                  <TableRow key={i}>
-                    <TableCell className="text-xs">{j.d}</TableCell>
-                    <TableCell className="font-mono text-xs">{j.a}</TableCell>
-                    <TableCell className="text-xs">{j.desc}</TableCell>
-                    <TableCell className="text-right text-xs">{j.db ? KES(j.db) : "—"}</TableCell>
-                    <TableCell className="text-right text-xs">{j.cr ? KES(j.cr) : "—"}</TableCell>
-                  </TableRow>
-                ))}
-                {paged.length === 0 && (
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <SearchBar
+                  value={q}
+                  onChange={(value) => {
+                    setQ(value);
+                    setPage(1);
+                  }}
+                  placeholder="Search journal entries..."
+                />
+                <Select value={sort} onValueChange={setSort}>
+                  <SelectTrigger className="w-40">
+                    <ArrowUpDown className="mr-2 h-4 w-4" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date">Sort by date</SelectItem>
+                    <SelectItem value="account">Sort by account</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
-                      No journal entries match your filters.
-                    </TableCell>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Account</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="text-right">Debit</TableHead>
+                    <TableHead className="text-right">Credit</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-            <ListPagination page={page} totalPages={totalPages} totalItems={journalRows.length} pageSize={pageSize} onPageChange={setPage} />
-          </CardContent></Card>
+                </TableHeader>
+                <TableBody>
+                  {paged.map((j, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="text-xs">{j.d}</TableCell>
+                      <TableCell className="font-mono text-xs">{j.a}</TableCell>
+                      <TableCell className="text-xs">{j.desc}</TableCell>
+                      <TableCell className="text-right text-xs">{j.db ? KES(j.db) : "—"}</TableCell>
+                      <TableCell className="text-right text-xs">{j.cr ? KES(j.cr) : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                  {paged.length === 0 && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={5}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
+                        No journal entries match your filters.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+              <ListPagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={journalRows.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+              />
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

@@ -1,18 +1,18 @@
-const express = require('express');
-const pool = require('../../db');
-const { authenticateErp, requirePermission } = require('../../middleware/erpAuth');
-const { logAudit } = require('../../services/auditService');
-const { getClientIp } = require('../../middleware/erpAuth');
+const express = require("express");
+const pool = require("../../db");
+const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
+const { logAudit } = require("../../services/auditService");
+const { getClientIp } = require("../../middleware/erpAuth");
 
 const router = express.Router();
 router.use(authenticateErp);
 
-router.get('/', requirePermission('foundation.view'), async (req, res) => {
-  const category = typeof req.query.category === 'string' ? req.query.category : null;
+router.get("/", requirePermission("foundation.view"), async (req, res) => {
+  const category = typeof req.query.category === "string" ? req.query.category : null;
   const params = [req.user.company_id];
-  let filter = '';
+  let filter = "";
   if (category) {
-    filter = 'AND category = $2';
+    filter = "AND category = $2";
     params.push(category);
   }
   const result = await pool.query(
@@ -24,11 +24,11 @@ router.get('/', requirePermission('foundation.view'), async (req, res) => {
   return res.json(result.rows);
 });
 
-router.put('/:category/:key', requirePermission('foundation.edit'), async (req, res) => {
+router.put("/:category/:key", requirePermission("foundation.edit"), async (req, res) => {
   const { category, key } = req.params;
   const { setting_value, description } = req.body || {};
   if (setting_value === undefined) {
-    return res.status(400).json({ error: 'setting_value is required' });
+    return res.status(400).json({ error: "setting_value is required" });
   }
 
   try {
@@ -52,18 +52,18 @@ router.put('/:category/:key', requirePermission('foundation.edit'), async (req, 
     await logAudit({
       companyId: req.user.company_id,
       userId: req.user.id,
-      entityType: 'erp_system_settings',
+      entityType: "erp_system_settings",
       entityId: `${category}.${key}`,
-      action: before.rowCount ? 'update' : 'create',
+      action: before.rowCount ? "update" : "create",
       oldValues: before.rows[0] || null,
       newValues: result.rows[0],
       ipAddress: getClientIp(req),
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
     return res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Unable to save setting' });
+    return res.status(500).json({ error: "Unable to save setting" });
   }
 });
 

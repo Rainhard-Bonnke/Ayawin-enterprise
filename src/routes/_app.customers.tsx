@@ -6,19 +6,46 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { customerHealth } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
-import { createCustomer, deleteCustomer, fetchCustomers, type BackendCustomer, updateCustomer } from "@/lib/api";
+import {
+  createCustomer,
+  deleteCustomer,
+  fetchCustomers,
+  type BackendCustomer,
+  updateCustomer,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/event-tracker";
 import { toast } from "sonner";
@@ -55,7 +82,7 @@ const segmentOptions = ["Bar/Restaurant", "Wholesaler", "Retailer", "Distributor
 
 export const Route = createFileRoute("/_app/customers")({
   component: CustomersPage,
-  head: () => ({ meta: [{ title: "Customers (CRM) - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Customers (CRM) - Ayawin Stock Solution" }] }),
 });
 
 function CustomersPage() {
@@ -99,7 +126,9 @@ function CustomersPage() {
             (customer.location || "").toLowerCase().includes(q.toLowerCase()) ||
             (customer.email || "").toLowerCase().includes(q.toLowerCase()) ||
             customer.kra_pin.toLowerCase().includes(q.toLowerCase());
-          const matchesSegment = segment === "all" || (customer.segment || customer.type || "").toLowerCase() === segment.toLowerCase();
+          const matchesSegment =
+            segment === "all" ||
+            (customer.segment || customer.type || "").toLowerCase() === segment.toLowerCase();
           return matchesQuery && matchesSegment;
         })
         .sort((a, b) => {
@@ -229,7 +258,7 @@ function CustomersPage() {
   };
 
   const exportCustomers = () => {
-    exportWorkbook("ayawin-enterprise-customers.xlsx", [
+    exportWorkbook("ayawin-stock-solution-customers.xlsx", [
       {
         name: "Customers",
         rows: filtered.map((customer) => ({
@@ -271,7 +300,9 @@ function CustomersPage() {
         {metrics.map((metric) => (
           <Card key={metric.l}>
             <CardContent className="p-4">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">{metric.l}</div>
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                {metric.l}
+              </div>
               <div className="mt-1 text-2xl font-bold">{metric.v}</div>
             </CardContent>
           </Card>
@@ -344,71 +375,102 @@ function CustomersPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     Loading customers...
                   </TableCell>
                 </TableRow>
-              ) : paged.map((customer) => {
-                const limit = Number(customer.credit_limit || 0);
-                const balance = Number(customer.balance || 0);
-                const utilisation = limit > 0 ? Math.min(100, Math.round((balance / limit) * 100)) : 0;
-                const health = customerHealth(customer.name);
+              ) : (
+                paged.map((customer) => {
+                  const limit = Number(customer.credit_limit || 0);
+                  const balance = Number(customer.balance || 0);
+                  const utilisation =
+                    limit > 0 ? Math.min(100, Math.round((balance / limit) * 100)) : 0;
+                  const health = customerHealth(customer.name);
 
-                return (
-                  <TableRow key={customer.id}>
-                    <TableCell>
-                      <div className="font-medium">{customer.name}</div>
-                      <div className="text-xs text-muted-foreground">{customer.email || "No email on file"}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`h-2.5 w-2.5 rounded-full ${
-                            health.tone === "success" ? "bg-success" : health.tone === "warning" ? "bg-warning" : "bg-destructive"
-                          }`}
+                  return (
+                    <TableRow key={customer.id}>
+                      <TableCell>
+                        <div className="font-medium">{customer.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {customer.email || "No email on file"}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full ${
+                              health.tone === "success"
+                                ? "bg-success"
+                                : health.tone === "warning"
+                                  ? "bg-warning"
+                                  : "bg-destructive"
+                            }`}
+                          />
+                          <Badge variant="outline">
+                            {customer.segment || customer.type || "Unassigned"}
+                          </Badge>
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{customer.kra_pin}</TableCell>
+                      <TableCell className="text-xs">
+                        {customer.location || customer.address || "-"}
+                      </TableCell>
+                      <TableCell className="text-xs">{customer.payment_terms || "-"}</TableCell>
+                      <TableCell>
+                        <Progress
+                          value={utilisation}
+                          className={
+                            utilisation > 80
+                              ? "[&>div]:bg-destructive"
+                              : utilisation > 50
+                                ? "[&>div]:bg-warning"
+                                : "[&>div]:bg-success"
+                          }
                         />
-                        <Badge variant="outline">{customer.segment || customer.type || "Unassigned"}</Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{customer.kra_pin}</TableCell>
-                    <TableCell className="text-xs">{customer.location || customer.address || "-"}</TableCell>
-                    <TableCell className="text-xs">{customer.payment_terms || "-"}</TableCell>
-                    <TableCell>
-                      <Progress
-                        value={utilisation}
-                        className={utilisation > 80 ? "[&>div]:bg-destructive" : utilisation > 50 ? "[&>div]:bg-warning" : "[&>div]:bg-success"}
-                      />
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        {utilisation}% of {KES(limit)}
-                      </div>
-                      <div className="mt-1 text-[10px] text-muted-foreground">{health.label} profile</div>
-                    </TableCell>
-                    <TableCell className="text-right font-semibold">{KES(balance)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => openEdit(customer)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          Edit
-                        </Button>
-                        <ConfirmActionDialog
-                          title="Delete customer?"
-                          description="This permanently removes the customer record from the CRM."
-                          confirmLabel="Delete"
-                          onConfirm={() => void removeCustomer(customer)}
-                        >
-                          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
+                        <div className="mt-1 text-[10px] text-muted-foreground">
+                          {utilisation}% of {KES(limit)}
+                        </div>
+                        <div className="mt-1 text-[10px] text-muted-foreground">
+                          {health.label} profile
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold">{KES(balance)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button variant="ghost" size="sm" onClick={() => openEdit(customer)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit
                           </Button>
-                        </ConfirmActionDialog>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
+                          <ConfirmActionDialog
+                            title="Delete customer?"
+                            description="This permanently removes the customer record from the CRM."
+                            confirmLabel="Delete"
+                            onConfirm={() => void removeCustomer(customer)}
+                          >
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </Button>
+                          </ConfirmActionDialog>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     No customers match your filters.
                   </TableCell>
                 </TableRow>
@@ -416,7 +478,13 @@ function CustomersPage() {
             </TableBody>
           </Table>
 
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
 
@@ -429,17 +497,43 @@ function CustomersPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2 sm:grid-cols-2">
-            <Field label="Customer Name" value={form.name} onChange={(value) => setForm((prev) => ({ ...prev, name: value }))} />
-            <Field label="KRA PIN" value={form.kra_pin} onChange={(value) => setForm((prev) => ({ ...prev, kra_pin: value }))} />
-            <Field label="Contact" value={form.contact} onChange={(value) => setForm((prev) => ({ ...prev, contact: value }))} />
-            <Field label="Email" value={form.email} onChange={(value) => setForm((prev) => ({ ...prev, email: value }))} />
-            <Field label="Address" value={form.address} onChange={(value) => setForm((prev) => ({ ...prev, address: value }))} />
-            <Field label="Location" value={form.location} onChange={(value) => setForm((prev) => ({ ...prev, location: value }))} />
+            <Field
+              label="Customer Name"
+              value={form.name}
+              onChange={(value) => setForm((prev) => ({ ...prev, name: value }))}
+            />
+            <Field
+              label="KRA PIN"
+              value={form.kra_pin}
+              onChange={(value) => setForm((prev) => ({ ...prev, kra_pin: value }))}
+            />
+            <Field
+              label="Contact"
+              value={form.contact}
+              onChange={(value) => setForm((prev) => ({ ...prev, contact: value }))}
+            />
+            <Field
+              label="Email"
+              value={form.email}
+              onChange={(value) => setForm((prev) => ({ ...prev, email: value }))}
+            />
+            <Field
+              label="Address"
+              value={form.address}
+              onChange={(value) => setForm((prev) => ({ ...prev, address: value }))}
+            />
+            <Field
+              label="Location"
+              value={form.location}
+              onChange={(value) => setForm((prev) => ({ ...prev, location: value }))}
+            />
             <div className="space-y-1.5">
               <Label>Segment</Label>
               <Select
                 value={form.segment}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, segment: value, type: value }))}
+                onValueChange={(value) =>
+                  setForm((prev) => ({ ...prev, segment: value, type: value }))
+                }
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -453,7 +547,11 @@ function CustomersPage() {
                 </SelectContent>
               </Select>
             </div>
-            <Field label="Payment Terms" value={form.payment_terms} onChange={(value) => setForm((prev) => ({ ...prev, payment_terms: value }))} />
+            <Field
+              label="Payment Terms"
+              value={form.payment_terms}
+              onChange={(value) => setForm((prev) => ({ ...prev, payment_terms: value }))}
+            />
             <Field
               label="Credit Limit"
               type="number"

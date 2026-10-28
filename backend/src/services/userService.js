@@ -1,4 +1,4 @@
-const pool = require('../db');
+const pool = require("../db");
 
 async function loadUserPermissions(userId, roleId) {
   if (!roleId) return [];
@@ -14,9 +14,9 @@ async function loadUserPermissions(userId, roleId) {
 
 async function findUserByEmail(email, companyCode = null) {
   const params = [email.toLowerCase()];
-  let companyFilter = '';
+  let companyFilter = "";
   if (companyCode) {
-    companyFilter = 'AND c.code = $2';
+    companyFilter = "AND c.code = $2";
     params.push(companyCode);
   }
 
@@ -25,7 +25,9 @@ async function findUserByEmail(email, companyCode = null) {
      FROM erp_users u
      JOIN erp_companies c ON c.id = u.company_id AND c.is_deleted = FALSE
      LEFT JOIN erp_roles r ON r.id = u.role_id
-     WHERE LOWER(u.email) = $1 AND u.is_deleted = FALSE ${companyFilter}
+     WHERE (LOWER(u.email) = $1 OR LOWER(u.username) = $1)
+       AND u.is_deleted = FALSE ${companyFilter}
+     ORDER BY CASE WHEN LOWER(u.email) = $1 THEN 0 ELSE 1 END
      LIMIT 1`,
     params,
   );
@@ -61,7 +63,7 @@ async function checkIpWhitelist(user, ip) {
   );
   if (result.rowCount === 0) return true;
   // Simple prefix match for MVP; production should use inet operators
-  return result.rows.some((row) => ip.startsWith(row.cidr.replace('/32', '').replace('*', '')));
+  return result.rows.some((row) => ip.startsWith(row.cidr.replace("/32", "").replace("*", "")));
 }
 
 function sanitizeUser(user) {

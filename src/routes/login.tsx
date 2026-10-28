@@ -1,25 +1,38 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
-import { KeyRound, ShoppingCart } from "lucide-react";
+import {
+  BriefcaseBusiness,
+  CircleHelp,
+  DollarSign,
+  ShoppingCart,
+  Store,
+  Truck,
+  Users,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/lib/auth";
-import { BrandMark } from "@/components/BrandMark";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { Card, CardContent } from "@/components/ui/card";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
-  head: () => ({ meta: [{ title: "Sign in - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Login - Ayawin Stock Solution" }] }),
 });
+
+const modules = [
+  { name: "SALES", icon: ShoppingCart },
+  { name: "PURCHASES", icon: Truck },
+  { name: "INVENTORY", icon: Store },
+  { name: "FINANCE", icon: DollarSign },
+  { name: "HUMAN RESOURCE", icon: Users },
+  { name: "ASSETS", icon: BriefcaseBusiness },
+];
 
 function LoginPage() {
   const navigate = useNavigate();
   const { login, loginPos } = useAuth();
   const [mode, setMode] = useState<"licensed" | "pos">("licensed");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -34,7 +47,7 @@ function LoginPage() {
         await loginPos(password);
         navigate({ to: "/pos" });
       } else {
-        await login(email, password);
+        await login(username, password);
         navigate({ to: "/" });
       }
     } catch (err) {
@@ -45,57 +58,93 @@ function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <header className="flex items-center justify-between border-b px-4 py-3">
-        <BrandMark />
-        <ThemeToggle />
+    <main className="ayawin-login-page">
+      <header className="ayawin-login-topbar">
+        <a href="/" className="ayawin-wordmark" aria-label="Ayawin Stock Solution home">
+          <span className="ayawin-wordmark-icon">A</span>
+          <span>Ayawin Stock Solution</span>
+        </a>
+        <div className="ayawin-topbar-links">
+          <span className="ayawin-version">v 1.25.045</span>
+          <a href="mailto:support@netrixbiz.com"><CircleHelp className="h-4 w-4" /> Support</a>
+        </div>
       </header>
+      <div className="ayawin-login-rule" />
 
-      <div className="flex flex-1 items-center justify-center p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="p-6">
-            <h1 className="text-lg font-semibold">Sign in</h1>
-            <p className="mt-1 text-sm text-muted-foreground">Choose your workspace to continue</p>
-
-            <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
-              <Button type="button" variant={mode === "licensed" ? "default" : "ghost"} onClick={() => { setMode("licensed"); setError(null); }}>
-                <KeyRound className="mr-2 h-4 w-4" /> ERP workspace
-              </Button>
-              <Button type="button" variant={mode === "pos" ? "default" : "ghost"} onClick={() => { setMode("pos"); setError(null); }}>
-                <ShoppingCart className="mr-2 h-4 w-4" /> Point of sale
-              </Button>
+      <section className="ayawin-login-stage">
+        <div className="ayawin-login-card">
+          <div className="ayawin-module-area">
+            <div className="ayawin-module-grid">
+              {modules.map(({ name, icon: Icon }, index) => (
+                <div className={`ayawin-module-tile ayawin-module-tile-${index + 1}`} key={name}>
+                  <span>{name}</span>
+                  <Icon className="ayawin-module-icon" strokeWidth={1.45} />
+                  <span className="ayawin-module-arrow" aria-hidden="true">↗</span>
+                </div>
+              ))}
             </div>
+            <div className="ayawin-login-copyright">© Ayawin Stock Solution<br />All rights reserved.</div>
+          </div>
 
-            <form className="mt-6 space-y-4" onSubmit={handleSignIn}>
-              {mode === "licensed" && <div className="space-y-1.5">
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-              </div>}
-              <div className="space-y-1.5">
-                <Label htmlFor="password">{mode === "pos" ? "POS password" : "Password"}</Label>
+          <aside className="ayawin-login-box">
+            <div className="ayawin-login-box-brand">AYAWIN STOCK SOLUTION</div>
+            <div className="ayawin-login-box-title">LOGIN</div>
+            <div className="ayawin-company-emblem" aria-hidden="true"><span>A</span></div>
+            <form className="ayawin-login-fields" onSubmit={handleSignIn}>
+              {mode === "licensed" && (
+                <div className="ayawin-login-field">
+                  <Label htmlFor="username">Username</Label>
+                  <Input
+                    id="username"
+                    type="text"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    required
+                    placeholder="username"
+                  />
+                </div>
+              )}
+              <div className="ayawin-login-field">
+                <Label htmlFor="password">{mode === "pos" ? "POS Password" : "Password"}</Label>
                 <Input
                   id="password"
                   type="password"
+                  autoComplete="current-password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(event) => setPassword(event.target.value)}
                   required
+                  placeholder="Password"
                 />
               </div>
-              {mode === "licensed" && <div className="flex items-center gap-2">
-                <Checkbox id="remember" />
-                <Label htmlFor="remember" className="text-sm font-normal text-muted-foreground">
-                  Remember me
-                </Label>
-              </div>}
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? "Opening workspace…" : mode === "pos" ? "Open POS" : "Sign in"}
-              </Button>
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              <div className="ayawin-login-actions">
+                <Button type="submit" disabled={loading}>
+                  {loading ? "Signing in…" : mode === "pos" ? "Open POS" : "Sign In"}
+                </Button>
+                {mode === "licensed" && <a href="/forgot-password">Forgot Password</a>}
+                <button type="button" onClick={() => { setMode(mode === "pos" ? "licensed" : "pos"); setError(null); }}>
+                  {mode === "pos" ? "ERP Login" : "POS"}
+                </button>
+              </div>
+              {error && <p role="alert" className="ayawin-login-error">{error}</p>}
             </form>
+          </aside>
+        </div>
+      </section>
 
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+      <div className="ayawin-footer-rule" />
+      <footer className="ayawin-login-footer">
+        <div className="ayawin-footer-inner">
+          <div className="ayawin-footer-brand">
+            <div>Ayawin Stock Solution</div>
+            <p>Manage your stock and business from one place</p>
+          </div>
+          <div className="ayawin-footer-column"><strong>OVERVIEW</strong><a href="#why-ayawin">Why Ayawin</a><a href="#who-uses-ayawin">Who Uses Ayawin</a><a href="#pricing">Pricing</a></div>
+          <div className="ayawin-footer-column"><strong>DEMOS</strong><a href="mailto:support@netrixbiz.com">Contact Us for Demo</a></div>
+          <div className="ayawin-footer-column"><strong>SUPPORT</strong><a href="mailto:support@netrixbiz.com">support@netrixbiz.com</a></div>
+          <div className="ayawin-footer-column"><strong>SOCIAL</strong><span>Follow Ayawin</span></div>
+        </div>
+      </footer>
+    </main>
   );
 }

@@ -1,13 +1,18 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { getTestContext, getCustomerId, getItemId, pool } = require('./helpers');
-const sales = require('../../src/services/salesService');
-const { buildInvoiceVerificationHash } = require('../../src/services/documentVerificationService');
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { getTestContext, getCustomerId, getItemId, pool } = require("./helpers");
+const sales = require("../../src/services/salesService");
+const { buildInvoiceVerificationHash } = require("../../src/services/documentVerificationService");
 
-test('E2E sales flow: SO confirm -> delivery -> invoice -> payment', async () => {
+test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async () => {
   const ctx = await getTestContext();
   const customerId = await getCustomerId(ctx.companyId);
-  const itemId = await getItemId(ctx.companyId, 'COKE-500');
+  const itemId = await getItemId(ctx.companyId, "COKE-500");
+  const stockBefore = await pool.query(
+    `SELECT quantity FROM erp_stock_on_hand WHERE company_id = $1 AND warehouse_id = $2 AND item_id = $3`,
+    [ctx.companyId, ctx.warehouseId, itemId],
+  );
+  const quantityBefore = Number(stockBefore.rows[0]?.quantity || 0);
 
   const so = await sales.createSalesOrder({
     companyId: ctx.companyId,
@@ -25,7 +30,7 @@ test('E2E sales flow: SO confirm -> delivery -> invoice -> payment', async () =>
   assert.equal(confirm.ok, true);
 
   const sol = await pool.query(
-    'SELECT id FROM erp_sales_order_lines WHERE sales_order_id = $1 LIMIT 1',
+    "SELECT id FROM erp_sales_order_lines WHERE sales_order_id = $1 LIMIT 1",
     [so.id],
   );
 
@@ -37,6 +42,23 @@ test('E2E sales flow: SO confirm -> delivery -> invoice -> payment', async () =>
     lines: [{ so_line_id: sol.rows[0].id, item_id: itemId, quantity: 10 }],
   });
   assert.equal(delivery.ok, true);
+
+  const stockAfterDelivery = await pool.query(
+    `SELECT quantity FROM erp_stock_on_hand WHERE company_id = $1 AND warehouse_id = $2 AND item_id = $3`,
+    [ctx.companyId, ctx.warehouseId, itemId],
+  );
+  assert.equal(Number(stockAfterDelivery.rows[0]?.quantity), quantityBefore - 10);
+
+  const stockMovement = await pool.query(
+    `SELECT quantity, movement_type, reference_type, reference_id
+     FROM erp_stock_ledger
+     WHERE company_id = $1 AND warehouse_id = $2 AND item_id = $3 AND reference_id = $4
+     ORDER BY created_at DESC LIMIT 1`,
+    [ctx.companyId, ctx.warehouseId, itemId, delivery.delivery_id],
+  );
+  assert.equal(stockMovement.rows[0]?.movement_type, "issue");
+  assert.equal(Number(stockMovement.rows[0]?.quantity), -10);
+  assert.equal(stockMovement.rows[0]?.reference_type, "delivery_note");
 
   const invoice = await sales.createCustomerInvoice({
     companyId: ctx.companyId,
@@ -51,23 +73,23 @@ test('E2E sales flow: SO confirm -> delivery -> invoice -> payment', async () =>
     `SELECT id, status, total_amount, amount_paid FROM erp_customer_invoices WHERE sales_order_id = $1`,
     [so.id],
   );
-  assert.equal(inv.rows[0].status, 'posted');
+  assert.equal(inv.rows[0].status, "posted");
 
   const payment = await sales.recordCustomerPayment({
     companyId: ctx.companyId,
     userId: ctx.userId,
     invoiceId: inv.rows[0].id,
     amount: Number(inv.rows[0].total_amount),
-    notes: 'E2E full payment',
+    notes: "E2E full payment",
   });
   assert.equal(payment.ok, true);
-  assert.equal(payment.status, 'paid');
+  assert.equal(payment.status, "paid");
 
   const paidInvoice = await pool.query(
     `SELECT status, amount_paid, total_amount FROM erp_customer_invoices WHERE id = $1`,
     [inv.rows[0].id],
   );
-  assert.equal(paidInvoice.rows[0].status, 'paid');
+  assert.equal(paidInvoice.rows[0].status, "paid");
   assert.equal(Number(paidInvoice.rows[0].amount_paid), Number(paidInvoice.rows[0].total_amount));
 
   const receipt = await pool.query(

@@ -1,63 +1,70 @@
-import { createFileRoute, useRouterState } from "@tanstack/react-router";
+﻿import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Plus, FileDown, ArrowUpDown } from "lucide-react";
 import { SearchBar } from "@/components/SearchBar";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
-import { payrollVariance } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { fetchHrEmployees, fetchPayrollPayslips, fetchPayrollRuns, fetchPayrollStatutory, postPayroll, runPayroll, type BackendEmployee, type PayrollRun, type PayslipRow } from "@/lib/api";
+import {
+  fetchHrEmployees,
+  fetchAttendance,
+  fetchPayrollPayslips,
+  fetchPayrollRuns,
+  fetchPayrollStatutory,
+  postPayroll,
+  runPayroll,
+  type BackendEmployee,
+  type PayrollRun,
+  type PayslipRow,
+} from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/hr")({
   component: HRPage,
-  head: () => ({ meta: [{ title: "HR & Payroll - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "HR & Payroll - Ayawin Stock Solution" }] }),
 });
-
-function payeKE(gross: number) {
-  let tax = 0;
-  let rem = gross;
-  const bands: [number, number][] = [
-    [24000, 0.1],
-    [8333, 0.25],
-    [467667, 0.3],
-    [Infinity, 0.325],
-  ];
-  for (const [band, rate] of bands) {
-    const take = Math.min(rem, band);
-    tax += take * rate;
-    rem -= take;
-    if (rem <= 0) break;
-  }
-  return Math.max(0, tax - 2400);
-}
-function nssf(g: number) {
-  return Math.min(g * 0.06, 4320);
-}
-function nhif(g: number) {
-  return Math.max(300, g * 0.0275);
-}
-function housing(g: number) {
-  return g * 0.015;
-}
 
 function HRPage() {
   const { token } = useAuth();
   const [apiEmployees, setApiEmployees] = useState<BackendEmployee[] | null>(null);
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
+  const [attendance, setAttendance] = useState<Record<string, unknown>[]>([]);
   const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
   const [payslips, setPayslips] = useState<PayslipRow[]>([]);
-  const [statutory, setStatutory] = useState<{ total_paye: number; total_nhif: number; total_nssf: number; total_housing: number; employees: number } | null>(null);
+  const [statutory, setStatutory] = useState<{
+    total_paye: number;
+    total_shif: number;
+    total_legacy_nhif: number;
+    total_nssf_employee: number;
+    total_nssf_employer: number;
+    total_housing_employee: number;
+    total_housing_employer: number;
+    total_employer_cost: number;
+    employees: number;
+  } | null>(null);
   const [payrollMonth, setPayrollMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "employees");
@@ -77,6 +84,16 @@ function HRPage() {
       });
   }, [token]);
 
+  useEffect(() => {
+    if (!token || tab !== "attendance") return;
+    fetchAttendance(token)
+      .then(setAttendance)
+      .catch((err) => {
+        setAttendance([]);
+        toast.error(err instanceof Error ? err.message : "Unable to load attendance");
+      });
+  }, [token, tab]);
+
   const loadPayroll = async (run?: PayrollRun) => {
     if (!token) return;
     try {
@@ -85,7 +102,10 @@ function HRPage() {
       const active = run || runs[0];
       setSelectedRun(active || null);
       if (active) {
-        const [slips, report] = await Promise.all([fetchPayrollPayslips(token, active.id), fetchPayrollStatutory(token, active.id)]);
+        const [slips, report] = await Promise.all([
+          fetchPayrollPayslips(token, active.id),
+          fetchPayrollStatutory(token, active.id),
+        ]);
         setPayslips(slips);
         setStatutory(report);
       }
@@ -100,7 +120,8 @@ function HRPage() {
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
-    if (["employees", "attendance", "payroll", "recruitment", "leave"].includes(nextTab)) setTab(nextTab);
+    if (["employees", "attendance", "payroll", "recruitment", "leave"].includes(nextTab))
+      setTab(nextTab);
   }, [hash]);
 
   const sourceEmployees = (apiEmployees ?? []).map((e) => ({
@@ -113,7 +134,12 @@ function HRPage() {
   }));
 
   const employeeRows = sourceEmployees
-    .filter((e) => (department === "all" || e.department === department) && (e.name.toLowerCase().includes(q.toLowerCase()) || e.role.toLowerCase().includes(q.toLowerCase())))
+    .filter(
+      (e) =>
+        (department === "all" || e.department === department) &&
+        (e.name.toLowerCase().includes(q.toLowerCase()) ||
+          e.role.toLowerCase().includes(q.toLowerCase())),
+    )
     .sort((a, b) => {
       if (sort === "salary") return b.salary - a.salary;
       if (sort === "department") return a.department.localeCompare(b.department);
@@ -130,7 +156,7 @@ function HRPage() {
       scenario: "hr",
       context: { q, department, sort, employees: employeeRows.length },
     });
-    exportWorkbook("ayawin-enterprise-hr.xlsx", [
+    exportWorkbook("ayawin-stock-solution-hr.xlsx", [
       {
         name: "Employees",
         rows: employeeRows.map((e) => ({
@@ -142,27 +168,6 @@ function HRPage() {
           Status: e.status,
         })),
       },
-      {
-        name: "Payroll",
-        rows: sourceEmployees
-          .filter((e) => e.status === "Active")
-          .map((e) => {
-            const paye = payeKE(e.salary);
-            const nssfValue = nssf(e.salary);
-            const nhifValue = nhif(e.salary);
-            const housingValue = housing(e.salary);
-            const net = e.salary - paye - nssfValue - nhifValue - housingValue;
-            return {
-              Name: e.name,
-              Gross: e.salary,
-              PAYE: paye,
-              NSSF: nssfValue,
-              NHIF: nhifValue,
-              "Housing Levy": housingValue,
-              Net: net,
-            };
-          }),
-      },
     ]);
   };
 
@@ -171,7 +176,12 @@ function HRPage() {
       <PageHeader
         title="Human Resources"
         description="Employees, attendance, leave and Kenya statutory payroll."
-        actions={<Button onClick={exportHR}><Plus className="mr-2 h-4 w-4" />Export XLSX</Button>}
+        actions={
+          <Button onClick={exportHR}>
+            <Plus className="mr-2 h-4 w-4" />
+            Export XLSX
+          </Button>
+        }
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -179,7 +189,10 @@ function HRPage() {
           { l: "Employees", v: String(sourceEmployees.length) },
           { l: "On Leave", v: String(sourceEmployees.filter((e) => e.status !== "Active").length) },
           { l: "Payroll Total", v: KES(sourceEmployees.reduce((sum, e) => sum + e.salary, 0)) },
-          { l: "Active Contracts", v: String(sourceEmployees.filter((e) => e.status === "Active").length) },
+          {
+            l: "Active Contracts",
+            v: String(sourceEmployees.filter((e) => e.status === "Active").length),
+          },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
@@ -197,7 +210,13 @@ function HRPage() {
         className="mb-4"
       />
 
-      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value);
+          window.history.replaceState({}, "", `${window.location.pathname}#${value}`);
+        }}
+      >
         <TabsList>
           <TabsTrigger value="employees">Employees</TabsTrigger>
           <TabsTrigger value="attendance">Attendance</TabsTrigger>
@@ -210,7 +229,14 @@ function HRPage() {
           <Card>
             <CardContent className="p-4">
               <div className="mb-4 flex flex-wrap items-center gap-3">
-                <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search employee or role..." />
+                <SearchBar
+                  value={q}
+                  onChange={(value) => {
+                    setQ(value);
+                    setPage(1);
+                  }}
+                  placeholder="Search employee or role..."
+                />
                 <Select value={department} onValueChange={setDepartment}>
                   <SelectTrigger className="w-44">
                     <SelectValue />
@@ -218,7 +244,9 @@ function HRPage() {
                   <SelectContent>
                     <SelectItem value="all">All departments</SelectItem>
                     {Array.from(new Set(sourceEmployees.map((e) => e.department))).map((d) => (
-                      <SelectItem key={d} value={d}>{d}</SelectItem>
+                      <SelectItem key={d} value={d}>
+                        {d}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -260,14 +288,23 @@ function HRPage() {
                   ))}
                   {paged.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={6}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         No employees match your filters.
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
-              <ListPagination page={page} totalPages={totalPages} totalItems={employeeRows.length} pageSize={pageSize} onPageChange={setPage} />
+              <ListPagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={employeeRows.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -275,7 +312,9 @@ function HRPage() {
         <TabsContent value="attendance" className="mt-4">
           <Card>
             <CardContent className="p-4">
-              <div className="mb-3 text-sm text-muted-foreground">Daily attendance register - 21/05/2026</div>
+              <div className="mb-3 text-sm text-muted-foreground">
+                Attendance records from the time and attendance register.
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -287,20 +326,30 @@ function HRPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {[
-                    ["Grace Wanjiku", "Sales", "08:02", "17:16", "Present"],
-                    ["Brian Otieno", "Sales", "08:18", "On route", "Present"],
-                    ["Faith Achieng", "Warehouse", "07:44", "17:05", "Present"],
-                    ["Mercy Wambui", "Sales", "-", "-", "On Leave"],
-                  ].map((row) => (
-                    <TableRow key={row[0]}>
-                      <TableCell className="font-medium">{row[0]}</TableCell>
-                      <TableCell>{row[1]}</TableCell>
-                      <TableCell>{row[2]}</TableCell>
-                      <TableCell>{row[3]}</TableCell>
-                      <TableCell><StatusBadge status={row[4]} /></TableCell>
+                  {attendance.map((row) => (
+                    <TableRow key={String(row.id)}>
+                      <TableCell className="font-medium">
+                        {`${row.first_name || ""} ${row.last_name || ""}`.trim()}
+                      </TableCell>
+                      <TableCell>{String(row.department || "â€”")}</TableCell>
+                      <TableCell>
+                        {row.check_in ? String(row.check_in).slice(0, 5) : "â€”"}
+                      </TableCell>
+                      <TableCell>
+                        {row.check_out ? String(row.check_out).slice(0, 5) : "â€”"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={String(row.status || "unknown")} />
+                      </TableCell>
                     </TableRow>
                   ))}
+                  {attendance.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                        No attendance records have been imported yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -312,44 +361,126 @@ function HRPage() {
             <CardContent className="p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Select value={selectedRun?.id || ""} onValueChange={(id) => { const run = payrollRuns.find((row) => row.id === id); if (run) void loadPayroll(run); }}>
-                    <SelectTrigger className="w-48"><SelectValue placeholder="Select payroll run" /></SelectTrigger>
-                    <SelectContent>{payrollRuns.map((run) => <SelectItem key={run.id} value={run.id}>{run.payroll_month} · {run.status}</SelectItem>)}</SelectContent>
+                  <Select
+                    value={selectedRun?.id || ""}
+                    onValueChange={(id) => {
+                      const run = payrollRuns.find((row) => row.id === id);
+                      if (run) void loadPayroll(run);
+                    }}
+                  >
+                    <SelectTrigger className="w-48">
+                      <SelectValue placeholder="Select payroll run" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {payrollRuns.map((run) => (
+                        <SelectItem key={run.id} value={run.id}>
+                          {run.payroll_month} Â· {run.status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
-                  <input className="h-9 rounded-md border border-input bg-background px-3 text-sm" type="month" value={payrollMonth} onChange={(e) => setPayrollMonth(e.target.value)} aria-label="Payroll month" />
-                  <Button variant="outline" size="sm" onClick={async () => { if (!token) return; try { const created = await runPayroll(token, payrollMonth); toast.success("Payroll run created"); await loadPayroll(created); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to run payroll"); } }}>Run payroll</Button>
+                  <input
+                    data-slot="form-control"
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    type="month"
+                    value={payrollMonth}
+                    onChange={(e) => setPayrollMonth(e.target.value)}
+                    aria-label="Payroll month"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        const created = await runPayroll(token, payrollMonth);
+                        toast.success("Payroll run created");
+                        await loadPayroll(created);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to run payroll");
+                      }
+                    }}
+                  >
+                    Run payroll
+                  </Button>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
+                  disabled={!selectedRun || payslips.length === 0}
                   onClick={() => {
                     void trackEvent({
                       action: "payslip_export_requested",
                       entityType: "payroll",
-                      entityId: "may-2026",
-                      details: { employees: sourceEmployees.filter((e) => e.status === "Active").length },
+                      entityId: selectedRun?.id || "",
+                      details: { employees: payslips.length },
                       scenario: "hr",
-                      context: { department, sort, q },
+                      context: { payrollMonth: selectedRun?.payroll_month },
                     });
-                    exportHR();
+                    exportWorkbook(`ayawin-payslips-${selectedRun?.payroll_month || "run"}.xlsx`, [
+                      {
+                        name: "Payslips",
+                        rows: payslips.map((slip) => ({
+                          Employee:
+                            `${slip.first_name || ""} ${slip.last_name || ""}`.trim() ||
+                            slip.employee_code ||
+                            "Employee",
+                          Gross: slip.gross_pay,
+                          PAYE: slip.paye,
+                          SHIF: slip.shif,
+                          "NSSF Tier I": slip.nssf_tier1 || 0,
+                          "NSSF Tier II": slip.nssf_tier2 || 0,
+                          "NSSF Employer": slip.nssf_employer || 0,
+                          "Housing Levy": slip.housing_levy,
+                          "Employer Housing Levy": slip.housing_levy_employer || 0,
+                          "Net Pay": slip.net_pay,
+                        })),
+                      },
+                    ]);
                   }}
                 >
                   <FileDown className="mr-2 h-3.5 w-3.5" />
                   Generate Payslips (XLSX)
                 </Button>
-                {selectedRun?.status !== "posted" && selectedRun && <Button size="sm" onClick={async () => { if (!token) return; try { await postPayroll(token, selectedRun.id); toast.success("Payroll posted to General Ledger"); await loadPayroll(); } catch (err) { toast.error(err instanceof Error ? err.message : "Unable to post payroll"); } }}>Post to GL</Button>}
+                {selectedRun?.status !== "posted" && selectedRun && (
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await postPayroll(token, selectedRun.id);
+                        toast.success("Payroll posted to General Ledger");
+                        await loadPayroll();
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to post payroll");
+                      }
+                    }}
+                  >
+                    Post to GL
+                  </Button>
+                )}
               </div>
               <div className="mb-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
                 Verify any payroll run that deviates from the last three months before posting.
               </div>
-              <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {[
                   ["Employees", statutory?.employees || 0],
                   ["PAYE", statutory?.total_paye || 0],
-                  ["NHIF", statutory?.total_nhif || 0],
-                  ["NSSF", statutory?.total_nssf || 0],
-                  ["Housing levy", statutory?.total_housing || 0],
-                ].map(([label, value]) => <div key={String(label)} className="rounded-md border border-border p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 font-semibold">{label === "Employees" ? value : KES(Number(value))}</div></div>)}
+                  ["SHIF", statutory?.total_shif || 0],
+                  ["Employee NSSF", statutory?.total_nssf_employee || 0],
+                  ["Employer NSSF", statutory?.total_nssf_employer || 0],
+                  ["Employee housing levy", statutory?.total_housing_employee || 0],
+                  ["Employer housing levy", statutory?.total_housing_employer || 0],
+                  ["Total employer cost", statutory?.total_employer_cost || 0],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-md border border-border p-3">
+                    <div className="text-xs text-muted-foreground">{label}</div>
+                    <div className="mt-1 font-semibold">
+                      {label === "Employees" ? value : KES(Number(value))}
+                    </div>
+                  </div>
+                ))}
               </div>
               <Table>
                 <TableHeader>
@@ -358,50 +489,45 @@ function HRPage() {
                     <TableHead className="text-right">Gross</TableHead>
                     <TableHead className="text-right">PAYE</TableHead>
                     <TableHead className="text-right">NSSF</TableHead>
-                    <TableHead className="text-right">NHIF</TableHead>
+                    <TableHead className="text-right">SHIF</TableHead>
                     <TableHead className="text-right">Housing Levy</TableHead>
                     <TableHead className="text-right">Net Pay</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {payslips.length ? payslips.map((slip) => {
-                      const employeeName = `${slip.first_name || ""} ${slip.last_name || ""}`.trim() || slip.employee_code || "Employee";
+                  {payslips.length ? (
+                    payslips.map((slip) => {
+                      const employeeName =
+                        `${slip.first_name || ""} ${slip.last_name || ""}`.trim() ||
+                        slip.employee_code ||
+                        "Employee";
                       return (
                         <TableRow key={slip.id}>
                           <TableCell className="font-medium">{employeeName}</TableCell>
                           <TableCell className="text-right">{KES(slip.gross_pay)}</TableCell>
                           <TableCell className="text-right text-xs">{KES(slip.paye)}</TableCell>
                           <TableCell className="text-right text-xs">{KES(slip.nssf)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(slip.nhif)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(slip.housing_levy)}</TableCell>
-                          <TableCell className="text-right font-semibold">{KES(slip.net_pay)}</TableCell>
-                        </TableRow>
-                      );
-                    }) : sourceEmployees
-                    .filter((e) => e.status === "Active")
-                    .map((e) => {
-                      const paye = payeKE(e.salary);
-                      const nssfValue = nssf(e.salary);
-                      const nhifValue = nhif(e.salary);
-                      const housingValue = housing(e.salary);
-                      const net = e.salary - paye - nssfValue - nhifValue - housingValue;
-                      const variance = payrollVariance(e.name);
-
-                      return (
-                        <TableRow key={e.id}>
-                          <TableCell className="font-medium">{e.name}</TableCell>
-                          <TableCell className="text-right">{KES(e.salary)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(paye)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(nssfValue)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(nhifValue)}</TableCell>
-                          <TableCell className="text-right text-xs">{KES(housingValue)}</TableCell>
+                          <TableCell className="text-right text-xs">
+                            {KES(slip.shif || slip.nhif)}
+                          </TableCell>
+                          <TableCell className="text-right text-xs">
+                            {KES(slip.housing_levy)}
+                          </TableCell>
                           <TableCell className="text-right font-semibold">
-                            {KES(net)}
-                            {variance?.flag && <div className="text-[10px] text-warning">{variance.message}</div>}
+                            {KES(slip.net_pay)}
                           </TableCell>
                         </TableRow>
                       );
-                    })}
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                        {selectedRun
+                          ? "No payslips are attached to this payroll run."
+                          : "No payroll run exists yet. Choose a month and run payroll to create one."}
+                      </TableCell>
+                    </TableRow>
+                  )}{" "}
                 </TableBody>
               </Table>
             </CardContent>
@@ -411,7 +537,9 @@ function HRPage() {
         <TabsContent value="recruitment" className="mt-4">
           <Card>
             <CardContent className="p-4">
-              <div className="mb-3 text-sm text-muted-foreground">Open requisitions and candidate pipeline.</div>
+              <div className="mb-3 text-sm text-muted-foreground">
+                Open requisitions and candidate pipeline.
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -423,19 +551,11 @@ function HRPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {[
-                    ["Accounts Assistant", "Finance", "6", "Shortlisting", "Open"],
-                    ["Delivery Driver", "Logistics", "12", "Interviews", "Open"],
-                    ["Warehouse Clerk", "Warehouse", "4", "Offer", "Pending"],
-                  ].map((row) => (
-                    <TableRow key={row[0]}>
-                      <TableCell className="font-medium">{row[0]}</TableCell>
-                      <TableCell>{row[1]}</TableCell>
-                      <TableCell>{row[2]}</TableCell>
-                      <TableCell>{row[3]}</TableCell>
-                      <TableCell><StatusBadge status={row[4]} /></TableCell>
-                    </TableRow>
-                  ))}
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                      Recruitment tracking is not configured in the live system yet.
+                    </TableCell>
+                  </TableRow>
                 </TableBody>
               </Table>
             </CardContent>
@@ -443,12 +563,13 @@ function HRPage() {
         </TabsContent>
 
         <TabsContent value="leave" className="mt-4">
-            <Card>
-              <CardContent className="p-4">
-                <div className="mb-3 text-xs text-muted-foreground print:hidden">
-                  Print-friendly payslip output is available via the export button above or your browser print dialog.
-                </div>
-                <Table>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-3 text-xs text-muted-foreground print:hidden">
+                Print-friendly payslip output is available via the export button above or your
+                browser print dialog.
+              </div>
+              <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Employee</TableHead>
@@ -461,33 +582,8 @@ function HRPage() {
                 </TableHeader>
                 <TableBody>
                   <TableRow>
-                    <TableCell>Mercy Wambui</TableCell>
-                    <TableCell>Annual</TableCell>
-                    <TableCell>18/05/2026</TableCell>
-                    <TableCell>30/05/2026</TableCell>
-                    <TableCell>10</TableCell>
-                    <TableCell>
-                      <StatusBadge status="Approved" />
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Brian Otieno</TableCell>
-                    <TableCell>Sick</TableCell>
-                    <TableCell>12/05/2026</TableCell>
-                    <TableCell>13/05/2026</TableCell>
-                    <TableCell>2</TableCell>
-                    <TableCell>
-                      <StatusBadge status="Approved" />
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Faith Achieng</TableCell>
-                    <TableCell>Annual</TableCell>
-                    <TableCell>05/06/2026</TableCell>
-                    <TableCell>12/06/2026</TableCell>
-                    <TableCell>6</TableCell>
-                    <TableCell>
-                      <StatusBadge status="Pending" />
+                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                      View live leave requests in the Leave & Attendance module.
                     </TableCell>
                   </TableRow>
                 </TableBody>

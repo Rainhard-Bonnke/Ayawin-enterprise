@@ -10,34 +10,56 @@ import {
   fetchCustomers,
   fetchMasterItems,
   fetchSalesInvoices,
+  previewSalesTax,
   paySalesInvoice,
+  postSalesInvoice,
   verifyInvoiceDocument,
   type BackendCustomer,
   type BackendInvoice,
   type BackendMasterItem,
 } from "@/lib/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { KES, fmtDate, VAT_RATE } from "@/lib/format";
+import { KES, fmtDate } from "@/lib/format";
 import { SearchBar } from "@/components/SearchBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { invoiceRisk } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Plus, Mail, Printer, FileDown, ArrowUpDown, Trash2 } from "lucide-react";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportVerificationCertificatePdf } from "@/lib/pdf";
 
 export const Route = createFileRoute("/_app/invoices")({
   component: InvoicesPage,
-  head: () => ({ meta: [{ title: "Invoicing — Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Invoicing — Ayawin Stock Solution" }] }),
 });
 
 type InvoiceLineForm = { item_id: string; quantity: string; unit_price: string };
@@ -52,8 +74,9 @@ const dueInDays = (days: number) => {
 const emptyLine = (): InvoiceLineForm => ({ item_id: "", quantity: "1", unit_price: "" });
 
 function InvoicesPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [rows, setRows] = useState<BackendInvoice[]>([]);
+  const rowsRef = useRef<BackendInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
@@ -63,9 +86,16 @@ function InvoicesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifyHashInput, setVerifyHashInput] = useState("");
-  const [verifyResult, setVerifyResult] = useState<null | { hash: string; valid?: boolean; url: string }>(null);
+  const [verifyResult, setVerifyResult] = useState<null | {
+    hash: string;
+    valid?: boolean;
+    url: string;
+  }>(null);
   const [customers, setCustomers] = useState<BackendCustomer[]>([]);
   const [items, setItems] = useState<BackendMasterItem[]>([]);
+  const [draftTaxPreview, setDraftTaxPreview] = useState<{ subtotal: number; tax_amount: number; total_amount: number } | null>(null);
+  const [draftTaxLoading, setDraftTaxLoading] = useState(false);
+  const cacheKey = `ayawin-invoices-cache:${user?.id || user?.email || "default"}`;
   const [form, setForm] = useState({
     customer_id: "",
     invoice_date: today(),
@@ -75,21 +105,38 @@ function InvoicesPage() {
 
   const loadInvoices = useCallback(async () => {
     if (!token) return;
-    setLoading(true);
+    if (!rowsRef.current.length) setLoading(true);
     try {
       const data = await fetchSalesInvoices(token);
+      rowsRef.current = data ?? [];
       setRows(data ?? []);
+      sessionStorage.setItem(cacheKey, JSON.stringify(data ?? []));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to load invoices");
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, cacheKey]);
 
   useEffect(() => {
+    rowsRef.current = [];
+    setRows([]);
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached) as BackendInvoice[];
+        if (Array.isArray(parsed) && parsed.length) {
+          rowsRef.current = parsed;
+          setRows(parsed);
+          setLoading(false);
+        }
+      }
+    } catch {
+      sessionStorage.removeItem(cacheKey);
+    }
     void loadInvoices();
-  }, [loadInvoices]);
+  }, [cacheKey, loadInvoices]);
 
   useEffect(() => {
     if (!token) return;
@@ -104,6 +151,20 @@ function InvoicesPage() {
     setVerifyResult(null);
   }, [preview?.id]);
 
+  useEffect(() => {
+    if (!createOpen || !token) { setDraftTaxPreview(null); setDraftTaxLoading(false); return; }
+    const lines = form.lines.filter((line) => line.item_id && Number(line.quantity) > 0)
+      .map((line) => ({ item_id: line.item_id, quantity: Number(line.quantity), unit_price: Number(line.unit_price || 0) }));
+    if (!lines.length) { setDraftTaxPreview(null); setDraftTaxLoading(false); return; }
+    let active = true;
+    setDraftTaxLoading(true);
+    void previewSalesTax(token, lines, form.invoice_date)
+      .then((result) => { if (active) setDraftTaxPreview({ subtotal: result.subtotal, tax_amount: result.tax_amount, total_amount: result.total_amount }); })
+      .catch((error) => { if (active) { setDraftTaxPreview(null); toast.error(error instanceof Error ? error.message : "Could not calculate invoice tax"); } })
+      .finally(() => { if (active) setDraftTaxLoading(false); });
+    return () => { active = false; };
+  }, [createOpen, form.invoice_date, form.lines, token]);
+
   const openCreate = async () => {
     if (!token) return;
     try {
@@ -114,7 +175,13 @@ function InvoicesPage() {
         customer_id: cust[0]?.id?.toString() || "",
         invoice_date: today(),
         due_date: dueInDays(30),
-        lines: [{ item_id: catalog[0]?.id || "", quantity: "1", unit_price: String(catalog[0]?.standard_cost || "") }],
+        lines: [
+          {
+            item_id: catalog[0]?.id || "",
+            quantity: "1",
+            unit_price: String(catalog[0]?.standard_cost || ""),
+          },
+        ],
       });
       setCreateOpen(true);
     } catch (err) {
@@ -168,7 +235,11 @@ function InvoicesPage() {
   };
 
   const filtered = rows
-    .filter((i) => i.id.toLowerCase().includes(q.toLowerCase()) || i.customer.toLowerCase().includes(q.toLowerCase()))
+    .filter(
+      (i) =>
+        i.id.toLowerCase().includes(q.toLowerCase()) ||
+        i.customer.toLowerCase().includes(q.toLowerCase()),
+    )
     .sort((a, b) => {
       if (sort === "total") return b.total - a.total;
       if (sort === "status") return a.status.localeCompare(b.status);
@@ -186,11 +257,8 @@ function InvoicesPage() {
     [rows],
   );
 
-  const draftPreview = useMemo(() => {
-    const subtotal = form.lines.reduce((s, l) => s + Number(l.quantity || 0) * Number(l.unit_price || 0), 0);
-    const vat = Math.round(subtotal * VAT_RATE * 100) / 100;
-    return { subtotal, vat, total: subtotal + vat };
-  }, [form.lines]);
+  const draftSubtotal = form.lines.reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unit_price || 0), 0);
+  const draftPreview = draftTaxPreview || { subtotal: draftSubtotal, tax_amount: 0, total_amount: draftSubtotal };
 
   const exportInvoices = () => {
     void trackEvent({
@@ -201,7 +269,7 @@ function InvoicesPage() {
       scenario: "invoice",
       context: { q, sort, rows: filtered.length },
     });
-    exportWorkbook("ayawin-enterprise-invoices.xlsx", [
+    exportWorkbook("ayawin-stock-solution-invoices.xlsx", [
       {
         name: "Invoices",
         rows: filtered.map((i) => ({
@@ -224,7 +292,7 @@ function InvoicesPage() {
     <div>
       <PageHeader
         title="Invoicing & Billing"
-        description="KRA-compliant invoices with auto VAT. New invoices post to the general ledger."
+        description="Invoices use each item’s configured tax treatment and post receivables and applicable output VAT to the ledger. eTIMS submission is not configured."
         actions={
           <>
             <Button variant="outline" onClick={exportInvoices}>
@@ -249,20 +317,40 @@ function InvoicesPage() {
           <Card key={k.l}>
             <CardContent className="p-4">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className={`mt-1 text-2xl font-bold ${k.warn ? "text-destructive" : ""}`}>{k.v}</div>
+              <div className={`mt-1 text-2xl font-bold ${k.warn ? "text-destructive" : ""}`}>
+                {k.v}
+              </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
-      <QuietNote scenario="invoice" contextKey={`${q}-${sort}`} context={{ q, sort, invoices: paged, preview }} className="mb-4" />
+      <QuietNote
+        scenario="invoice"
+        contextKey={`${q}-${sort}`}
+        context={{ q, sort, invoices: paged, preview }}
+        className="mb-4"
+      />
 
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex items-center gap-3">
-            <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Invoice # or customer..." />
+            <SearchBar
+              value={q}
+              onChange={(value) => {
+                setQ(value);
+                setPage(1);
+              }}
+              placeholder="Invoice # or customer..."
+            />
             <div className="ml-auto">
-              <Select value={sort} onValueChange={(value) => { setSort(value); setPage(1); }}>
+              <Select
+                value={sort}
+                onValueChange={(value) => {
+                  setSort(value);
+                  setPage(1);
+                }}
+              >
                 <SelectTrigger className="w-44">
                   <ArrowUpDown className="mr-2 h-4 w-4" />
                   <SelectValue />
@@ -284,25 +372,34 @@ function InvoicesPage() {
                 <TableHead>Date</TableHead>
                 <TableHead>Due</TableHead>
                 <TableHead className="text-right">Excise</TableHead>
-                <TableHead className="text-right">VAT 16%</TableHead>
+                <TableHead className="text-right">Tax</TableHead>
                 <TableHead className="text-right">Total</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
+              {loading && !rows.length ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
-                    Loading invoices…
+                  <TableCell colSpan={9} className="py-8 text-center">
+                    <div className="mx-auto flex max-w-xs items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-primary" />
+                      Loading your latest invoices…
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : (
                 paged.map((i) => {
                   const risk = invoiceRisk(i.customer);
                   return (
-                    <TableRow key={i.id} className="cursor-pointer hover:bg-muted/40" onClick={() => setPreview(i)}>
+                    <TableRow
+                      key={i.id}
+                      className="cursor-pointer hover:bg-muted/40"
+                      onClick={() => setPreview(i)}
+                    >
                       <TableCell className="font-mono text-xs font-medium">{i.id}</TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">{i.etr}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {i.etr}
+                      </TableCell>
                       <TableCell>
                         <div className="font-medium">{i.customer}</div>
                         <div className="text-xs text-muted-foreground">{i.kraPin || "—"}</div>
@@ -315,7 +412,9 @@ function InvoicesPage() {
                       <TableCell>
                         <div className="space-y-1">
                           <StatusBadge status={i.status} />
-                          <div className={`text-[10px] ${risk.tone === "warning" ? "text-warning" : "text-muted-foreground"}`}>
+                          <div
+                            className={`text-[10px] ${risk.tone === "warning" ? "text-warning" : "text-muted-foreground"}`}
+                          >
                             {risk.label}
                           </div>
                         </div>
@@ -326,14 +425,23 @@ function InvoicesPage() {
               )}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={9}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     No invoices yet. Click New Invoice to create one.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
 
@@ -341,12 +449,17 @@ function InvoicesPage() {
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>New tax invoice</DialogTitle>
-            <DialogDescription>Creates a draft invoice, posts it, and records AR in the ledger.</DialogDescription>
+            <DialogDescription>
+              Creates a draft invoice, posts it, and records AR in the ledger.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="space-y-1.5">
               <Label>Customer</Label>
-              <Select value={form.customer_id} onValueChange={(v) => setForm((p) => ({ ...p, customer_id: v }))}>
+              <Select
+                value={form.customer_id}
+                onValueChange={(v) => setForm((p) => ({ ...p, customer_id: v }))}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select customer" />
                 </SelectTrigger>
@@ -362,17 +475,30 @@ function InvoicesPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Invoice date</Label>
-                <Input type="date" value={form.invoice_date} onChange={(e) => setForm((p) => ({ ...p, invoice_date: e.target.value }))} />
+                <Input
+                  type="date"
+                  value={form.invoice_date}
+                  onChange={(e) => setForm((p) => ({ ...p, invoice_date: e.target.value }))}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Due date</Label>
-                <Input type="date" value={form.due_date} onChange={(e) => setForm((p) => ({ ...p, due_date: e.target.value }))} />
+                <Input
+                  type="date"
+                  value={form.due_date}
+                  onChange={(e) => setForm((p) => ({ ...p, due_date: e.target.value }))}
+                />
               </div>
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Line items</Label>
-                <Button type="button" variant="outline" size="sm" onClick={() => setForm((p) => ({ ...p, lines: [...p.lines, emptyLine()] }))}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setForm((p) => ({ ...p, lines: [...p.lines, emptyLine()] }))}
+                >
                   <Plus className="mr-1 h-3 w-3" />
                   Add line
                 </Button>
@@ -388,7 +514,13 @@ function InvoicesPage() {
                         setForm((p) => ({
                           ...p,
                           lines: p.lines.map((row, i) =>
-                            i === idx ? { ...row, item_id: v, unit_price: row.unit_price || String(item?.standard_cost || "") } : row,
+                            i === idx
+                              ? {
+                                  ...row,
+                                  item_id: v,
+                                  unit_price: row.unit_price || String(item?.standard_cost || ""),
+                                }
+                              : row,
                           ),
                         }));
                       }}
@@ -415,7 +547,9 @@ function InvoicesPage() {
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          lines: p.lines.map((row, i) => (i === idx ? { ...row, quantity: e.target.value } : row)),
+                          lines: p.lines.map((row, i) =>
+                            i === idx ? { ...row, quantity: e.target.value } : row,
+                          ),
                         }))
                       }
                     />
@@ -430,7 +564,9 @@ function InvoicesPage() {
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          lines: p.lines.map((row, i) => (i === idx ? { ...row, unit_price: e.target.value } : row)),
+                          lines: p.lines.map((row, i) =>
+                            i === idx ? { ...row, unit_price: e.target.value } : row,
+                          ),
                         }))
                       }
                     />
@@ -442,7 +578,9 @@ function InvoicesPage() {
                         variant="ghost"
                         size="icon"
                         className="text-destructive"
-                        onClick={() => setForm((p) => ({ ...p, lines: p.lines.filter((_, i) => i !== idx) }))}
+                        onClick={() =>
+                          setForm((p) => ({ ...p, lines: p.lines.filter((_, i) => i !== idx) }))
+                        }
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -457,12 +595,12 @@ function InvoicesPage() {
                 <span>{KES(draftPreview.subtotal)}</span>
               </div>
               <div className="flex justify-between">
-                <span>VAT ({(VAT_RATE * 100).toFixed(0)}%)</span>
-                <span>{KES(draftPreview.vat)}</span>
+                <span>{draftTaxLoading ? "Calculating tax…" : "Tax"}</span>
+                <span>{KES(draftPreview.tax_amount)}</span>
               </div>
               <div className="mt-1 flex justify-between font-semibold">
                 <span>Total</span>
-                <span>{KES(draftPreview.total)}</span>
+                <span>{KES(draftPreview.total_amount)}</span>
               </div>
             </div>
           </div>
@@ -470,7 +608,7 @@ function InvoicesPage() {
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={submitInvoice} disabled={saving || !customers.length || !items.length}>
+            <Button onClick={submitInvoice} disabled={saving || draftTaxLoading || !draftTaxPreview || !customers.length || !items.length}>
               {saving ? "Creating…" : "Create & post invoice"}
             </Button>
           </DialogFooter>
@@ -492,7 +630,7 @@ function InvoicesPage() {
               <div className="printable rounded-md border border-border bg-white p-6 text-sm text-foreground">
                 <div className="flex items-start justify-between border-b border-border pb-4">
                   <div>
-                    <div className="text-xl font-bold">Ayawin Enterprise</div>
+                    <div className="text-xl font-bold">Ayawin Stock Solution</div>
                     <div className="text-xs text-muted-foreground">Nairobi, Kenya</div>
                   </div>
                   <div className="text-right">
@@ -509,10 +647,12 @@ function InvoicesPage() {
                   </div>
                   <div className="text-right">
                     <div>
-                      <span className="text-muted-foreground">Invoice Date:</span> {fmtDate(preview.date)}
+                      <span className="text-muted-foreground">Invoice Date:</span>{" "}
+                      {fmtDate(preview.date)}
                     </div>
                     <div>
-                      <span className="text-muted-foreground">Due Date:</span> {fmtDate(preview.due)}
+                      <span className="text-muted-foreground">Due Date:</span>{" "}
+                      {fmtDate(preview.due)}
                     </div>
                   </div>
                 </div>
@@ -526,7 +666,7 @@ function InvoicesPage() {
                     <span>{KES(preview.excise)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>VAT ({(VAT_RATE * 100).toFixed(0)}%)</span>
+                    <span>Tax</span>
                     <span>{KES(preview.vat)}</span>
                   </div>
                   <div className="mt-1 flex justify-between border-t border-border pt-2 text-base font-bold">
@@ -549,10 +689,18 @@ function InvoicesPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        const result = await verifyInvoiceDocument(token, preview.id, verifyHashInput.trim() || undefined);
+                        const result = await verifyInvoiceDocument(
+                          token,
+                          preview.id,
+                          verifyHashInput.trim() || undefined,
+                        );
                         const base = window.location.origin;
                         const url = `${base}/api/v1/sales/invoices/${encodeURIComponent(preview.id)}/verify?hash=${encodeURIComponent(result.verification_hash)}`;
-                        setVerifyResult({ hash: result.verification_hash, valid: result.valid, url });
+                        setVerifyResult({
+                          hash: result.verification_hash,
+                          valid: result.valid,
+                          url,
+                        });
                         if (typeof result.valid === "boolean") {
                           notify(`Verification ${result.valid ? "passed" : "failed"}`, preview.id);
                         } else {
@@ -630,7 +778,22 @@ function InvoicesPage() {
                   <Printer className="mr-2 h-4 w-4" />
                   Print
                 </Button>
-                {preview.status !== 'Draft' && (
+                {preview.status === "Draft" && (
+                  <Button
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await postSalesInvoice(token, preview.id);
+                        toast.success(`Invoice ${preview.id} posted to the ledger`);
+                        await loadInvoices();
+                        setPreview(null);
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "Invoice could not be posted");
+                      }
+                    }}
+                  >Post invoice</Button>
+                )}
+                {preview.status !== "Draft" && (
                   <Button
                     variant="outline"
                     onClick={async () => {
@@ -650,14 +813,21 @@ function InvoicesPage() {
                 <Button
                   variant="outline"
                   onClick={async () => {
-                    notify(`Invoice ${preview.id} queued for email`, "An export trigger has been recorded.");
+                    notify(
+                      `Invoice ${preview.id} queued for email`,
+                      "An export trigger has been recorded.",
+                    );
                     void trackEvent({
                       action: "invoice_email_requested",
                       entityType: "invoice",
                       entityId: preview.id,
                       details: { customer: preview.customer, etr: preview.etr },
                       scenario: "invoice",
-                      context: { customer: preview.customer, due: preview.due, total: preview.total },
+                      context: {
+                        customer: preview.customer,
+                        due: preview.due,
+                        total: preview.total,
+                      },
                     });
                     await triggerEmailNotification({
                       recipient: preview.customer,
@@ -669,29 +839,31 @@ function InvoicesPage() {
                   <Mail className="mr-2 h-4 w-4" />
                   Email to customer
                 </Button>
-                {preview.status !== "Draft" && preview.status !== "Paid" && preview.status !== "Cancelled" && (
-                  <Button
-                    variant="outline"
-                    onClick={async () => {
-                      if (!token) return;
-                      try {
-                        await paySalesInvoice(token, preview.id, {
-                          amount: preview.total,
-                          payment_date: new Date().toISOString().slice(0, 10),
-                          reference_no: preview.etr || undefined,
-                          notes: "Paid in full from invoice screen",
-                        });
-                        notify(`Payment posted for ${preview.id}`, "Invoice marked as paid");
-                        await loadInvoices();
-                        setPreview(null);
-                      } catch (e) {
-                        toast.error(e instanceof Error ? e.message : "Could not post payment");
-                      }
-                    }}
-                  >
-                    Mark Paid
-                  </Button>
-                )}
+                {preview.status !== "Draft" &&
+                  preview.status !== "Paid" &&
+                  preview.status !== "Cancelled" && (
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        if (!token) return;
+                        try {
+                          await paySalesInvoice(token, preview.id, {
+                            amount: preview.total,
+                            payment_date: new Date().toISOString().slice(0, 10),
+                            reference_no: preview.etr || undefined,
+                            notes: "Paid in full from invoice screen",
+                          });
+                          notify(`Payment posted for ${preview.id}`, "Invoice marked as paid");
+                          await loadInvoices();
+                          setPreview(null);
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Could not post payment");
+                        }
+                      }}
+                    >
+                      Mark Paid
+                    </Button>
+                  )}
                 {preview.status === "Paid" && (
                   <Button
                     variant="outline"
@@ -701,7 +873,9 @@ function InvoicesPage() {
                         await downloadReceiptPdf(token, preview.id);
                         notify(`Receipt for ${preview.id} downloaded`, "PDF saved");
                       } catch (e) {
-                        toast.error(e instanceof Error ? e.message : "Could not generate receipt PDF");
+                        toast.error(
+                          e instanceof Error ? e.message : "Could not generate receipt PDF",
+                        );
                       }
                     }}
                   >

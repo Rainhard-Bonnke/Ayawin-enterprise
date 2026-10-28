@@ -1,13 +1,33 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeftRight, Plus, ScanBarcode } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, Check, Plus, RefreshCw, ScanBarcode, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SearchBar } from "@/components/SearchBar";
@@ -18,10 +38,8 @@ import { trackEvent } from "@/lib/event-tracker";
 import { KES, fmtDate } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import {
-  createStockIn,
   createStockTransfer,
   fetchInventoryItems,
-    fetchInventoryReorderAlerts,
   fetchMasterItems,
   fetchWarehouses,
   type BackendInventoryItem,
@@ -29,10 +47,11 @@ import {
   type BackendWarehouse,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { v1Api, type InventoryFinding } from "@/lib/api-v1";
 
 export const Route = createFileRoute("/_app/inventory")({
   component: InventoryPage,
-  head: () => ({ meta: [{ title: "Inventory - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Inventory - Ayawin Stock Solution" }] }),
 });
 
 function InventoryPage() {
@@ -43,25 +62,19 @@ function InventoryPage() {
   const [sort, setSort] = useState("name");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [inventoryError, setInventoryError] = useState(false);
   const [items, setItems] = useState<BackendInventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
   const [masterItems, setMasterItems] = useState<BackendMasterItem[]>([]);
-    const [reorderAlerts, setReorderAlerts] = useState<Record<string, unknown>[]>([]);
+  const [findings, setFindings] = useState<InventoryFinding[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
-  const [stockInOpen, setStockInOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [transferForm, setTransferForm] = useState({
     from_warehouse_id: "",
     to_warehouse_id: "",
     item_id: "",
     quantity: "",
-    notes: "",
-  });
-  const [stockInForm, setStockInForm] = useState({
-    warehouse_id: "",
-    item_id: "",
-    quantity: "",
-    unit_cost: "",
     notes: "",
   });
 
@@ -86,9 +99,11 @@ function InventoryPage() {
       const [inv, whs] = await Promise.all([fetchInventoryItems(token), fetchWarehouses(token)]);
       setItems(inv);
       setWarehouses(whs);
+      setInventoryError(false);
     } catch {
       setItems([]);
       setWarehouses([]);
+      setInventoryError(true);
       toast.error("Unable to load inventory");
     } finally {
       setLoading(false);
@@ -99,13 +114,43 @@ function InventoryPage() {
     void loadInventory();
   }, [token]);
 
+  const loadFindings = async () => {
+    if (!token || token.startsWith("demo:")) return;
+    try {
+      setFindings(await v1Api.inventory.intelligenceFindings(token));
+    } catch {
+      setFindings([]);
+    }
+  };
+
   useEffect(() => {
-    if (!token) return;
-    const timer = window.setTimeout(() => {
-      void fetchInventoryReorderAlerts(token).then(setReorderAlerts).catch(() => setReorderAlerts([]));
-    }, 250);
-    return () => window.clearTimeout(timer);
+    void loadFindings();
   }, [token]);
+
+  const runInventoryAnalysis = async () => {
+    if (!token) return;
+    setAnalyzing(true);
+    try {
+      const result = await v1Api.inventory.analyzeInventory(token);
+      await loadFindings();
+      toast.success(result.run.summary || "Inventory checks complete");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Inventory analysis failed");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const reviewFinding = async (finding: InventoryFinding, status: "acknowledged" | "resolved") => {
+    if (!token) return;
+    try {
+      await v1Api.inventory.reviewFinding(token, finding.id, status);
+      await loadFindings();
+      toast.success(status === "resolved" ? "Finding resolved" : "Finding acknowledged");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to update finding");
+    }
+  };
 
   const filtered = useMemo(
     () =>
@@ -122,7 +167,8 @@ function InventoryPage() {
         })
         .sort((a, b) => {
           if (sort === "stock") return Number(a.stock) - Number(b.stock);
-          if (sort === "expiry") return String(a.expiry_date || "").localeCompare(String(b.expiry_date || ""));
+          if (sort === "expiry")
+            return String(a.expiry_date || "").localeCompare(String(b.expiry_date || ""));
           return a.name.localeCompare(b.name);
         }),
     [items, q, cat, wh, sort],
@@ -131,15 +177,22 @@ function InventoryPage() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  const totalValue = useMemo(() => filtered.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0), [filtered]);
-  const calculatedLowStockCount = useMemo(() => filtered.filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0)).length, [filtered]);
-  const lowStockCount = reorderAlerts.length || calculatedLowStockCount;
+  const totalValue = useMemo(
+    () =>
+      items.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0),
+    [items],
+  );
+  const calculatedLowStockCount = useMemo(
+    () => items.filter((row) => Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0)).length,
+    [items],
+  );
+  const lowStockCount = calculatedLowStockCount;
   const skuCount = useMemo(() => new Set(items.map((row) => row.sku)).size, [items]);
 
   const reorderDraft = useMemo(
     () =>
-      filtered
-        .filter((row) => Number(row.stock || 0) < Number(row.min_stock || 0))
+      items
+        .filter((row) => Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0))
         .slice(0, 12)
         .map((row) => ({
           sku: row.sku,
@@ -147,7 +200,7 @@ function InventoryPage() {
           warehouse: row.warehouse,
           qty: Math.max(0, Number(row.min_stock || 0) * 2 - Number(row.stock || 0)),
         })),
-    [filtered],
+    [items],
   );
 
   const expiringSoon = useMemo(() => {
@@ -168,7 +221,10 @@ function InventoryPage() {
     const first = filtered[0];
     const catalog = await loadCatalog();
     setTransferForm({
-      from_warehouse_id: warehouses.find((w) => w.name === first?.warehouse)?.id?.toString() || warehouses[0]?.id?.toString() || "",
+      from_warehouse_id:
+        warehouses.find((w) => w.name === first?.warehouse)?.id?.toString() ||
+        warehouses[0]?.id?.toString() ||
+        "",
       to_warehouse_id: warehouses[1]?.id?.toString() || warehouses[0]?.id?.toString() || "",
       item_id: first?.item_id || catalog[0]?.id || "",
       quantity: "1",
@@ -177,23 +233,15 @@ function InventoryPage() {
     setTransferOpen(true);
   };
 
-  const openStockIn = async () => {
-    if (!token) return;
-    const catalog = await loadCatalog();
-    setStockInForm({
-      warehouse_id: warehouses[0]?.id?.toString() || "",
-      item_id: catalog[0]?.id || "",
-      quantity: "1",
-      unit_cost: catalog[0] ? String(catalog[0].standard_cost) : "",
-      notes: "",
-    });
-    setStockInOpen(true);
-  };
-
   const submitTransfer = async () => {
     if (!token) return;
     const qty = Number(transferForm.quantity);
-    if (!transferForm.from_warehouse_id || !transferForm.to_warehouse_id || !transferForm.item_id || qty <= 0) {
+    if (
+      !transferForm.from_warehouse_id ||
+      !transferForm.to_warehouse_id ||
+      !transferForm.item_id ||
+      qty <= 0
+    ) {
       toast.error("Fill from/to warehouse, item, and quantity");
       return;
     }
@@ -209,39 +257,12 @@ function InventoryPage() {
         lines: [{ item_id: transferForm.item_id, quantity: qty }],
         notes: transferForm.notes || undefined,
       });
-      toast.success(`Transfer posted: ${result.transfer_no}`);
+      toast.success(`Transfer dispatched and in transit: ${result.transfer_no}`);
       setTransferOpen(false);
       setPage(1);
       await loadInventory();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Transfer failed");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submitStockIn = async () => {
-    if (!token) return;
-    const qty = Number(stockInForm.quantity);
-    if (!stockInForm.warehouse_id || !stockInForm.item_id || qty <= 0) {
-      toast.error("Warehouse, item, and quantity are required");
-      return;
-    }
-    setSaving(true);
-    try {
-      await createStockIn(token, {
-        warehouse_id: stockInForm.warehouse_id,
-        item_id: stockInForm.item_id,
-        quantity: qty,
-        unit_cost: Number(stockInForm.unit_cost) || undefined,
-        notes: stockInForm.notes || undefined,
-      });
-      toast.success("Stock received into warehouse");
-      setStockInOpen(false);
-      setPage(1);
-      await loadInventory();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Stock in failed");
     } finally {
       setSaving(false);
     }
@@ -257,7 +278,7 @@ function InventoryPage() {
       context: { q, cat, wh, sort, rows: filtered.length },
     });
 
-    exportWorkbook("ayawin-enterprise-inventory.xlsx", [
+    exportWorkbook("ayawin-stock-solution-inventory.xlsx", [
       {
         name: "Inventory",
         rows: filtered.map((p) => ({
@@ -277,7 +298,12 @@ function InventoryPage() {
       },
       {
         name: "Reorder Draft",
-        rows: reorderDraft.map((row) => ({ SKU: row.sku, Product: row.product, Warehouse: row.warehouse, Quantity: row.qty })),
+        rows: reorderDraft.map((row) => ({
+          SKU: row.sku,
+          Product: row.product,
+          Warehouse: row.warehouse,
+          Quantity: row.qty,
+        })),
       },
     ]);
   };
@@ -286,31 +312,33 @@ function InventoryPage() {
     <div>
       <PageHeader
         title="Inventory & Warehouse"
-        description="Stock levels, batch tracking, FIFO/FEFO costing across 3 warehouses."
+        description="Live stock by item and warehouse. Use controlled receipt, material request, and count workflows to keep inventory records in sync."
         actions={
           <>
             <Button variant="outline" onClick={exportInventory}>
               <ScanBarcode className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button variant="outline" onClick={() => void openTransfer()} disabled={warehouses.length < 2}>
+            <Button
+              variant="outline"
+              onClick={() => void openTransfer()}
+              disabled={warehouses.length < 2}
+            >
               <ArrowLeftRight className="mr-2 h-4 w-4" />
               Transfer
             </Button>
-            <Button onClick={() => void openStockIn()} disabled={warehouses.length === 0}>
-              <Plus className="mr-2 h-4 w-4" />
-              Stock In
-            </Button>
+            <Button asChild variant="outline"><Link to="/stock-adjustments">Physical count</Link></Button>
+            <Button asChild><Link to="/procurement"><Plus className="mr-2 h-4 w-4" />Receive against PO</Link></Button>
           </>
         }
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Stock Value", v: KES(totalValue) },
-          { l: "SKUs", v: String(skuCount) },
-          { l: "Low Stock", v: String(lowStockCount) },
-          { l: "Expiring Soon", v: String(expiringSoon.length) },
+          { l: "Stock Value · all locations", v: loading ? "Loading" : inventoryError ? "Unavailable" : KES(totalValue) },
+          { l: "Unique SKUs", v: loading ? "Loading" : inventoryError ? "Unavailable" : String(skuCount) },
+          { l: "Below Reorder Point", v: loading ? "Loading" : inventoryError ? "Unavailable" : String(lowStockCount) },
+          { l: "Expiry Tracking", v: loading ? "Loading" : inventoryError ? "Unavailable" : items.some((row) => row.expiry_date) ? String(expiringSoon.length) : "Not available" },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
@@ -324,9 +352,61 @@ function InventoryPage() {
       <QuietNote
         scenario="inventory"
         contextKey={`${q}-${cat}-${wh}-${sort}-${paged.length}`}
-        context={{ q, cat, wh, sort, items: paged, lowStockCount, expiringSoon: expiringSoon.length }}
+        context={{
+          q,
+          cat,
+          wh,
+          sort,
+          items: paged,
+          lowStockCount,
+          expiringSoon: expiringSoon.length,
+        }}
         className="mb-4"
       />
+
+      <Card className="mb-4 overflow-hidden border-primary/20 bg-gradient-to-br from-primary/[0.06] via-background to-background">
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-primary/10 p-2 text-primary"><Sparkles className="h-5 w-5" /></div>
+              <div>
+                <div className="font-semibold">Inventory review queue</div>
+                <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                  Rule-based stockout and reorder checks use current on-hand quantities and the last 14 days of ledger issues. Review the evidence before taking action.
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" onClick={() => void runInventoryAnalysis()} disabled={analyzing || loading || inventoryError}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${analyzing ? "animate-spin" : ""}`} />
+              {analyzing ? "Checking stock…" : "Run stock checks"}
+            </Button>
+          </div>
+          <div className="mt-4 grid gap-2 md:grid-cols-2">
+            {findings.slice(0, 6).map((finding) => (
+              <div key={finding.id} className="rounded-xl border border-border/70 bg-background/80 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-medium">{finding.title}</div>
+                  <Badge variant={finding.severity === "critical" || finding.severity === "high" ? "destructive" : "outline"}>{finding.severity}</Badge>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">{finding.finding}</p>
+                <p className="mt-2 text-sm"><span className="font-medium">Next step:</span> {finding.recommendation}</p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">Rule confidence {Math.round(finding.confidence * 100)}%</span>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={() => void reviewFinding(finding, "acknowledged")}>Acknowledge</Button>
+                    <Button size="sm" variant="outline" onClick={() => void reviewFinding(finding, "resolved")}><Check className="mr-1 h-3.5 w-3.5" /> Resolve</Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {findings.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground md:col-span-2">
+                {loading ? "Loading stock review queue…" : "No open rule findings. Run a stock check to review current exceptions."}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="mb-4 grid gap-3 lg:grid-cols-2">
         <Card>
@@ -334,13 +414,18 @@ function InventoryPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Reorder Draft</div>
-                <div className="text-xs text-muted-foreground">Items below dynamic threshold (min stock x2)</div>
+                <div className="text-xs text-muted-foreground">
+                  Items below their configured reorder point; suggestion tops up to 2× that point.
+                </div>
               </div>
               <Badge variant="outline">{reorderDraft.length}</Badge>
             </div>
             <div className="mt-3 space-y-2 text-sm">
               {reorderDraft.slice(0, 4).map((row) => (
-                <div key={`${row.sku}-${row.warehouse}`} className="rounded-lg border border-border/60 p-2">
+                <div
+                  key={`${row.sku}-${row.warehouse}`}
+                  className="rounded-lg border border-border/60 p-2"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium">{row.product}</div>
                     <div className="text-xs text-muted-foreground">{row.warehouse}</div>
@@ -349,7 +434,9 @@ function InventoryPage() {
                 </div>
               ))}
               {reorderDraft.length === 0 && (
-                <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">No items require reordering right now.</div>
+                <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">
+                  {loading ? "Loading reorder recommendations…" : inventoryError ? "Reorder recommendations could not be loaded." : "No items are at or below their reorder point."}
+                </div>
               )}
             </div>
           </CardContent>
@@ -360,13 +447,18 @@ function InventoryPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Expiry Watch</div>
-                <div className="text-xs text-muted-foreground">Batches with 45 days or less remaining</div>
+                <div className="text-xs text-muted-foreground">
+                  Batches with expiry dates from live stock records
+                </div>
               </div>
               <Badge variant="outline">{expiringSoon.length}</Badge>
             </div>
             <div className="mt-3 space-y-2 text-sm">
               {expiringSoon.slice(0, 4).map((row) => (
-                <div key={`${row.sku}-${row.warehouse}`} className="rounded-lg border border-border/60 p-2">
+                <div
+                  key={`${row.sku}-${row.warehouse}`}
+                  className="rounded-lg border border-border/60 p-2"
+                >
                   <div className="font-medium">{row.name}</div>
                   <div className="text-xs text-muted-foreground">
                     {row.warehouse} · {row.expiry_date ? fmtDate(row.expiry_date) : "-"}
@@ -374,7 +466,9 @@ function InventoryPage() {
                 </div>
               ))}
               {expiringSoon.length === 0 && (
-                <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">No batches are near expiry.</div>
+                <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">
+                  Expiry balances are not returned by the stock service yet. Record lot and expiry details on receipt; batch balances require lot-level issue tracking.
+                </div>
               )}
             </div>
           </CardContent>
@@ -392,20 +486,20 @@ function InventoryPage() {
               }}
               placeholder="Search SKU, barcode or product name..."
             />
-            <Select value={cat} onValueChange={setCat}>
+            <Select value={cat} onValueChange={(value) => { setCat(value); setPage(1); }}>
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All categories</SelectItem>
-                {["Beer", "Spirits", "Wine", "Soft Drinks", "Water", "Juice"].map((c) => (
+                {Array.from(new Set(items.map((row) => row.category).filter(Boolean))).sort().map((c) => (
                   <SelectItem key={c} value={c}>
                     {c}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <Select value={wh} onValueChange={setWh}>
+            <Select value={wh} onValueChange={(value) => { setWh(value); setPage(1); }}>
               <SelectTrigger className="w-44">
                 <SelectValue />
               </SelectTrigger>
@@ -440,47 +534,67 @@ function InventoryPage() {
                 <TableHead>Warehouse</TableHead>
                 <TableHead className="text-right">Cost</TableHead>
                 <TableHead className="text-right">Retail</TableHead>
-                <TableHead className="text-right">Stock</TableHead>
+                <TableHead className="text-right">On hand</TableHead>
+                <TableHead className="text-right">Reserved</TableHead>
+                <TableHead className="text-right">Available</TableHead>
                 <TableHead>Expiry</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={11}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     Loading inventory...
                   </TableCell>
                 </TableRow>
-              ) : paged.map((p) => {
-                const low = Number(p.stock || 0) < Number(p.min_stock || 0);
-                return (
-                  <TableRow key={`${p.item_id}-${p.warehouse_id}`}>
-                    <TableCell className="font-mono text-xs">{p.sku}</TableCell>
-                    <TableCell>
-                      <div className="font-medium">{p.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {p.brand || "-"} | {Number(p.abv || 0)}% ABV
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{p.category}</Badge>
-                    </TableCell>
-                    <TableCell className="text-xs">{p.pack_size || "-"}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{p.warehouse}</TableCell>
-                    <TableCell className="text-right">{KES(Number(p.cost_price || 0))}</TableCell>
-                    <TableCell className="text-right">{KES(Number(p.retail_price || 0))}</TableCell>
-                    <TableCell className="text-right">
-                      <span className={low ? "font-bold text-destructive" : "font-medium"}>{Number(p.stock || 0)}</span>
-                      {low && <AlertTriangle className="ml-1 inline h-3 w-3 text-destructive" />}
-                      <div className="text-xs text-muted-foreground">min {Number(p.min_stock || 0)}</div>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{p.expiry_date ? fmtDate(p.expiry_date) : "-"}</TableCell>
-                  </TableRow>
-                );
-              })}
+              ) : (
+                paged.map((p) => {
+                  const low = Number(p.min_stock || 0) > 0 && Number(p.available_quantity ?? p.stock ?? 0) <= Number(p.min_stock || 0);
+                  return (
+                    <TableRow key={`${p.item_id}-${p.warehouse_id}`}>
+                      <TableCell className="font-mono text-xs">{p.sku}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{p.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {p.brand || "-"} | {Number(p.abv || 0)}% ABV
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{p.category}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs">{p.pack_size || "-"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{p.warehouse}</TableCell>
+                      <TableCell className="text-right">{KES(Number(p.cost_price || 0))}</TableCell>
+                      <TableCell className="text-right">
+                        {KES(Number(p.retail_price || 0))}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={low ? "font-bold text-destructive" : "font-medium"}>
+                          {Number(p.stock || 0)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">{Number(p.reserved_quantity || 0)}</TableCell>
+                      <TableCell className="text-right">
+                        <span className={low ? "font-bold text-destructive" : "font-medium"}>{Number(p.available_quantity ?? p.stock ?? 0)}</span>
+                        {low && <AlertTriangle className="ml-1 inline h-3 w-3 text-destructive" />}
+                        <div className="text-xs text-muted-foreground">reorder at {Number(p.min_stock || 0)}</div>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {p.expiry_date ? fmtDate(p.expiry_date) : "-"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={11}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     No stock items match your filters.
                   </TableCell>
                 </TableRow>
@@ -488,7 +602,13 @@ function InventoryPage() {
             </TableBody>
           </Table>
 
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
 
@@ -496,104 +616,88 @@ function InventoryPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Warehouse transfer</DialogTitle>
-            <DialogDescription>Move stock between warehouses (posted immediately).</DialogDescription>
+            <DialogDescription>
+              Move stock between warehouses (posted immediately).
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="space-y-1.5">
               <Label>From warehouse</Label>
-              <Select value={transferForm.from_warehouse_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, from_warehouse_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Source" /></SelectTrigger>
+              <Select
+                value={transferForm.from_warehouse_id}
+                onValueChange={(v) => setTransferForm((p) => ({ ...p, from_warehouse_id: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Source" />
+                </SelectTrigger>
                 <SelectContent>
                   {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>To warehouse</Label>
-              <Select value={transferForm.to_warehouse_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, to_warehouse_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Destination" /></SelectTrigger>
+              <Select
+                value={transferForm.to_warehouse_id}
+                onValueChange={(v) => setTransferForm((p) => ({ ...p, to_warehouse_id: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Destination" />
+                </SelectTrigger>
                 <SelectContent>
                   {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Item</Label>
-              <Select value={transferForm.item_id} onValueChange={(v) => setTransferForm((p) => ({ ...p, item_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
+              <Select
+                value={transferForm.item_id}
+                onValueChange={(v) => setTransferForm((p) => ({ ...p, item_id: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Product" />
+                </SelectTrigger>
                 <SelectContent>
                   {masterItems.map((i) => (
-                    <SelectItem key={i.id} value={i.id}>{i.item_code} — {i.name}</SelectItem>
+                    <SelectItem key={i.id} value={i.id}>
+                      {i.item_code} — {i.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Quantity</Label>
-              <Input type="number" min={0.01} step="any" value={transferForm.quantity} onChange={(e) => setTransferForm((p) => ({ ...p, quantity: e.target.value }))} />
+              <Input
+                type="number"
+                min={0.01}
+                step="any"
+                value={transferForm.quantity}
+                onChange={(e) => setTransferForm((p) => ({ ...p, quantity: e.target.value }))}
+              />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTransferOpen(false)}>Cancel</Button>
-            <Button onClick={submitTransfer} disabled={saving}>{saving ? "Posting…" : "Post transfer"}</Button>
+            <Button variant="outline" onClick={() => setTransferOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={submitTransfer} disabled={saving}>
+              {saving ? "Posting…" : "Post transfer"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={stockInOpen} onOpenChange={setStockInOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Stock in</DialogTitle>
-            <DialogDescription>
-              Receive quantity into a warehouse. New products: add under{" "}
-              <Link to="/master-data" className="underline" onClick={() => setStockInOpen(false)}>Master Data</Link> first.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-3 py-2">
-            <div className="space-y-1.5">
-              <Label>Warehouse</Label>
-              <Select value={stockInForm.warehouse_id} onValueChange={(v) => setStockInForm((p) => ({ ...p, warehouse_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Warehouse" /></SelectTrigger>
-                <SelectContent>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Item</Label>
-              <Select value={stockInForm.item_id} onValueChange={(v) => setStockInForm((p) => ({ ...p, item_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
-                <SelectContent>
-                  {masterItems.map((i) => (
-                    <SelectItem key={i.id} value={i.id}>{i.item_code} — {i.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Quantity</Label>
-                <Input type="number" min={0.01} step="any" value={stockInForm.quantity} onChange={(e) => setStockInForm((p) => ({ ...p, quantity: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Unit cost (optional)</Label>
-                <Input type="number" min={0} step="any" value={stockInForm.unit_cost} onChange={(e) => setStockInForm((p) => ({ ...p, unit_cost: e.target.value }))} />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setStockInOpen(false)}>Cancel</Button>
-            <Button onClick={submitStockIn} disabled={saving}>{saving ? "Saving…" : "Receive stock"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
     </div>
   );
 }
-

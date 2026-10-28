@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const STORAGE_KEY = "ayawin-enterprise-erp-theme";
+const STORAGE_KEY = "ayawin-stock-solution-erp-theme";
 
 export type ThemeMode = "light" | "dark";
 

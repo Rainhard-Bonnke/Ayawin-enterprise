@@ -1,8 +1,8 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { validateLinesBalanced } = require('../src/services/glPostingService');
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { validateLinesBalanced } = require("../src/services/glPostingService");
 
-test('balanced journal passes validation', () => {
+test("balanced journal passes validation", () => {
   const lines = [
     { debit: 1000, credit: 0 },
     { debit: 0, credit: 1000 },
@@ -12,9 +12,13 @@ test('balanced journal passes validation', () => {
   assert.equal(t.totalCredit, 1000);
 });
 
-test('unbalanced journal throws', () => {
+test("unbalanced journal throws", () => {
   assert.throws(
-    () => validateLinesBalanced([{ debit: 100, credit: 0 }, { debit: 0, credit: 50 }]),
+    () =>
+      validateLinesBalanced([
+        { debit: 100, credit: 0 },
+        { debit: 0, credit: 50 },
+      ]),
     /not balanced/,
   );
 });

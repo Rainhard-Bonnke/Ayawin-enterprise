@@ -8,17 +8,25 @@ async function getRedis() {
   if (!isRedisEnabled()) return null;
   if (client) return client;
 
-  const Redis = require('ioredis');
+  const Redis = require("ioredis");
   client = process.env.REDIS_URL
     ? new Redis(process.env.REDIS_URL)
     : new Redis({
-        host: process.env.REDIS_HOST || 'localhost',
+        host: process.env.REDIS_HOST || "localhost",
         port: Number(process.env.REDIS_PORT) || 6379,
         password: process.env.REDIS_PASSWORD || undefined,
+        connectTimeout: 250,
+        maxRetriesPerRequest: 0,
+        enableOfflineQueue: false,
+        retryStrategy: () => null,
       });
 
-  client.on('error', (err) => {
-    console.error('[redis]', err.message);
+  let reportedError = false;
+  client.on("error", (err) => {
+    if (!reportedError) {
+      reportedError = true;
+      console.warn("[redis] Optional cache unavailable; continuing without Redis:", err.message);
+    }
   });
 
   return client;
@@ -27,20 +35,28 @@ async function getRedis() {
 async function cacheGet(key) {
   const redis = await getRedis();
   if (!redis) return null;
-  const value = await redis.get(key);
-  return value ? JSON.parse(value) : null;
+  try {
+    const value = await redis.get(key);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function cacheSet(key, value, ttlSeconds = 300) {
   const redis = await getRedis();
   if (!redis) return;
-  await redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+  try {
+    await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+  } catch {}
 }
 
 async function cacheDel(key) {
   const redis = await getRedis();
   if (!redis) return;
-  await redis.del(key);
+  try {
+    await redis.del(key);
+  } catch {}
 }
 
 module.exports = { getRedis, cacheGet, cacheSet, cacheDel, isRedisEnabled };

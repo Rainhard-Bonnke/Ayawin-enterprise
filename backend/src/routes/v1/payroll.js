@@ -1,17 +1,17 @@
-const express = require('express');
-const pool = require('../../db');
-const { authenticateErp, requirePermission } = require('../../middleware/erpAuth');
-const payroll = require('../../services/payrollService');
+const express = require("express");
+const pool = require("../../db");
+const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
+const payroll = require("../../services/payrollService");
 
 const router = express.Router();
 router.use(authenticateErp);
 
-router.get('/config', requirePermission('hr.view'), async (req, res) => {
-  const config = await payroll.getPayrollConfig(req.user.company_id);
+router.get("/config", requirePermission("hr.view"), async (req, res) => {
+  const config = await payroll.getPayrollConfig(req.user.company_id, req.query.payroll_month);
   return res.json(config);
 });
 
-router.get('/runs', requirePermission('hr.view'), async (req, res) => {
+router.get("/runs", requirePermission("hr.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT pr.*, COUNT(ps.id)::int AS employee_count
      FROM erp_payroll_runs pr
@@ -23,7 +23,7 @@ router.get('/runs', requirePermission('hr.view'), async (req, res) => {
   return res.json(result.rows);
 });
 
-router.post('/runs', requirePermission('hr.create'), async (req, res) => {
+router.post("/runs", requirePermission("hr.create"), async (req, res) => {
   try {
     const result = await payroll.runPayroll({
       companyId: req.user.company_id,
@@ -37,7 +37,7 @@ router.post('/runs', requirePermission('hr.create'), async (req, res) => {
   }
 });
 
-router.get('/runs/:id/payslips', requirePermission('hr.view'), async (req, res) => {
+router.get("/runs/:id/payslips", requirePermission("hr.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT ps.*, e.employee_code, e.first_name, e.last_name, e.bank_account_no
      FROM erp_payslips ps
@@ -49,7 +49,7 @@ router.get('/runs/:id/payslips', requirePermission('hr.view'), async (req, res) 
   return res.json(result.rows);
 });
 
-router.get('/runs/:id/payslips/:payslipId', requirePermission('hr.view'), async (req, res) => {
+router.get("/runs/:id/payslips/:payslipId", requirePermission("hr.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT ps.*, e.employee_code, e.first_name, e.last_name, e.email, e.department, e.job_title
      FROM erp_payslips ps
@@ -57,11 +57,11 @@ router.get('/runs/:id/payslips/:payslipId', requirePermission('hr.view'), async 
      WHERE ps.id = $1 AND ps.payroll_run_id = $2 AND ps.company_id = $3`,
     [req.params.payslipId, req.params.id, req.user.company_id],
   );
-  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+  if (!result.rowCount) return res.status(404).json({ error: "Not found" });
   return res.json(result.rows[0]);
 });
 
-router.post('/runs/:id/post', requirePermission('hr.approve'), async (req, res) => {
+router.post("/runs/:id/post", requirePermission("hr.approve"), async (req, res) => {
   try {
     const result = await payroll.postPayrollToGl({
       companyId: req.user.company_id,
@@ -74,19 +74,22 @@ router.post('/runs/:id/post', requirePermission('hr.approve'), async (req, res) 
   }
 });
 
-router.get('/runs/:id/statutory-report', requirePermission('hr.view'), async (req, res) => {
+router.get("/runs/:id/statutory-report", requirePermission("hr.view"), async (req, res) => {
   const result = await pool.query(
-    `SELECT SUM(paye) AS total_paye, SUM(nhif) AS total_nhif, SUM(nssf) AS total_nssf,
-            SUM(housing_levy) AS total_housing, COUNT(*)::int AS employees
+    `SELECT SUM(paye) AS total_paye, SUM(shif) AS total_shif, SUM(nhif) AS total_legacy_nhif,
+            SUM(nssf) AS total_nssf_employee, SUM(nssf_employer) AS total_nssf_employer,
+            SUM(housing_levy) AS total_housing_employee,
+            SUM(housing_levy_employer) AS total_housing_employer,
+            SUM(employer_cost) AS total_employer_cost, COUNT(*)::int AS employees
      FROM erp_payslips WHERE payroll_run_id = $1 AND company_id = $2`,
     [req.params.id, req.user.company_id],
   );
   return res.json(result.rows[0]);
 });
 
-router.post('/preview', requirePermission('hr.view'), async (req, res) => {
+router.post("/preview", requirePermission("hr.view"), async (req, res) => {
   const { employee_id, extras } = req.body || {};
-  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+  if (!employee_id) return res.status(400).json({ error: "employee_id required" });
 
   const emp = await pool.query(
     `SELECT e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance
@@ -95,9 +98,9 @@ router.post('/preview', requirePermission('hr.view'), async (req, res) => {
      WHERE e.id = $1 AND e.company_id = $2`,
     [employee_id, req.user.company_id],
   );
-  if (!emp.rowCount) return res.status(404).json({ error: 'Employee not found' });
+  if (!emp.rowCount) return res.status(404).json({ error: "Employee not found" });
 
-  const config = await payroll.getPayrollConfig(req.user.company_id);
+  const config = await payroll.getPayrollConfig(req.user.company_id, req.body?.payroll_month);
   const slip = payroll.computePayslip(emp.rows[0], emp.rows[0], config, extras || {});
   return res.json(slip);
 });

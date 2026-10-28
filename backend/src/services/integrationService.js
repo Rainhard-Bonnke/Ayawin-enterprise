@@ -1,4 +1,4 @@
-const pool = require('../db');
+const pool = require("../db");
 
 async function logIntegration({ companyId, provider, action, request, response, status }) {
   const result = await pool.query(
@@ -10,7 +10,6 @@ async function logIntegration({ companyId, provider, action, request, response, 
 }
 
 async function submitEtimsInvoice({ companyId, invoice }) {
-  const enabled = process.env.ETIMS_ENABLED === 'true';
   const request = {
     invoice_no: invoice.invoice_no,
     customer_tax_id: invoice.tax_id,
@@ -18,39 +17,53 @@ async function submitEtimsInvoice({ companyId, invoice }) {
     lines: invoice.lines || [],
   };
 
-  if (!enabled) {
-    await logIntegration({ companyId, provider: 'etims', action: 'submit_invoice', request, response: { stub: true }, status: 'skipped' });
-    return { ok: true, stub: true, etims_ref: `STUB-${Date.now()}` };
-  }
-
-  const response = { etims_ref: `ETIMS-${Date.now()}`, status: 'submitted' };
-  await logIntegration({ companyId, provider: 'etims', action: 'submit_invoice', request, response, status: 'success' });
-  return { ok: true, ...response };
+  const response = {
+    status: "not_configured",
+    message: "No certified KRA eTIMS integration is configured.",
+  };
+  await logIntegration({
+    companyId,
+    provider: "etims",
+    action: "submit_invoice",
+    request,
+    response,
+    status: "skipped",
+  });
+  return { ok: false, configured: false, ...response };
 }
 
 async function initiateMpesaPayment({ companyId, phone, amount, reference }) {
   const request = { phone, amount, reference };
-  if (!process.env.MPESA_CONSUMER_KEY) {
-    await logIntegration({ companyId, provider: 'mpesa', action: 'stk_push', request, response: { stub: true }, status: 'skipped' });
-    return { ok: true, stub: true, checkout_request_id: `STUB-${Date.now()}` };
-  }
-  const response = { checkout_request_id: `MPESA-${Date.now()}`, status: 'pending' };
-  await logIntegration({ companyId, provider: 'mpesa', action: 'stk_push', request, response, status: 'success' });
-  return { ok: true, ...response };
+  const response = {
+    status: "not_configured",
+    message: "The Safaricom Daraja STK Push adapter is not implemented.",
+  };
+  await logIntegration({
+    companyId,
+    provider: "mpesa",
+    action: "stk_push",
+    request,
+    response,
+    status: "skipped",
+  });
+  return { ok: false, configured: false, ...response };
 }
 
 async function sendNotification({ companyId, channel, to, subject, body }) {
-  const provider = channel === 'sms' ? 'sms' : 'email';
+  const provider = channel === "sms" ? "sms" : "email";
+  const response = {
+    status: "not_configured",
+    message: `No ${provider.toUpperCase()} delivery provider is configured.`,
+  };
   await logIntegration({
     companyId,
     provider,
-    action: 'send',
+    action: "send",
     request: { to, subject, body: body?.slice(0, 200) },
-    response: { queued: true },
-    status: 'success',
+    response,
+    status: "skipped",
   });
-  console.log(`[${provider}] to=${to} subject=${subject}`);
-  return { ok: true };
+  return { ok: false, configured: false, ...response };
 }
 
 module.exports = {

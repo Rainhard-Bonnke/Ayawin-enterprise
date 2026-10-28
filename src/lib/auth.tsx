@@ -21,7 +21,7 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-const STORAGE_KEY = "ayawin-enterprise-erp-token";
+const STORAGE_KEY = "ayawin-stock-solution-erp-token";
 
 function parseJwt(token: string): User | null {
   try {
@@ -55,7 +55,7 @@ function parseJwt(token: string): User | null {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAccessTokenRefreshed((access) => {
@@ -80,6 +80,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (isApiSessionToken(storedToken) && isV1Enabled()) {
+        const parsed = parseJwt(storedToken);
+        if (parsed) {
+          const access = getStoredTokens().access || storedToken;
+          localStorage.setItem(STORAGE_KEY, access);
+          setToken(access);
+          setUser(parsed);
+          setLoading(false);
+
+          void v1Me(access)
+            .then((me) => setUser(me))
+            .catch(() => {
+              clearTokens();
+              localStorage.removeItem(STORAGE_KEY);
+              setToken(null);
+              setUser(null);
+            });
+          return;
+        }
+
         try {
           const me = await v1Me(storedToken);
           const access = getStoredTokens().access || storedToken;

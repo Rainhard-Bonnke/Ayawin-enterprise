@@ -1,31 +1,31 @@
-const fs = require('fs/promises');
-const path = require('path');
-const pool = require('./db');
+const fs = require("fs/promises");
+const path = require("path");
+const pool = require("./db");
 
 const REQUIRED_TABLES = [
-  'users',
-  'roles',
-  'customers',
-  'suppliers',
-  'products',
-  'categories',
-  'warehouses',
-  'stock_movements',
-  'sales_orders',
-  'sales_order_items',
-  'invoices',
-  'invoice_items',
-  'payments',
-  'purchase_orders',
-  'purchase_order_items',
-  'grns',
-  'deliveries',
-  'employees',
-  'payroll',
-  'journal_entries',
-  'accounts',
-  'taxes',
-  'audit_logs',
+  "users",
+  "roles",
+  "customers",
+  "suppliers",
+  "products",
+  "categories",
+  "warehouses",
+  "stock_movements",
+  "sales_orders",
+  "sales_order_items",
+  "invoices",
+  "invoice_items",
+  "payments",
+  "purchase_orders",
+  "purchase_order_items",
+  "grns",
+  "deliveries",
+  "employees",
+  "payroll",
+  "journal_entries",
+  "accounts",
+  "taxes",
+  "audit_logs",
 ];
 
 let bootstrapPromise = null;
@@ -64,8 +64,8 @@ async function getMissingTables() {
 }
 
 async function loadSchemaFile() {
-  const schemaPath = path.resolve(__dirname, '..', 'init.sql');
-  return fs.readFile(schemaPath, 'utf8');
+  const schemaPath = path.resolve(__dirname, "..", "init.sql");
+  return fs.readFile(schemaPath, "utf8");
 }
 
 async function bootstrapDatabase() {

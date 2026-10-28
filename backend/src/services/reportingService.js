@@ -1,19 +1,22 @@
-const pool = require('../db');
+const pool = require("../db");
 
 function kpiStatus(actual, target, warning, critical, higherIsBetter) {
   if (higherIsBetter) {
-    if (actual >= target) return 'green';
-    if (actual >= (warning ?? target * 0.9)) return 'amber';
-    return 'red';
+    if (actual >= target) return "green";
+    if (actual >= (warning ?? target * 0.9)) return "amber";
+    return "red";
   }
-  if (actual <= target) return 'green';
-  if (actual <= (warning ?? target * 1.1)) return 'amber';
-  return 'red';
+  if (actual <= target) return "green";
+  if (actual <= (warning ?? target * 1.1)) return "amber";
+  return "red";
 }
 
 async function metricRevenueMtd(companyId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(total_amount),0) AS v FROM erp_customer_invoices
+    `SELECT COALESCE(SUM(total_amount),0)
+       - COALESCE((SELECT SUM(total_amount) FROM erp_customer_credit_notes
+                   WHERE company_id = $1 AND status = 'posted' AND credit_date >= date_trunc('month', CURRENT_DATE)),0) AS v
+     FROM erp_customer_invoices
      WHERE company_id = $1 AND status IN ('posted','partial','paid','overdue')
        AND invoice_date >= date_trunc('month', CURRENT_DATE)`,
     [companyId],
@@ -23,7 +26,7 @@ async function metricRevenueMtd(companyId) {
 
 async function metricArOutstanding(companyId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(total_amount - amount_paid),0) AS v FROM erp_customer_invoices
+    `SELECT COALESCE(SUM(GREATEST(total_amount - amount_paid - credited_amount,0)),0) AS v FROM erp_customer_invoices
      WHERE company_id = $1 AND status IN ('posted','partial','overdue')`,
     [companyId],
   );
@@ -116,7 +119,7 @@ const METRICS = {
 
 async function getWidgetData(companyId, widgetId) {
   const fn = METRICS[widgetId];
-  if (!fn) return { widget: widgetId, value: null, error: 'Unknown widget' };
+  if (!fn) return { widget: widgetId, value: null, error: "Unknown widget" };
   const value = await fn(companyId);
   return { widget: widgetId, value };
 }
@@ -129,9 +132,7 @@ async function getDashboard(companyId, code) {
   if (!dash.rowCount) return null;
 
   const layout = dash.rows[0].layout || [];
-  const widgets = await Promise.all(
-    layout.map((w) => getWidgetData(companyId, w.widget)),
-  );
+  const widgets = await Promise.all(layout.map((w) => getWidgetData(companyId, w.widget)));
 
   return { ...dash.rows[0], widgets };
 }
@@ -181,7 +182,7 @@ async function computeKpis(companyId) {
 
 async function runStandardReport(companyId, reportKey, filters = {}) {
   switch (reportKey) {
-    case 'sales_summary': {
+    case "sales_summary": {
       const r = await pool.query(
         `SELECT status, COUNT(*)::int AS order_count, COALESCE(SUM(total_amount),0) AS total
          FROM erp_sales_orders WHERE company_id = $1 AND is_deleted = FALSE GROUP BY status ORDER BY status`,
@@ -189,10 +190,10 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       );
       return { report: reportKey, rows: r.rows };
     }
-    case 'ar_aging': {
+    case "ar_aging": {
       const r = await pool.query(
         `SELECT invoice_no, c.name AS customer, invoice_date, due_date,
-                total_amount - amount_paid AS outstanding,
+                GREATEST(total_amount - amount_paid - credited_amount,0) AS outstanding,
                 CASE
                   WHEN due_date >= CURRENT_DATE THEN 'current'
                   WHEN due_date >= CURRENT_DATE - 30 THEN '1-30'
@@ -202,13 +203,13 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
          FROM erp_customer_invoices inv
          JOIN erp_customers c ON c.id = inv.customer_id
          WHERE inv.company_id = $1 AND inv.status IN ('posted','partial','overdue')
-           AND total_amount > amount_paid
+           AND total_amount > amount_paid + credited_amount
          ORDER BY due_date`,
         [companyId],
       );
       return { report: reportKey, rows: r.rows };
     }
-    case 'stock_valuation': {
+    case "stock_valuation": {
       const r = await pool.query(
         `SELECT w.name AS warehouse, i.item_code, i.name AS item, s.quantity, s.avg_unit_cost,
                 (s.quantity * s.avg_unit_cost) AS value
@@ -220,7 +221,7 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       );
       return { report: reportKey, rows: r.rows };
     }
-    case 'payroll_summary': {
+    case "payroll_summary": {
       const r = await pool.query(
         `SELECT pr.run_no, pr.payroll_month, pr.total_gross, pr.total_deductions, pr.total_net, pr.status,
                 COUNT(ps.id)::int AS employees
@@ -231,7 +232,7 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       );
       return { report: reportKey, rows: r.rows };
     }
-    case 'procurement_spend': {
+    case "procurement_spend": {
       const r = await pool.query(
         `SELECT v.name AS vendor, COUNT(po.id)::int AS po_count, COALESCE(SUM(po.total_amount),0) AS spend
          FROM erp_purchase_orders po
@@ -242,7 +243,7 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       );
       return { report: reportKey, rows: r.rows };
     }
-    case 'ap_aging': {
+    case "ap_aging": {
       const r = await pool.query(
         `SELECT po.po_number, v.name AS vendor, po.order_date, po.total_amount, po.status
          FROM erp_purchase_orders po
@@ -259,17 +260,21 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
 }
 
 function rowsToCsv(rows) {
-  if (!rows?.length) return '';
+  if (!rows?.length) return "";
   const headers = Object.keys(rows[0]);
-  const lines = [headers.join(',')];
+  const lines = [headers.join(",")];
   for (const row of rows) {
-    lines.push(headers.map((h) => {
-      const v = row[h];
-      const s = v == null ? '' : String(v);
-      return s.includes(',') ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(','));
+    lines.push(
+      headers
+        .map((h) => {
+          const v = row[h];
+          const s = v == null ? "" : String(v);
+          return s.includes(",") ? `"${s.replace(/"/g, '""')}"` : s;
+        })
+        .join(","),
+    );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 async function getBiDataset(companyId, dataset) {

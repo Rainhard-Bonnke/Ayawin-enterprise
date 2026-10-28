@@ -8,7 +8,7 @@ WHERE c.code = 'MARTIN'
 
 INSERT INTO erp_fiscal_periods (company_id, fiscal_year_id, period_no, name, start_date, end_date, status)
 SELECT c.id, fy.id, m.period_no,
-       TO_CHAR(TO_DATE(m.period_no::text, 'MM'), 'Month YYYY'),
+  TO_CHAR((DATE '2026-01-01' + ((m.period_no - 1) || ' months')::interval)::date, 'FMMonth YYYY'),
        (DATE '2026-01-01' + ((m.period_no - 1) || ' months')::interval)::date,
        ((DATE '2026-01-01' + (m.period_no || ' months')::interval) - INTERVAL '1 day')::date,
        CASE WHEN m.period_no <= 5 THEN 'open' ELSE 'open' END

@@ -1,8 +1,14 @@
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
-export function SearchBar({ value, onChange, placeholder = "Search..." }: {
-  value: string; onChange: (v: string) => void; placeholder?: string;
+export function SearchBar({
+  value,
+  onChange,
+  placeholder = "Search...",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
 }) {
   return (
     <div className="relative w-full max-w-sm">

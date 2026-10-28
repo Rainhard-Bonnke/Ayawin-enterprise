@@ -3,14 +3,21 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "@/components/SearchBar";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ListPagination } from "@/components/ListPagination";
 import { useAuth } from "@/lib/auth";
 import { fetchAuditLogs, type AuditLogRow } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/audit-logs")({
   component: AuditLogsPage,
-  head: () => ({ meta: [{ title: "Audit Logs - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Audit Logs - Ayawin Stock Solution" }] }),
 });
 
 function AuditLogsPage() {
@@ -41,10 +48,15 @@ function AuditLogsPage() {
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
-            <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search action, entity, or id..." />
-            <div className="ml-auto text-xs text-muted-foreground">
-              {filtered.length} events
-            </div>
+            <SearchBar
+              value={q}
+              onChange={(value) => {
+                setQ(value);
+                setPage(1);
+              }}
+              placeholder="Search action, entity, or id..."
+            />
+            <div className="ml-auto text-xs text-muted-foreground">{filtered.length} events</div>
           </div>
           <Table>
             <TableHeader>
@@ -59,7 +71,9 @@ function AuditLogsPage() {
             <TableBody>
               {paged.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell className="text-xs">{new Date(row.created_at).toLocaleString("en-GB")}</TableCell>
+                  <TableCell className="text-xs">
+                    {new Date(row.created_at).toLocaleString("en-GB")}
+                  </TableCell>
                   <TableCell className="text-xs">
                     <div className="font-medium">{row.user_name || "System"}</div>
                     <div className="text-muted-foreground">{row.user_email || ""}</div>
@@ -76,7 +90,7 @@ function AuditLogsPage() {
               ))}
             </TableBody>
           </Table>
-          <ListPagination page={page} totalPages={totalPages} onPageChange={setPage} />
+          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
         </CardContent>
       </Card>
     </div>

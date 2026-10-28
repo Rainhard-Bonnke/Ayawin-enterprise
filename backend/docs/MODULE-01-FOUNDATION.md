@@ -41,7 +41,7 @@ OpenAPI UI: `http://localhost:4000/api/docs`
 
 ```json
 {
-  "email": "admin@martin.co.ke",
+  "email": "bonnkereinhard654@gmail.com",
   "password": "demo",
   "company_code": "MARTIN",
   "mfa_token": "123456"
@@ -97,7 +97,7 @@ Permissions are seeded per module action: `view`, `create`, `edit`, `delete`, `a
 
 After seed + `ENABLE_DEMO_MODE=true`:
 
-- Email: `admin@martin.co.ke`
+- Email: `bonnkereinhard654@gmail.com`
 - Password: `demo`
 - Company code: `MARTIN`
 

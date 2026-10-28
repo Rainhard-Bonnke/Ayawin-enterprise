@@ -13,18 +13,41 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as AppUsersRouteImport } from './routes/_app.users'
+import { Route as AppTransfersRouteImport } from './routes/_app.transfers'
+import { Route as AppSuppliersRouteImport } from './routes/_app.suppliers'
+import { Route as AppSupplierCreditNotesRouteImport } from './routes/_app.supplier-credit-notes'
+import { Route as AppStockMovementsRouteImport } from './routes/_app.stock-movements'
+import { Route as AppStockAnalysisRouteImport } from './routes/_app.stock-analysis'
+import { Route as AppStockAdjustmentsRouteImport } from './routes/_app.stock-adjustments'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSalesRouteImport } from './routes/_app.sales'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
+import { Route as AppReorderAlertsRouteImport } from './routes/_app.reorder-alerts'
+import { Route as AppQuarantineRouteImport } from './routes/_app.quarantine'
 import { Route as AppProcurementRouteImport } from './routes/_app.procurement'
 import { Route as AppPosRouteImport } from './routes/_app.pos'
+import { Route as AppPayrollRouteImport } from './routes/_app.payroll'
+import { Route as AppMaterialReturnsRouteImport } from './routes/_app.material-returns'
+import { Route as AppMaterialRequisitionsRouteImport } from './routes/_app.material-requisitions'
+import { Route as AppMaterialIssuesRouteImport } from './routes/_app.material-issues'
 import { Route as AppMasterDataRouteImport } from './routes/_app.master-data'
+import { Route as AppLeaveAttendanceRouteImport } from './routes/_app.leave-attendance'
 import { Route as AppInvoicesRouteImport } from './routes/_app.invoices'
+import { Route as AppInventoryMasterRouteImport } from './routes/_app.inventory-master'
+import { Route as AppInventoryLotsRouteImport } from './routes/_app.inventory-lots'
 import { Route as AppInventoryRouteImport } from './routes/_app.inventory'
 import { Route as AppHrRouteImport } from './routes/_app.hr'
+import { Route as AppGoodsReceivedRouteImport } from './routes/_app.goods-received'
+import { Route as AppDriverStockRouteImport } from './routes/_app.driver-stock'
+import { Route as AppDepreciationRouteImport } from './routes/_app.depreciation'
 import { Route as AppDeliveryRouteImport } from './routes/_app.delivery'
 import { Route as AppCustomersRouteImport } from './routes/_app.customers'
+import { Route as AppCustomerCreditNotesRouteImport } from './routes/_app.customer-credit-notes'
+import { Route as AppBankReconciliationRouteImport } from './routes/_app.bank-reconciliation'
 import { Route as AppAuditLogsRouteImport } from './routes/_app.audit-logs'
+import { Route as AppAssetsRouteImport } from './routes/_app.assets'
+import { Route as AppAccountsReceivableRouteImport } from './routes/_app.accounts-receivable'
+import { Route as AppAccountsPayableRouteImport } from './routes/_app.accounts-payable'
 import { Route as AppAccountingRouteImport } from './routes/_app.accounting'
 
 const LoginRoute = LoginRouteImport.update({
@@ -46,6 +69,36 @@ const AppUsersRoute = AppUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AppRoute,
 } as any)
+const AppTransfersRoute = AppTransfersRouteImport.update({
+  id: '/transfers',
+  path: '/transfers',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSuppliersRoute = AppSuppliersRouteImport.update({
+  id: '/suppliers',
+  path: '/suppliers',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSupplierCreditNotesRoute = AppSupplierCreditNotesRouteImport.update({
+  id: '/supplier-credit-notes',
+  path: '/supplier-credit-notes',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppStockMovementsRoute = AppStockMovementsRouteImport.update({
+  id: '/stock-movements',
+  path: '/stock-movements',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppStockAnalysisRoute = AppStockAnalysisRouteImport.update({
+  id: '/stock-analysis',
+  path: '/stock-analysis',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppStockAdjustmentsRoute = AppStockAdjustmentsRouteImport.update({
+  id: '/stock-adjustments',
+  path: '/stock-adjustments',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -61,6 +114,16 @@ const AppReportsRoute = AppReportsRouteImport.update({
   path: '/reports',
   getParentRoute: () => AppRoute,
 } as any)
+const AppReorderAlertsRoute = AppReorderAlertsRouteImport.update({
+  id: '/reorder-alerts',
+  path: '/reorder-alerts',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppQuarantineRoute = AppQuarantineRouteImport.update({
+  id: '/quarantine',
+  path: '/quarantine',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppProcurementRoute = AppProcurementRouteImport.update({
   id: '/procurement',
   path: '/procurement',
@@ -71,14 +134,49 @@ const AppPosRoute = AppPosRouteImport.update({
   path: '/pos',
   getParentRoute: () => AppRoute,
 } as any)
+const AppPayrollRoute = AppPayrollRouteImport.update({
+  id: '/payroll',
+  path: '/payroll',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMaterialReturnsRoute = AppMaterialReturnsRouteImport.update({
+  id: '/material-returns',
+  path: '/material-returns',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMaterialRequisitionsRoute = AppMaterialRequisitionsRouteImport.update({
+  id: '/material-requisitions',
+  path: '/material-requisitions',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMaterialIssuesRoute = AppMaterialIssuesRouteImport.update({
+  id: '/material-issues',
+  path: '/material-issues',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppMasterDataRoute = AppMasterDataRouteImport.update({
   id: '/master-data',
   path: '/master-data',
   getParentRoute: () => AppRoute,
 } as any)
+const AppLeaveAttendanceRoute = AppLeaveAttendanceRouteImport.update({
+  id: '/leave-attendance',
+  path: '/leave-attendance',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppInvoicesRoute = AppInvoicesRouteImport.update({
   id: '/invoices',
   path: '/invoices',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInventoryMasterRoute = AppInventoryMasterRouteImport.update({
+  id: '/inventory-master',
+  path: '/inventory-master',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInventoryLotsRoute = AppInventoryLotsRouteImport.update({
+  id: '/inventory-lots',
+  path: '/inventory-lots',
   getParentRoute: () => AppRoute,
 } as any)
 const AppInventoryRoute = AppInventoryRouteImport.update({
@@ -91,6 +189,21 @@ const AppHrRoute = AppHrRouteImport.update({
   path: '/hr',
   getParentRoute: () => AppRoute,
 } as any)
+const AppGoodsReceivedRoute = AppGoodsReceivedRouteImport.update({
+  id: '/goods-received',
+  path: '/goods-received',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDriverStockRoute = AppDriverStockRouteImport.update({
+  id: '/driver-stock',
+  path: '/driver-stock',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDepreciationRoute = AppDepreciationRouteImport.update({
+  id: '/depreciation',
+  path: '/depreciation',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppDeliveryRoute = AppDeliveryRouteImport.update({
   id: '/delivery',
   path: '/delivery',
@@ -101,9 +214,34 @@ const AppCustomersRoute = AppCustomersRouteImport.update({
   path: '/customers',
   getParentRoute: () => AppRoute,
 } as any)
+const AppCustomerCreditNotesRoute = AppCustomerCreditNotesRouteImport.update({
+  id: '/customer-credit-notes',
+  path: '/customer-credit-notes',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppBankReconciliationRoute = AppBankReconciliationRouteImport.update({
+  id: '/bank-reconciliation',
+  path: '/bank-reconciliation',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAuditLogsRoute = AppAuditLogsRouteImport.update({
   id: '/audit-logs',
   path: '/audit-logs',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAssetsRoute = AppAssetsRouteImport.update({
+  id: '/assets',
+  path: '/assets',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountsReceivableRoute = AppAccountsReceivableRouteImport.update({
+  id: '/accounts-receivable',
+  path: '/accounts-receivable',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountsPayableRoute = AppAccountsPayableRouteImport.update({
+  id: '/accounts-payable',
+  path: '/accounts-payable',
   getParentRoute: () => AppRoute,
 } as any)
 const AppAccountingRoute = AppAccountingRouteImport.update({
@@ -116,35 +254,81 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/accounting': typeof AppAccountingRoute
+  '/accounts-payable': typeof AppAccountsPayableRoute
+  '/accounts-receivable': typeof AppAccountsReceivableRoute
+  '/assets': typeof AppAssetsRoute
   '/audit-logs': typeof AppAuditLogsRoute
+  '/bank-reconciliation': typeof AppBankReconciliationRoute
+  '/customer-credit-notes': typeof AppCustomerCreditNotesRoute
   '/customers': typeof AppCustomersRoute
   '/delivery': typeof AppDeliveryRoute
+  '/depreciation': typeof AppDepreciationRoute
+  '/driver-stock': typeof AppDriverStockRoute
+  '/goods-received': typeof AppGoodsReceivedRoute
   '/hr': typeof AppHrRoute
   '/inventory': typeof AppInventoryRoute
+  '/inventory-lots': typeof AppInventoryLotsRoute
+  '/inventory-master': typeof AppInventoryMasterRoute
   '/invoices': typeof AppInvoicesRoute
+  '/leave-attendance': typeof AppLeaveAttendanceRoute
   '/master-data': typeof AppMasterDataRoute
+  '/material-issues': typeof AppMaterialIssuesRoute
+  '/material-requisitions': typeof AppMaterialRequisitionsRoute
+  '/material-returns': typeof AppMaterialReturnsRoute
+  '/payroll': typeof AppPayrollRoute
   '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
+  '/quarantine': typeof AppQuarantineRoute
+  '/reorder-alerts': typeof AppReorderAlertsRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
   '/settings': typeof AppSettingsRoute
+  '/stock-adjustments': typeof AppStockAdjustmentsRoute
+  '/stock-analysis': typeof AppStockAnalysisRoute
+  '/stock-movements': typeof AppStockMovementsRoute
+  '/supplier-credit-notes': typeof AppSupplierCreditNotesRoute
+  '/suppliers': typeof AppSuppliersRoute
+  '/transfers': typeof AppTransfersRoute
   '/users': typeof AppUsersRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/accounting': typeof AppAccountingRoute
+  '/accounts-payable': typeof AppAccountsPayableRoute
+  '/accounts-receivable': typeof AppAccountsReceivableRoute
+  '/assets': typeof AppAssetsRoute
   '/audit-logs': typeof AppAuditLogsRoute
+  '/bank-reconciliation': typeof AppBankReconciliationRoute
+  '/customer-credit-notes': typeof AppCustomerCreditNotesRoute
   '/customers': typeof AppCustomersRoute
   '/delivery': typeof AppDeliveryRoute
+  '/depreciation': typeof AppDepreciationRoute
+  '/driver-stock': typeof AppDriverStockRoute
+  '/goods-received': typeof AppGoodsReceivedRoute
   '/hr': typeof AppHrRoute
   '/inventory': typeof AppInventoryRoute
+  '/inventory-lots': typeof AppInventoryLotsRoute
+  '/inventory-master': typeof AppInventoryMasterRoute
   '/invoices': typeof AppInvoicesRoute
+  '/leave-attendance': typeof AppLeaveAttendanceRoute
   '/master-data': typeof AppMasterDataRoute
+  '/material-issues': typeof AppMaterialIssuesRoute
+  '/material-requisitions': typeof AppMaterialRequisitionsRoute
+  '/material-returns': typeof AppMaterialReturnsRoute
+  '/payroll': typeof AppPayrollRoute
   '/pos': typeof AppPosRoute
   '/procurement': typeof AppProcurementRoute
+  '/quarantine': typeof AppQuarantineRoute
+  '/reorder-alerts': typeof AppReorderAlertsRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
   '/settings': typeof AppSettingsRoute
+  '/stock-adjustments': typeof AppStockAdjustmentsRoute
+  '/stock-analysis': typeof AppStockAnalysisRoute
+  '/stock-movements': typeof AppStockMovementsRoute
+  '/supplier-credit-notes': typeof AppSupplierCreditNotesRoute
+  '/suppliers': typeof AppSuppliersRoute
+  '/transfers': typeof AppTransfersRoute
   '/users': typeof AppUsersRoute
   '/': typeof AppIndexRoute
 }
@@ -153,18 +337,41 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/accounting': typeof AppAccountingRoute
+  '/_app/accounts-payable': typeof AppAccountsPayableRoute
+  '/_app/accounts-receivable': typeof AppAccountsReceivableRoute
+  '/_app/assets': typeof AppAssetsRoute
   '/_app/audit-logs': typeof AppAuditLogsRoute
+  '/_app/bank-reconciliation': typeof AppBankReconciliationRoute
+  '/_app/customer-credit-notes': typeof AppCustomerCreditNotesRoute
   '/_app/customers': typeof AppCustomersRoute
   '/_app/delivery': typeof AppDeliveryRoute
+  '/_app/depreciation': typeof AppDepreciationRoute
+  '/_app/driver-stock': typeof AppDriverStockRoute
+  '/_app/goods-received': typeof AppGoodsReceivedRoute
   '/_app/hr': typeof AppHrRoute
   '/_app/inventory': typeof AppInventoryRoute
+  '/_app/inventory-lots': typeof AppInventoryLotsRoute
+  '/_app/inventory-master': typeof AppInventoryMasterRoute
   '/_app/invoices': typeof AppInvoicesRoute
+  '/_app/leave-attendance': typeof AppLeaveAttendanceRoute
   '/_app/master-data': typeof AppMasterDataRoute
+  '/_app/material-issues': typeof AppMaterialIssuesRoute
+  '/_app/material-requisitions': typeof AppMaterialRequisitionsRoute
+  '/_app/material-returns': typeof AppMaterialReturnsRoute
+  '/_app/payroll': typeof AppPayrollRoute
   '/_app/pos': typeof AppPosRoute
   '/_app/procurement': typeof AppProcurementRoute
+  '/_app/quarantine': typeof AppQuarantineRoute
+  '/_app/reorder-alerts': typeof AppReorderAlertsRoute
   '/_app/reports': typeof AppReportsRoute
   '/_app/sales': typeof AppSalesRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/stock-adjustments': typeof AppStockAdjustmentsRoute
+  '/_app/stock-analysis': typeof AppStockAnalysisRoute
+  '/_app/stock-movements': typeof AppStockMovementsRoute
+  '/_app/supplier-credit-notes': typeof AppSupplierCreditNotesRoute
+  '/_app/suppliers': typeof AppSuppliersRoute
+  '/_app/transfers': typeof AppTransfersRoute
   '/_app/users': typeof AppUsersRoute
   '/_app/': typeof AppIndexRoute
 }
@@ -174,35 +381,81 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/accounting'
+    | '/accounts-payable'
+    | '/accounts-receivable'
+    | '/assets'
     | '/audit-logs'
+    | '/bank-reconciliation'
+    | '/customer-credit-notes'
     | '/customers'
     | '/delivery'
+    | '/depreciation'
+    | '/driver-stock'
+    | '/goods-received'
     | '/hr'
     | '/inventory'
+    | '/inventory-lots'
+    | '/inventory-master'
     | '/invoices'
+    | '/leave-attendance'
     | '/master-data'
+    | '/material-issues'
+    | '/material-requisitions'
+    | '/material-returns'
+    | '/payroll'
     | '/pos'
     | '/procurement'
+    | '/quarantine'
+    | '/reorder-alerts'
     | '/reports'
     | '/sales'
     | '/settings'
+    | '/stock-adjustments'
+    | '/stock-analysis'
+    | '/stock-movements'
+    | '/supplier-credit-notes'
+    | '/suppliers'
+    | '/transfers'
     | '/users'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/accounting'
+    | '/accounts-payable'
+    | '/accounts-receivable'
+    | '/assets'
     | '/audit-logs'
+    | '/bank-reconciliation'
+    | '/customer-credit-notes'
     | '/customers'
     | '/delivery'
+    | '/depreciation'
+    | '/driver-stock'
+    | '/goods-received'
     | '/hr'
     | '/inventory'
+    | '/inventory-lots'
+    | '/inventory-master'
     | '/invoices'
+    | '/leave-attendance'
     | '/master-data'
+    | '/material-issues'
+    | '/material-requisitions'
+    | '/material-returns'
+    | '/payroll'
     | '/pos'
     | '/procurement'
+    | '/quarantine'
+    | '/reorder-alerts'
     | '/reports'
     | '/sales'
     | '/settings'
+    | '/stock-adjustments'
+    | '/stock-analysis'
+    | '/stock-movements'
+    | '/supplier-credit-notes'
+    | '/suppliers'
+    | '/transfers'
     | '/users'
     | '/'
   id:
@@ -210,18 +463,41 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/_app/accounting'
+    | '/_app/accounts-payable'
+    | '/_app/accounts-receivable'
+    | '/_app/assets'
     | '/_app/audit-logs'
+    | '/_app/bank-reconciliation'
+    | '/_app/customer-credit-notes'
     | '/_app/customers'
     | '/_app/delivery'
+    | '/_app/depreciation'
+    | '/_app/driver-stock'
+    | '/_app/goods-received'
     | '/_app/hr'
     | '/_app/inventory'
+    | '/_app/inventory-lots'
+    | '/_app/inventory-master'
     | '/_app/invoices'
+    | '/_app/leave-attendance'
     | '/_app/master-data'
+    | '/_app/material-issues'
+    | '/_app/material-requisitions'
+    | '/_app/material-returns'
+    | '/_app/payroll'
     | '/_app/pos'
     | '/_app/procurement'
+    | '/_app/quarantine'
+    | '/_app/reorder-alerts'
     | '/_app/reports'
     | '/_app/sales'
     | '/_app/settings'
+    | '/_app/stock-adjustments'
+    | '/_app/stock-analysis'
+    | '/_app/stock-movements'
+    | '/_app/supplier-credit-notes'
+    | '/_app/suppliers'
+    | '/_app/transfers'
     | '/_app/users'
     | '/_app/'
   fileRoutesById: FileRoutesById
@@ -261,6 +537,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppUsersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/transfers': {
+      id: '/_app/transfers'
+      path: '/transfers'
+      fullPath: '/transfers'
+      preLoaderRoute: typeof AppTransfersRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/suppliers': {
+      id: '/_app/suppliers'
+      path: '/suppliers'
+      fullPath: '/suppliers'
+      preLoaderRoute: typeof AppSuppliersRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/supplier-credit-notes': {
+      id: '/_app/supplier-credit-notes'
+      path: '/supplier-credit-notes'
+      fullPath: '/supplier-credit-notes'
+      preLoaderRoute: typeof AppSupplierCreditNotesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/stock-movements': {
+      id: '/_app/stock-movements'
+      path: '/stock-movements'
+      fullPath: '/stock-movements'
+      preLoaderRoute: typeof AppStockMovementsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/stock-analysis': {
+      id: '/_app/stock-analysis'
+      path: '/stock-analysis'
+      fullPath: '/stock-analysis'
+      preLoaderRoute: typeof AppStockAnalysisRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/stock-adjustments': {
+      id: '/_app/stock-adjustments'
+      path: '/stock-adjustments'
+      fullPath: '/stock-adjustments'
+      preLoaderRoute: typeof AppStockAdjustmentsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings': {
       id: '/_app/settings'
       path: '/settings'
@@ -282,6 +600,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppReportsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/reorder-alerts': {
+      id: '/_app/reorder-alerts'
+      path: '/reorder-alerts'
+      fullPath: '/reorder-alerts'
+      preLoaderRoute: typeof AppReorderAlertsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/quarantine': {
+      id: '/_app/quarantine'
+      path: '/quarantine'
+      fullPath: '/quarantine'
+      preLoaderRoute: typeof AppQuarantineRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/procurement': {
       id: '/_app/procurement'
       path: '/procurement'
@@ -296,6 +628,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPosRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/payroll': {
+      id: '/_app/payroll'
+      path: '/payroll'
+      fullPath: '/payroll'
+      preLoaderRoute: typeof AppPayrollRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/material-returns': {
+      id: '/_app/material-returns'
+      path: '/material-returns'
+      fullPath: '/material-returns'
+      preLoaderRoute: typeof AppMaterialReturnsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/material-requisitions': {
+      id: '/_app/material-requisitions'
+      path: '/material-requisitions'
+      fullPath: '/material-requisitions'
+      preLoaderRoute: typeof AppMaterialRequisitionsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/material-issues': {
+      id: '/_app/material-issues'
+      path: '/material-issues'
+      fullPath: '/material-issues'
+      preLoaderRoute: typeof AppMaterialIssuesRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/master-data': {
       id: '/_app/master-data'
       path: '/master-data'
@@ -303,11 +663,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMasterDataRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/leave-attendance': {
+      id: '/_app/leave-attendance'
+      path: '/leave-attendance'
+      fullPath: '/leave-attendance'
+      preLoaderRoute: typeof AppLeaveAttendanceRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/invoices': {
       id: '/_app/invoices'
       path: '/invoices'
       fullPath: '/invoices'
       preLoaderRoute: typeof AppInvoicesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/inventory-master': {
+      id: '/_app/inventory-master'
+      path: '/inventory-master'
+      fullPath: '/inventory-master'
+      preLoaderRoute: typeof AppInventoryMasterRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/inventory-lots': {
+      id: '/_app/inventory-lots'
+      path: '/inventory-lots'
+      fullPath: '/inventory-lots'
+      preLoaderRoute: typeof AppInventoryLotsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/inventory': {
@@ -324,6 +705,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppHrRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/goods-received': {
+      id: '/_app/goods-received'
+      path: '/goods-received'
+      fullPath: '/goods-received'
+      preLoaderRoute: typeof AppGoodsReceivedRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/driver-stock': {
+      id: '/_app/driver-stock'
+      path: '/driver-stock'
+      fullPath: '/driver-stock'
+      preLoaderRoute: typeof AppDriverStockRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/depreciation': {
+      id: '/_app/depreciation'
+      path: '/depreciation'
+      fullPath: '/depreciation'
+      preLoaderRoute: typeof AppDepreciationRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/delivery': {
       id: '/_app/delivery'
       path: '/delivery'
@@ -338,11 +740,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppCustomersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/customer-credit-notes': {
+      id: '/_app/customer-credit-notes'
+      path: '/customer-credit-notes'
+      fullPath: '/customer-credit-notes'
+      preLoaderRoute: typeof AppCustomerCreditNotesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/bank-reconciliation': {
+      id: '/_app/bank-reconciliation'
+      path: '/bank-reconciliation'
+      fullPath: '/bank-reconciliation'
+      preLoaderRoute: typeof AppBankReconciliationRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/audit-logs': {
       id: '/_app/audit-logs'
       path: '/audit-logs'
       fullPath: '/audit-logs'
       preLoaderRoute: typeof AppAuditLogsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/assets': {
+      id: '/_app/assets'
+      path: '/assets'
+      fullPath: '/assets'
+      preLoaderRoute: typeof AppAssetsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/accounts-receivable': {
+      id: '/_app/accounts-receivable'
+      path: '/accounts-receivable'
+      fullPath: '/accounts-receivable'
+      preLoaderRoute: typeof AppAccountsReceivableRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/accounts-payable': {
+      id: '/_app/accounts-payable'
+      path: '/accounts-payable'
+      fullPath: '/accounts-payable'
+      preLoaderRoute: typeof AppAccountsPayableRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/accounting': {
@@ -357,36 +794,82 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountingRoute: typeof AppAccountingRoute
+  AppAccountsPayableRoute: typeof AppAccountsPayableRoute
+  AppAccountsReceivableRoute: typeof AppAccountsReceivableRoute
+  AppAssetsRoute: typeof AppAssetsRoute
   AppAuditLogsRoute: typeof AppAuditLogsRoute
+  AppBankReconciliationRoute: typeof AppBankReconciliationRoute
+  AppCustomerCreditNotesRoute: typeof AppCustomerCreditNotesRoute
   AppCustomersRoute: typeof AppCustomersRoute
   AppDeliveryRoute: typeof AppDeliveryRoute
+  AppDepreciationRoute: typeof AppDepreciationRoute
+  AppDriverStockRoute: typeof AppDriverStockRoute
+  AppGoodsReceivedRoute: typeof AppGoodsReceivedRoute
   AppHrRoute: typeof AppHrRoute
   AppInventoryRoute: typeof AppInventoryRoute
+  AppInventoryLotsRoute: typeof AppInventoryLotsRoute
+  AppInventoryMasterRoute: typeof AppInventoryMasterRoute
   AppInvoicesRoute: typeof AppInvoicesRoute
+  AppLeaveAttendanceRoute: typeof AppLeaveAttendanceRoute
   AppMasterDataRoute: typeof AppMasterDataRoute
+  AppMaterialIssuesRoute: typeof AppMaterialIssuesRoute
+  AppMaterialRequisitionsRoute: typeof AppMaterialRequisitionsRoute
+  AppMaterialReturnsRoute: typeof AppMaterialReturnsRoute
+  AppPayrollRoute: typeof AppPayrollRoute
   AppPosRoute: typeof AppPosRoute
   AppProcurementRoute: typeof AppProcurementRoute
+  AppQuarantineRoute: typeof AppQuarantineRoute
+  AppReorderAlertsRoute: typeof AppReorderAlertsRoute
   AppReportsRoute: typeof AppReportsRoute
   AppSalesRoute: typeof AppSalesRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppStockAdjustmentsRoute: typeof AppStockAdjustmentsRoute
+  AppStockAnalysisRoute: typeof AppStockAnalysisRoute
+  AppStockMovementsRoute: typeof AppStockMovementsRoute
+  AppSupplierCreditNotesRoute: typeof AppSupplierCreditNotesRoute
+  AppSuppliersRoute: typeof AppSuppliersRoute
+  AppTransfersRoute: typeof AppTransfersRoute
   AppUsersRoute: typeof AppUsersRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountingRoute: AppAccountingRoute,
+  AppAccountsPayableRoute: AppAccountsPayableRoute,
+  AppAccountsReceivableRoute: AppAccountsReceivableRoute,
+  AppAssetsRoute: AppAssetsRoute,
   AppAuditLogsRoute: AppAuditLogsRoute,
+  AppBankReconciliationRoute: AppBankReconciliationRoute,
+  AppCustomerCreditNotesRoute: AppCustomerCreditNotesRoute,
   AppCustomersRoute: AppCustomersRoute,
   AppDeliveryRoute: AppDeliveryRoute,
+  AppDepreciationRoute: AppDepreciationRoute,
+  AppDriverStockRoute: AppDriverStockRoute,
+  AppGoodsReceivedRoute: AppGoodsReceivedRoute,
   AppHrRoute: AppHrRoute,
   AppInventoryRoute: AppInventoryRoute,
+  AppInventoryLotsRoute: AppInventoryLotsRoute,
+  AppInventoryMasterRoute: AppInventoryMasterRoute,
   AppInvoicesRoute: AppInvoicesRoute,
+  AppLeaveAttendanceRoute: AppLeaveAttendanceRoute,
   AppMasterDataRoute: AppMasterDataRoute,
+  AppMaterialIssuesRoute: AppMaterialIssuesRoute,
+  AppMaterialRequisitionsRoute: AppMaterialRequisitionsRoute,
+  AppMaterialReturnsRoute: AppMaterialReturnsRoute,
+  AppPayrollRoute: AppPayrollRoute,
   AppPosRoute: AppPosRoute,
   AppProcurementRoute: AppProcurementRoute,
+  AppQuarantineRoute: AppQuarantineRoute,
+  AppReorderAlertsRoute: AppReorderAlertsRoute,
   AppReportsRoute: AppReportsRoute,
   AppSalesRoute: AppSalesRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppStockAdjustmentsRoute: AppStockAdjustmentsRoute,
+  AppStockAnalysisRoute: AppStockAnalysisRoute,
+  AppStockMovementsRoute: AppStockMovementsRoute,
+  AppSupplierCreditNotesRoute: AppSupplierCreditNotesRoute,
+  AppSuppliersRoute: AppSuppliersRoute,
+  AppTransfersRoute: AppTransfersRoute,
   AppUsersRoute: AppUsersRoute,
   AppIndexRoute: AppIndexRoute,
 }

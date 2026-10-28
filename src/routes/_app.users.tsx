@@ -4,14 +4,35 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Plus, ArrowUpDown, Trash2 } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SearchBar } from "@/components/SearchBar";
 import { ListPagination } from "@/components/ListPagination";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
@@ -21,7 +42,7 @@ import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/users")({
   component: UsersPage,
-  head: () => ({ meta: [{ title: "Users & Roles - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Users & Roles - Ayawin Stock Solution" }] }),
 });
 
 const roleColor: Record<string, string> = {
@@ -77,7 +98,13 @@ function UsersPage() {
   const filtered = useMemo(
     () =>
       rows
-        .filter((u) => (role === "all" || u.role === role) && (u.full_name.toLowerCase().includes(q.toLowerCase()) || u.email.toLowerCase().includes(q.toLowerCase()) || u.username.toLowerCase().includes(q.toLowerCase())))
+        .filter(
+          (u) =>
+            (role === "all" || u.role === role) &&
+            (u.full_name.toLowerCase().includes(q.toLowerCase()) ||
+              u.email.toLowerCase().includes(q.toLowerCase()) ||
+              u.username.toLowerCase().includes(q.toLowerCase())),
+        )
         .sort((a, b) => {
           if (sort === "role") return a.role.localeCompare(b.role);
           if (sort === "status") return a.status.localeCompare(b.status);
@@ -113,7 +140,14 @@ function UsersPage() {
       });
       toast.success(`User ${created.full_name} created`);
       setInviteOpen(false);
-      setInvite({ username: "", full_name: "", email: "", role: invite.role, phone: "", password: "" });
+      setInvite({
+        username: "",
+        full_name: "",
+        email: "",
+        role: invite.role,
+        phone: "",
+        password: "",
+      });
       await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not create user");
@@ -138,22 +172,51 @@ function UsersPage() {
             <DialogContent className="max-w-xl">
               <DialogHeader>
                 <DialogTitle>Invite User</DialogTitle>
-                <DialogDescription>Create a new ERP account and assign a module role.</DialogDescription>
+                <DialogDescription>
+                  Create a new ERP account and assign a module role.
+                </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-2 sm:grid-cols-2">
-                <Field label="Username" value={invite.username} onChange={(v) => setInvite((prev) => ({ ...prev, username: v }))} />
-                <Field label="Full name" value={invite.full_name} onChange={(v) => setInvite((prev) => ({ ...prev, full_name: v }))} />
-                <Field label="Email" value={invite.email} onChange={(v) => setInvite((prev) => ({ ...prev, email: v }))} />
-                <Field label="Phone" value={invite.phone} onChange={(v) => setInvite((prev) => ({ ...prev, phone: v }))} />
-                <Field label="Password" value={invite.password} onChange={(v) => setInvite((prev) => ({ ...prev, password: v }))} type="password" />
+                <Field
+                  label="Username"
+                  value={invite.username}
+                  onChange={(v) => setInvite((prev) => ({ ...prev, username: v }))}
+                />
+                <Field
+                  label="Full name"
+                  value={invite.full_name}
+                  onChange={(v) => setInvite((prev) => ({ ...prev, full_name: v }))}
+                />
+                <Field
+                  label="Email"
+                  value={invite.email}
+                  onChange={(v) => setInvite((prev) => ({ ...prev, email: v }))}
+                />
+                <Field
+                  label="Phone"
+                  value={invite.phone}
+                  onChange={(v) => setInvite((prev) => ({ ...prev, phone: v }))}
+                />
+                <Field
+                  label="Password"
+                  value={invite.password}
+                  onChange={(v) => setInvite((prev) => ({ ...prev, password: v }))}
+                  type="password"
+                />
                 <div className="sm:col-span-2 space-y-1.5">
                   <Label>Role</Label>
-                  <Select value={invite.role} onValueChange={(value) => setInvite((prev) => ({ ...prev, role: value }))}>
+                  <Select
+                    value={invite.role}
+                    onValueChange={(value) => setInvite((prev) => ({ ...prev, role: value }))}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(roleOptions.length ? roleOptions.map((r) => r.name) : Object.keys(roleColor)).map((r) => (
+                      {(roleOptions.length
+                        ? roleOptions.map((r) => r.name)
+                        : Object.keys(roleColor)
+                      ).map((r) => (
                         <SelectItem key={r} value={r}>
                           {r}
                         </SelectItem>
@@ -163,7 +226,9 @@ function UsersPage() {
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
+                <Button variant="outline" onClick={() => setInviteOpen(false)}>
+                  Cancel
+                </Button>
                 <Button onClick={createInvite} disabled={saving}>
                   {saving ? "Creating…" : "Create user"}
                 </Button>
@@ -176,7 +241,10 @@ function UsersPage() {
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
           { l: "Users", v: String(rows.length) },
-          { l: "Active", v: String(rows.filter((u) => u.status.toLowerCase() === "active").length) },
+          {
+            l: "Active",
+            v: String(rows.filter((u) => u.status.toLowerCase() === "active").length),
+          },
           { l: "2FA Enabled", v: String(rows.filter((u) => u.two_factor_enabled).length) },
           { l: "Recent Logins", v: String(rows.filter((u) => u.last_login).length) },
         ].map((k) => (
@@ -192,18 +260,27 @@ function UsersPage() {
       <Card>
         <CardContent className="p-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
-            <SearchBar value={q} onChange={(value) => { setQ(value); setPage(1); }} placeholder="Search user or email..." />
+            <SearchBar
+              value={q}
+              onChange={(value) => {
+                setQ(value);
+                setPage(1);
+              }}
+              placeholder="Search user or email..."
+            />
             <Select value={role} onValueChange={setRole}>
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All roles</SelectItem>
-                {(roleOptions.length ? roleOptions.map((r) => r.name) : Object.keys(roleColor)).map((r) => (
-                  <SelectItem key={r} value={r}>
-                    {r}
-                  </SelectItem>
-                ))}
+                {(roleOptions.length ? roleOptions.map((r) => r.name) : Object.keys(roleColor)).map(
+                  (r) => (
+                    <SelectItem key={r} value={r}>
+                      {r}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
             <Select value={sort} onValueChange={setSort}>
@@ -232,57 +309,81 @@ function UsersPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">Loading users...</TableCell>
-                </TableRow>
-              ) : paged.map((u) => (
-                <TableRow key={u.id}>
-                  <TableCell className="font-medium">{u.full_name}</TableCell>
-                  <TableCell className="text-xs">{u.email}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={roleColor[u.role] || ""}>{u.role}</Badge>
-                  </TableCell>
-                  <TableCell><StatusBadge status={u.status} /></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {u.last_login ? new Date(u.last_login).toLocaleString("en-GB") : "Never"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <ConfirmActionDialog
-                      title="Deactivate user?"
-                      description="This will disable access for the selected user until their account is re-enabled."
-                      confirmLabel="Deactivate"
-                      onConfirm={async () => {
-                        if (!token) return;
-                        await updateUser(token, u.id, { status: "inactive" });
-                        void trackEvent({
-                          action: "user_deactivated",
-                          entityType: "user",
-                          entityId: String(u.id),
-                          details: { name: u.full_name, email: u.email, role: u.role },
-                          scenario: "hr",
-                          context: { name: u.full_name, role: u.role },
-                        });
-                        toast.success(`User ${u.full_name} deactivated`);
-                        await refresh();
-                      }}
-                    >
-                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Deactivate
-                      </Button>
-                    </ConfirmActionDialog>
+                  <TableCell
+                    colSpan={6}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
+                    Loading users...
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : (
+                paged.map((u) => (
+                  <TableRow key={u.id}>
+                    <TableCell className="font-medium">{u.full_name}</TableCell>
+                    <TableCell className="text-xs">{u.email}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={roleColor[u.role] || ""}>
+                        {u.role}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge status={u.status} />
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {u.last_login ? new Date(u.last_login).toLocaleString("en-GB") : "Never"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <ConfirmActionDialog
+                        title="Deactivate user?"
+                        description="This will disable access for the selected user until their account is re-enabled."
+                        confirmLabel="Deactivate"
+                        onConfirm={async () => {
+                          if (!token) return;
+                          await updateUser(token, u.id, { status: "inactive" });
+                          void trackEvent({
+                            action: "user_deactivated",
+                            entityType: "user",
+                            entityId: String(u.id),
+                            details: { name: u.full_name, email: u.email, role: u.role },
+                            scenario: "hr",
+                            context: { name: u.full_name, role: u.role },
+                          });
+                          toast.success(`User ${u.full_name} deactivated`);
+                          await refresh();
+                        }}
+                      >
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Deactivate
+                        </Button>
+                      </ConfirmActionDialog>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
               {!loading && paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={6}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
                     No users match your filters.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
-          <ListPagination page={page} totalPages={totalPages} totalItems={filtered.length} pageSize={pageSize} onPageChange={setPage} />
+          <ListPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
     </div>

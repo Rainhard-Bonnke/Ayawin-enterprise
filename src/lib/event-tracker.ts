@@ -11,7 +11,7 @@ type EventPayload = {
 
 export async function trackEvent(payload: EventPayload) {
   try {
-    const token = localStorage.getItem("ayawin-enterprise-token");
+    const token = localStorage.getItem("ayawin-stock-solution-token");
     if (!token) return null;
 
     const response = await fetch(`${apiBase}/api/events/track`, {

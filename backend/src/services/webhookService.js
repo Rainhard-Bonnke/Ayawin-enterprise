@@ -1,13 +1,13 @@
-const crypto = require('crypto');
-const pool = require('../db');
+const crypto = require("crypto");
+const pool = require("../db");
 
 const EVENTS = [
-  'invoice.posted',
-  'purchase_order.approved',
-  'goods_receipt.posted',
-  'sales_order.confirmed',
-  'payroll.posted',
-  'stock.low',
+  "invoice.posted",
+  "purchase_order.approved",
+  "goods_receipt.posted",
+  "sales_order.confirmed",
+  "payroll.posted",
+  "stock.low",
 ];
 
 async function emitEvent({ companyId, eventType, payload }) {
@@ -20,9 +20,14 @@ async function emitEvent({ companyId, eventType, payload }) {
 
   const results = [];
   for (const sub of subs.rows) {
-    const body = JSON.stringify({ event: eventType, company_id: companyId, data: payload, ts: new Date().toISOString() });
+    const body = JSON.stringify({
+      event: eventType,
+      company_id: companyId,
+      data: payload,
+      ts: new Date().toISOString(),
+    });
     const signature = sub.secret
-      ? crypto.createHmac('sha256', sub.secret).update(body).digest('hex')
+      ? crypto.createHmac("sha256", sub.secret).update(body).digest("hex")
       : null;
 
     let success = false;
@@ -30,12 +35,12 @@ async function emitEvent({ companyId, eventType, payload }) {
     let responseBody = null;
 
     try {
-      if (typeof fetch === 'function' && sub.url.startsWith('http')) {
+      if (typeof fetch === "function" && sub.url.startsWith("http")) {
         const resp = await fetch(sub.url, {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
-            ...(signature ? { 'X-ERP-Signature': signature } : {}),
+            "Content-Type": "application/json",
+            ...(signature ? { "X-ERP-Signature": signature } : {}),
           },
           body,
           signal: AbortSignal.timeout(10000),
@@ -47,7 +52,7 @@ async function emitEvent({ companyId, eventType, payload }) {
         console.log(`[webhook] ${eventType} -> ${sub.url}`);
         success = true;
         responseStatus = 200;
-        responseBody = 'logged locally';
+        responseBody = "logged locally";
       }
     } catch (err) {
       responseBody = err.message;

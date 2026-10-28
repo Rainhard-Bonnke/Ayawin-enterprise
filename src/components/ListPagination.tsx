@@ -1,4 +1,11 @@
-import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 
 type ListPaginationProps = {
   page: number;
@@ -8,7 +15,13 @@ type ListPaginationProps = {
   onPageChange: (page: number) => void;
 };
 
-export function ListPagination({ page, totalPages, totalItems, pageSize, onPageChange }: ListPaginationProps) {
+export function ListPagination({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+}: ListPaginationProps) {
   if (totalPages <= 1) {
     return null;
   }

@@ -1,13 +1,13 @@
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
-const pool = require('../db');
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+const pool = require("../db");
 
-const JWT_SECRET = process.env.JWT_SECRET || 'ayawin-enterprise-secret';
-const JWT_ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '15m';
+const JWT_SECRET = process.env.JWT_SECRET || "ayawin-enterprise-secret";
+const JWT_ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || "15m";
 const JWT_REFRESH_EXPIRES_DAYS = Number(process.env.JWT_REFRESH_EXPIRES_DAYS) || 7;
 
 function hashToken(token) {
-  return crypto.createHash('sha256').update(token).digest('hex');
+  return crypto.createHash("sha256").update(token).digest("hex");
 }
 
 function generateAccessToken(user, options = {}) {
@@ -19,8 +19,8 @@ function generateAccessToken(user, options = {}) {
       roleId: user.role_id,
       email: user.email,
       permissions: user.permissions || [],
-      session_type: options.sessionType || 'user',
-      type: 'access',
+      session_type: options.sessionType || "user",
+      type: "access",
     },
     JWT_SECRET,
     { expiresIn: JWT_ACCESS_EXPIRES },
@@ -28,7 +28,7 @@ function generateAccessToken(user, options = {}) {
 }
 
 function generateRefreshToken() {
-  return crypto.randomBytes(48).toString('base64url');
+  return crypto.randomBytes(48).toString("base64url");
 }
 
 async function storeRefreshToken({ user, token, ipAddress, deviceInfo, client = pool }) {

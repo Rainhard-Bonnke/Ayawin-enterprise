@@ -1,14 +1,102 @@
-const express = require('express');
-const pool = require('../../db');
-const { authenticateErp, requirePermission, getClientIp } = require('../../middleware/erpAuth');
-const { logAudit } = require('../../services/auditService');
-const gl = require('../../services/glPostingService');
-const { parsePagination } = require('../../lib/queryHelper');
+const express = require("express");
+const pool = require("../../db");
+const { authenticateErp, requirePermission, getClientIp } = require("../../middleware/erpAuth");
+const { logAudit } = require("../../services/auditService");
+const gl = require("../../services/glPostingService");
+const bankReconciliation = require("../../services/bankReconciliationService");
+const { parsePagination } = require("../../lib/queryHelper");
 
 const router = express.Router();
 router.use(authenticateErp);
 
-router.get('/fiscal-years', requirePermission('finance.view'), async (req, res) => {
+router.get("/bank-accounts", requirePermission("finance.view"), async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, account_code, account_name, currency_code
+     FROM erp_chart_of_accounts
+     WHERE company_id = $1 AND account_type = 'asset' AND account_code LIKE '11%'
+       AND is_active = TRUE AND is_deleted = FALSE AND is_postable = TRUE
+     ORDER BY account_code`,
+    [req.user.company_id],
+  );
+  return res.json(result.rows);
+});
+
+router.get("/bank-reconciliations", requirePermission("finance.view"), async (req, res) => {
+  return res.json(await bankReconciliation.listReconciliations(req.user.company_id));
+});
+
+router.post("/bank-reconciliations", requirePermission("finance.create"), async (req, res) => {
+  try {
+    const reconciliation = await bankReconciliation.createReconciliation({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      bankAccountId: req.body?.bank_account_id,
+      statementReference: req.body?.statement_reference,
+      statementStart: req.body?.statement_start,
+      statementEnd: req.body?.statement_end,
+      openingBalance: req.body?.opening_balance,
+      closingBalance: req.body?.closing_balance,
+      lines: req.body?.lines,
+    });
+    await logAudit({
+      companyId: req.user.company_id, userId: req.user.id,
+      entityType: "erp_bank_reconciliations", entityId: reconciliation.id,
+      action: "import", newValues: { ...reconciliation, line_count: req.body.lines.length },
+      ipAddress: getClientIp(req), userAgent: req.headers["user-agent"],
+    });
+    return res.status(201).json(reconciliation);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/bank-reconciliations/:id/candidates", requirePermission("finance.view"), async (req, res) => {
+  return res.json(await bankReconciliation.listCandidates(req.user.company_id, req.params.id));
+});
+
+router.get("/bank-reconciliations/:id", requirePermission("finance.view"), async (req, res) => {
+  const reconciliation = await bankReconciliation.getReconciliation(req.user.company_id, req.params.id);
+  if (!reconciliation) return res.status(404).json({ error: "Bank reconciliation not found" });
+  return res.json(reconciliation);
+});
+
+router.post("/bank-reconciliations/:id/lines/:lineId/match", requirePermission("finance.create"), async (req, res) => {
+  try {
+    const result = await bankReconciliation.matchStatementLine({
+      companyId: req.user.company_id, userId: req.user.id,
+      reconciliationId: req.params.id, lineId: req.params.lineId,
+      journalLineId: req.body?.journal_line_id,
+    });
+    await logAudit({
+      companyId: req.user.company_id, userId: req.user.id,
+      entityType: "erp_bank_reconciliation_lines", entityId: req.params.lineId,
+      action: "match", newValues: result,
+      ipAddress: getClientIp(req), userAgent: req.headers["user-agent"],
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/bank-reconciliations/:id/complete", requirePermission("finance.approve"), async (req, res) => {
+  try {
+    const result = await bankReconciliation.completeReconciliation({
+      companyId: req.user.company_id, userId: req.user.id, reconciliationId: req.params.id,
+    });
+    await logAudit({
+      companyId: req.user.company_id, userId: req.user.id,
+      entityType: "erp_bank_reconciliations", entityId: req.params.id,
+      action: "reconcile", newValues: result,
+      ipAddress: getClientIp(req), userAgent: req.headers["user-agent"],
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/fiscal-years", requirePermission("finance.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT fy.*, COUNT(fp.id)::int AS period_count
      FROM erp_fiscal_years fy
@@ -20,12 +108,12 @@ router.get('/fiscal-years', requirePermission('finance.view'), async (req, res) 
   return res.json(result.rows);
 });
 
-router.get('/fiscal-periods', requirePermission('finance.view'), async (req, res) => {
+router.get("/fiscal-periods", requirePermission("finance.view"), async (req, res) => {
   const yearId = req.query.fiscal_year_id;
   const params = [req.user.company_id];
-  let filter = '';
+  let filter = "";
   if (yearId) {
-    filter = 'AND fp.fiscal_year_id = $2';
+    filter = "AND fp.fiscal_year_id = $2";
     params.push(yearId);
   }
   const result = await pool.query(
@@ -37,7 +125,7 @@ router.get('/fiscal-periods', requirePermission('finance.view'), async (req, res
   return res.json(result.rows);
 });
 
-router.post('/fiscal-periods/:id/close', requirePermission('finance.approve'), async (req, res) => {
+router.post("/fiscal-periods/:id/close", requirePermission("finance.approve"), async (req, res) => {
   const result = await pool.query(
     `UPDATE erp_fiscal_periods
      SET status = 'closed', closed_at = NOW(), closed_by = $3, updated_at = NOW()
@@ -45,25 +133,25 @@ router.post('/fiscal-periods/:id/close', requirePermission('finance.approve'), a
      RETURNING *`,
     [req.params.id, req.user.company_id, req.user.id],
   );
-  if (!result.rowCount) return res.status(400).json({ error: 'Period not found or not open' });
+  if (!result.rowCount) return res.status(400).json({ error: "Period not found or not open" });
   await logAudit({
     companyId: req.user.company_id,
     userId: req.user.id,
-    entityType: 'erp_fiscal_periods',
+    entityType: "erp_fiscal_periods",
     entityId: req.params.id,
-    action: 'close',
+    action: "close",
     newValues: result.rows[0],
     ipAddress: getClientIp(req),
-    userAgent: req.headers['user-agent'],
+    userAgent: req.headers["user-agent"],
   });
   return res.json(result.rows[0]);
 });
 
-router.get('/journals', requirePermission('finance.view'), async (req, res) => {
+router.get("/journals", requirePermission("finance.view"), async (req, res) => {
   const { page, limit, offset } = parsePagination(req.query);
-  const status = typeof req.query.status === 'string' ? req.query.status : '';
+  const status = typeof req.query.status === "string" ? req.query.status : "";
   const params = [req.user.company_id];
-  let filter = '';
+  let filter = "";
   if (status) {
     params.push(status);
     filter = `AND j.status = $${params.length}`;
@@ -88,12 +176,12 @@ router.get('/journals', requirePermission('finance.view'), async (req, res) => {
   return res.json({ data: dataR.rows, pagination: { page, limit, total: countR.rows[0].total } });
 });
 
-router.get('/journals/:id', requirePermission('finance.view'), async (req, res) => {
+router.get("/journals/:id", requirePermission("finance.view"), async (req, res) => {
   const journal = await pool.query(
     `SELECT * FROM erp_journals WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE`,
     [req.params.id, req.user.company_id],
   );
-  if (!journal.rowCount) return res.status(404).json({ error: 'Not found' });
+  if (!journal.rowCount) return res.status(404).json({ error: "Not found" });
   const lines = await pool.query(
     `SELECT jl.*, a.account_code, a.account_name
      FROM erp_journal_lines jl
@@ -104,7 +192,7 @@ router.get('/journals/:id', requirePermission('finance.view'), async (req, res) 
   return res.json({ ...journal.rows[0], lines: lines.rows });
 });
 
-router.post('/journals', requirePermission('finance.create'), async (req, res) => {
+router.post("/journals", requirePermission("finance.create"), async (req, res) => {
   try {
     const journal = await gl.createJournal({
       companyId: req.user.company_id,
@@ -121,12 +209,12 @@ router.post('/journals', requirePermission('finance.create'), async (req, res) =
     await logAudit({
       companyId: req.user.company_id,
       userId: req.user.id,
-      entityType: 'erp_journals',
+      entityType: "erp_journals",
       entityId: journal.id,
-      action: 'create',
+      action: "create",
       newValues: journal,
       ipAddress: getClientIp(req),
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
     return res.status(201).json(journal);
   } catch (err) {
@@ -134,7 +222,7 @@ router.post('/journals', requirePermission('finance.create'), async (req, res) =
   }
 });
 
-router.post('/journals/:id/post', requirePermission('finance.approve'), async (req, res) => {
+router.post("/journals/:id/post", requirePermission("finance.approve"), async (req, res) => {
   try {
     const result = await gl.postJournal({
       journalId: req.params.id,
@@ -144,12 +232,12 @@ router.post('/journals/:id/post', requirePermission('finance.approve'), async (r
     await logAudit({
       companyId: req.user.company_id,
       userId: req.user.id,
-      entityType: 'erp_journals',
+      entityType: "erp_journals",
       entityId: req.params.id,
-      action: 'post',
+      action: "post",
       newValues: result,
       ipAddress: getClientIp(req),
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
     return res.json(result);
   } catch (err) {
@@ -157,9 +245,9 @@ router.post('/journals/:id/post', requirePermission('finance.approve'), async (r
   }
 });
 
-router.get('/reports/trial-balance', requirePermission('finance.view'), async (req, res) => {
+router.get("/reports/trial-balance", requirePermission("finance.view"), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
-  if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
+  if (!periodId) return res.status(400).json({ error: "fiscal_period_id required" });
   const rows = await gl.getTrialBalance(req.user.company_id, periodId);
   const totals = rows.reduce(
     (acc, r) => ({
@@ -171,9 +259,9 @@ router.get('/reports/trial-balance', requirePermission('finance.view'), async (r
   return res.json({ lines: rows, totals });
 });
 
-router.get('/reports/balance-sheet', requirePermission('finance.view'), async (req, res) => {
+router.get("/reports/balance-sheet", requirePermission("finance.view"), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
-  if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
+  if (!periodId) return res.status(400).json({ error: "fiscal_period_id required" });
   const result = await pool.query(
     `SELECT a.account_type, a.account_code, a.account_name,
             b.closing_debit - b.closing_credit AS balance
@@ -187,9 +275,9 @@ router.get('/reports/balance-sheet', requirePermission('finance.view'), async (r
   return res.json(result.rows);
 });
 
-router.get('/reports/profit-loss', requirePermission('finance.view'), async (req, res) => {
+router.get("/reports/profit-loss", requirePermission("finance.view"), async (req, res) => {
   const periodId = req.query.fiscal_period_id;
-  if (!periodId) return res.status(400).json({ error: 'fiscal_period_id required' });
+  if (!periodId) return res.status(400).json({ error: "fiscal_period_id required" });
   const result = await pool.query(
     `SELECT a.account_type, a.account_code, a.account_name,
             b.period_credit - b.period_debit AS amount
@@ -200,12 +288,16 @@ router.get('/reports/profit-loss', requirePermission('finance.view'), async (req
      ORDER BY a.account_code`,
     [req.user.company_id, periodId],
   );
-  const income = result.rows.filter((r) => r.account_type === 'income').reduce((s, r) => s + Number(r.amount), 0);
-  const expense = result.rows.filter((r) => r.account_type === 'expense').reduce((s, r) => s + Number(r.amount), 0);
+  const income = result.rows
+    .filter((r) => r.account_type === "income")
+    .reduce((s, r) => s + Number(r.amount), 0);
+  const expense = result.rows
+    .filter((r) => r.account_type === "expense")
+    .reduce((s, r) => s + Number(r.amount), 0);
   return res.json({ lines: result.rows, net_profit: income - expense });
 });
 
-router.get('/dimensions', requirePermission('finance.view'), async (req, res) => {
+router.get("/dimensions", requirePermission("finance.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT * FROM erp_dimensions
      WHERE company_id = $1 AND is_deleted = FALSE ORDER BY dimension_type, code`,

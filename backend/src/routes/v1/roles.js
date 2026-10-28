@@ -1,18 +1,18 @@
-const express = require('express');
-const pool = require('../../db');
-const { authenticateErp, requirePermission } = require('../../middleware/erpAuth');
-const { logAudit } = require('../../services/auditService');
-const { getClientIp } = require('../../middleware/erpAuth');
+const express = require("express");
+const pool = require("../../db");
+const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
+const { logAudit } = require("../../services/auditService");
+const { getClientIp } = require("../../middleware/erpAuth");
 
 const router = express.Router();
 router.use(authenticateErp);
 
-router.get('/permissions', requirePermission('roles.view'), async (req, res) => {
-  const result = await pool.query('SELECT * FROM erp_permissions ORDER BY module, action');
+router.get("/permissions", requirePermission("roles.view"), async (req, res) => {
+  const result = await pool.query("SELECT * FROM erp_permissions ORDER BY module, action");
   return res.json(result.rows);
 });
 
-router.get('/', requirePermission('roles.view'), async (req, res) => {
+router.get("/", requirePermission("roles.view"), async (req, res) => {
   const result = await pool.query(
     `SELECT r.*, COALESCE(json_agg(p.code) FILTER (WHERE p.id IS NOT NULL), '[]') AS permissions
      FROM erp_roles r
@@ -26,13 +26,13 @@ router.get('/', requirePermission('roles.view'), async (req, res) => {
   return res.json(result.rows);
 });
 
-router.post('/', requirePermission('roles.create'), async (req, res) => {
+router.post("/", requirePermission("roles.create"), async (req, res) => {
   const { name, description, permission_codes = [] } = req.body || {};
-  if (!name) return res.status(400).json({ error: 'name is required' });
+  if (!name) return res.status(400).json({ error: "name is required" });
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query("BEGIN");
     const roleResult = await client.query(
       `INSERT INTO erp_roles (company_id, name, description, created_by)
        VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -48,34 +48,34 @@ router.post('/', requirePermission('roles.create'), async (req, res) => {
       );
     }
 
-    await client.query('COMMIT');
+    await client.query("COMMIT");
     await logAudit({
       companyId: req.user.company_id,
       userId: req.user.id,
-      entityType: 'erp_roles',
+      entityType: "erp_roles",
       entityId: role.id,
-      action: 'create',
+      action: "create",
       newValues: role,
       ipAddress: getClientIp(req),
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
     return res.status(201).json(role);
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query("ROLLBACK");
     console.error(err);
-    return res.status(500).json({ error: 'Unable to create role' });
+    return res.status(500).json({ error: "Unable to create role" });
   } finally {
     client.release();
   }
 });
 
-router.put('/:id/permissions', requirePermission('roles.edit'), async (req, res) => {
+router.put("/:id/permissions", requirePermission("roles.edit"), async (req, res) => {
   const { permission_codes = [] } = req.body || {};
   const roleId = req.params.id;
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query("BEGIN");
     await client.query(
       `UPDATE erp_role_permissions SET is_deleted = TRUE, updated_at = NOW()
        WHERE role_id = $1 AND company_id = $2`,
@@ -89,12 +89,12 @@ router.put('/:id/permissions', requirePermission('roles.edit'), async (req, res)
         [req.user.company_id, roleId, permission_codes, req.user.id],
       );
     }
-    await client.query('COMMIT');
+    await client.query("COMMIT");
     return res.json({ ok: true });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query("ROLLBACK");
     console.error(err);
-    return res.status(500).json({ error: 'Unable to update permissions' });
+    return res.status(500).json({ error: "Unable to update permissions" });
   } finally {
     client.release();
   }

@@ -284,7 +284,7 @@ ON CONFLICT (name) DO NOTHING;
 
 -- seed users (6)
 INSERT INTO users (username, full_name, email, role, status, phone, two_factor_enabled) VALUES
-('admin', 'Admin User', 'admin@martin.co.ke', 'Admin', 'active', '+254 700 000 001', TRUE),
+('admin', 'Admin User', 'bonnkereinhard654@gmail.com', 'Admin', 'active', '+254 700 000 001', TRUE),
 ('manager', 'Grace Wanjiku', 'manager@martin.co.ke', 'Manager', 'active', '+254 700 000 002', TRUE),
 ('sales1', 'Brian Otieno', 'sales1@martin.co.ke', 'Sales Rep', 'active', '+254 700 000 003', FALSE),
 ('warehouse1', 'Faith Achieng', 'warehouse1@martin.co.ke', 'Warehouse', 'active', '+254 700 000 004', FALSE),

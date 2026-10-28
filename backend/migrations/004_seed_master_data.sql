@@ -170,7 +170,7 @@ SELECT c.id, b.id, v.code, v.fname, v.lname, v.email, v.dept, v.title, v.etype, 
 FROM erp_companies c
 JOIN erp_branches b ON b.company_id = c.id AND b.code = 'HQ'
 CROSS JOIN (VALUES
-  ('E001', 'Admin', 'User', 'admin@martin.co.ke', 'Executive', 'CEO', 'permanent', '2020-01-01', 450000),
+  ('E001', 'Admin', 'User', 'bonnkereinhard654@gmail.com', 'Executive', 'CEO', 'permanent', '2020-01-01', 450000),
   ('E002', 'Grace', 'Wanjiku', 'manager@martin.co.ke', 'Sales', 'Sales Manager', 'permanent', '2021-03-15', 180000),
   ('E003', 'Brian', 'Otieno', 'sales1@martin.co.ke', 'Sales', 'Senior Sales Rep', 'permanent', '2022-06-01', 95000),
   ('E004', 'Faith', 'Achieng', 'warehouse1@martin.co.ke', 'Warehouse', 'Supervisor', 'permanent', '2021-08-10', 78000),

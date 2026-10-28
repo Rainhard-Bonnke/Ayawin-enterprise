@@ -1,4 +1,4 @@
-const pool = require('../db');
+const pool = require("../db");
 
 const IMPORT_HANDLERS = {
   customers: async (client, companyId, userId, row) => {
@@ -10,16 +10,22 @@ const IMPORT_HANDLERS = {
     );
   },
   items: async (client, companyId, userId, row) => {
+    const defaultTaxGroup = await client.query(
+      `SELECT id FROM erp_tax_groups
+       WHERE company_id = $1 AND code = 'STD-VAT' AND is_active = TRUE AND is_deleted = FALSE`,
+      [companyId],
+    );
+    if (!defaultTaxGroup.rowCount) throw new Error("Create a standard VAT tax group before importing saleable items");
     await client.query(
-      `INSERT INTO erp_items (company_id, item_code, name, standard_cost, created_by)
-       VALUES ($1,$2,$3,COALESCE($4,0),$5)
+      `INSERT INTO erp_items (company_id, item_code, name, standard_cost, tax_group_id, created_by)
+       VALUES ($1,$2,$3,COALESCE($4,0),$5,$6)
        ON CONFLICT (company_id, item_code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`,
-      [companyId, row.item_code, row.name, row.standard_cost, userId],
+      [companyId, row.item_code, row.name, row.standard_cost, defaultTaxGroup.rows[0].id, userId],
     );
   },
   attendance: async (client, companyId, userId, row) => {
     const emp = await client.query(
-      'SELECT id FROM erp_employees WHERE company_id = $1 AND employee_code = $2',
+      "SELECT id FROM erp_employees WHERE company_id = $1 AND employee_code = $2",
       [companyId, row.employee_code],
     );
     if (!emp.rowCount) throw new Error(`Employee not found: ${row.employee_code}`);
@@ -27,7 +33,15 @@ const IMPORT_HANDLERS = {
       `INSERT INTO erp_attendance (company_id, employee_id, attendance_date, hours_worked, overtime_hours, status, source, created_by)
        VALUES ($1,$2,$3,COALESCE($4,8),COALESCE($5,0),COALESCE($6,'present'),'import',$7)
        ON CONFLICT (employee_id, attendance_date) DO UPDATE SET hours_worked = EXCLUDED.hours_worked, updated_at = NOW()`,
-      [companyId, emp.rows[0].id, row.attendance_date, row.hours_worked, row.overtime_hours, row.status, userId],
+      [
+        companyId,
+        emp.rows[0].id,
+        row.attendance_date,
+        row.hours_worked,
+        row.overtime_hours,
+        row.status,
+        userId,
+      ],
     );
   },
 };
@@ -48,7 +62,7 @@ async function processImport({ companyId, userId, entityType, rows, fileName }) 
   let success = 0;
 
   try {
-    await client.query('BEGIN');
+    await client.query("BEGIN");
     for (let i = 0; i < rows.length; i += 1) {
       try {
         await handler(client, companyId, userId, rows[i]);
@@ -57,9 +71,9 @@ async function processImport({ companyId, userId, entityType, rows, fileName }) 
         errors.push({ row: i + 1, error: err.message, data: rows[i] });
       }
     }
-    await client.query('COMMIT');
+    await client.query("COMMIT");
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query("ROLLBACK");
     throw err;
   } finally {
     client.release();
@@ -68,7 +82,13 @@ async function processImport({ companyId, userId, entityType, rows, fileName }) 
   await pool.query(
     `UPDATE erp_import_jobs SET status = $2, success_rows = $3, error_rows = $4, errors = $5::jsonb, updated_at = NOW()
      WHERE id = $1`,
-    [job.id, errors.length ? 'completed' : 'completed', success, errors.length, JSON.stringify(errors)],
+    [
+      job.id,
+      errors.length ? "completed" : "completed",
+      success,
+      errors.length,
+      JSON.stringify(errors),
+    ],
   );
 
   return { job_id: job.id, total: rows.length, success, errors };

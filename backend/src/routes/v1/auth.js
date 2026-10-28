@@ -1,18 +1,23 @@
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const pool = require('../../db');
-const tokenService = require('../../services/tokenService');
-const userService = require('../../services/userService');
-const mfaService = require('../../services/mfaService');
-const { logAudit } = require('../../services/auditService');
-const { authenticateErp, getClientIp } = require('../../middleware/erpAuth');
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const pool = require("../../db");
+const tokenService = require("../../services/tokenService");
+const userService = require("../../services/userService");
+const mfaService = require("../../services/mfaService");
+const { logAudit } = require("../../services/auditService");
+const { authenticateErp, getClientIp } = require("../../middleware/erpAuth");
 
 const router = express.Router();
 
-const IS_DEMO_MODE = (process.env.ENABLE_DEMO_MODE === 'true') && (process.env.NODE_ENV !== 'production');
+const IS_DEMO_MODE =
+  process.env.ENABLE_DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS) || 5;
-const POS_USER_EMAIL = (process.env.POS_USER_EMAIL || process.env.ADMIN_EMAIL || 'bonnkereinhard654@gmail.com').toLowerCase();
-const POS_PASSWORD = process.env.POS_PASSWORD || '';
+const POS_USER_EMAIL = (
+  process.env.POS_USER_EMAIL ||
+  process.env.ADMIN_EMAIL ||
+  "bonnkereinhard654@gmail.com"
+).toLowerCase();
+const POS_PASSWORD = process.env.POS_PASSWORD || "";
 
 async function setUserPassword(userId, password) {
   const hash = await bcrypt.hash(password, 10);
@@ -23,42 +28,48 @@ async function setUserPassword(userId, password) {
   );
 }
 
-router.post('/login', async (req, res) => {
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const mfaToken = typeof req.body?.mfa_token === 'string' ? req.body.mfa_token.trim() : '';
-  const companyCode = typeof req.body?.company_code === 'string' ? req.body.company_code.trim() : null;
+router.post("/login", async (req, res) => {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const mfaToken = typeof req.body?.mfa_token === "string" ? req.body.mfa_token.trim() : "";
+  const companyCode =
+    typeof req.body?.company_code === "string" ? req.body.company_code.trim() : null;
 
   if (!email || !password) {
-    return res.status(400).json({ error: 'email and password are required' });
+    return res.status(400).json({ error: "email and password are required" });
   }
 
   try {
     let user = await userService.findUserByEmail(email, companyCode);
 
-    if (!user && IS_DEMO_MODE && (password === 'Bonnke@123' || password === 'demo') && email === 'bonnkereinhard654@gmail.com') {
-      await pool.query('SELECT 1');
+    if (
+      !user &&
+      IS_DEMO_MODE &&
+      (password === "Bonnke@123" || password === "demo") &&
+      email === "bonnkereinhard654@gmail.com"
+    ) {
+      await pool.query("SELECT 1");
       user = await userService.findUserByEmail(email);
       if (user && !user.password_hash) {
-        await setUserPassword(user.id, 'Bonnke@123');
+        await setUserPassword(user.id, "Bonnke@123");
         user = await userService.findUserByEmail(email);
       }
     }
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    if (user.status === 'locked' && user.locked_until && new Date(user.locked_until) > new Date()) {
-      return res.status(403).json({ error: 'Account is temporarily locked' });
+    if (user.status === "locked" && user.locked_until && new Date(user.locked_until) > new Date()) {
+      return res.status(403).json({ error: "Account is temporarily locked" });
     }
 
     if (!user.password_hash) {
-      if (IS_DEMO_MODE && (password === 'Bonnke@123' || password === 'demo')) {
-        await setUserPassword(user.id, 'Bonnke@123');
-        user.password_hash = await bcrypt.hash('Bonnke@123', 10);
+      if (IS_DEMO_MODE && (password === "Bonnke@123" || password === "demo")) {
+        await setUserPassword(user.id, "Bonnke@123");
+        user.password_hash = await bcrypt.hash("Bonnke@123", 10);
       } else {
-        return res.status(401).json({ error: 'Invalid credentials' });
+        return res.status(401).json({ error: "Invalid credentials" });
       }
     }
 
@@ -75,16 +86,16 @@ router.post('/login', async (req, res) => {
          WHERE id = $3`,
         [attempts, lock, user.id],
       );
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
     if (user.mfa_enabled) {
       if (!mfaToken) {
-        return res.status(401).json({ error: 'MFA required', mfa_required: true });
+        return res.status(401).json({ error: "MFA required", mfa_required: true });
       }
       const secret = await mfaService.getDecryptedSecret(user.id);
       if (!secret || !mfaService.verifyTotp(secret, mfaToken)) {
-        return res.status(401).json({ error: 'Invalid MFA token' });
+        return res.status(401).json({ error: "Invalid MFA token" });
       }
     }
 
@@ -94,7 +105,7 @@ router.post('/login', async (req, res) => {
       user,
       token: refreshToken,
       ipAddress: ip,
-      deviceInfo: req.headers['user-agent'] || null,
+      deviceInfo: req.headers["user-agent"] || null,
     });
 
     const accessToken = tokenService.generateAccessToken(user);
@@ -110,150 +121,164 @@ router.post('/login', async (req, res) => {
     await logAudit({
       companyId: user.company_id,
       userId: user.id,
-      entityType: 'erp_users',
+      entityType: "erp_users",
       entityId: user.id,
-      action: 'login',
+      action: "login",
       newValues: { email: user.email },
       ipAddress: ip,
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
 
     return res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      token_type: 'Bearer',
-      expires_in: process.env.JWT_ACCESS_EXPIRES || '15m',
+      token_type: "Bearer",
+      expires_in: process.env.JWT_ACCESS_EXPIRES || "15m",
       user: userService.sanitizeUser(user),
     });
   } catch (err) {
     console.error(err);
-    return res.status(503).json({ error: 'Authentication service unavailable' });
+    return res.status(503).json({ error: "Authentication service unavailable" });
   }
 });
 
-router.post('/pos-login', async (req, res) => {
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  if (!password || !POS_PASSWORD) return res.status(401).json({ error: 'POS login is not configured' });
+router.post("/pos-login", async (req, res) => {
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password || !POS_PASSWORD)
+    return res.status(401).json({ error: "POS login is not configured" });
 
   try {
     const user = await userService.findUserByEmail(POS_USER_EMAIL);
-    if (!user || user.status !== 'active' || !(await bcrypt.compare(password, POS_PASSWORD.startsWith('$2') ? POS_PASSWORD : await bcrypt.hash(POS_PASSWORD, 10)))) {
-      return res.status(401).json({ error: 'Invalid POS password' });
+    if (
+      !user ||
+      user.status !== "active" ||
+      !(await bcrypt.compare(
+        password,
+        POS_PASSWORD.startsWith("$2") ? POS_PASSWORD : await bcrypt.hash(POS_PASSWORD, 10),
+      ))
+    ) {
+      return res.status(401).json({ error: "Invalid POS password" });
     }
 
     const posUser = {
       ...user,
-      permissions: ['sales.view', 'sales.create', 'sales.approve', 'master_data.view'],
-      role_name: 'POS Operator',
+      permissions: ["sales.view", "sales.create", "sales.approve", "master_data.view"],
+      role_name: "POS Operator",
     };
     const refreshToken = tokenService.generateRefreshToken();
-    await tokenService.storeRefreshToken({ user, token: refreshToken, ipAddress: getClientIp(req), deviceInfo: req.headers['user-agent'] || null });
-    const accessToken = tokenService.generateAccessToken(posUser, { sessionType: 'pos' });
+    await tokenService.storeRefreshToken({
+      user,
+      token: refreshToken,
+      ipAddress: getClientIp(req),
+      deviceInfo: req.headers["user-agent"] || null,
+    });
+    const accessToken = tokenService.generateAccessToken(posUser, { sessionType: "pos" });
     return res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      token_type: 'Bearer',
-      expires_in: process.env.JWT_ACCESS_EXPIRES || '15m',
+      token_type: "Bearer",
+      expires_in: process.env.JWT_ACCESS_EXPIRES || "15m",
       user: userService.sanitizeUser(posUser),
-      session_type: 'pos',
+      session_type: "pos",
     });
   } catch (err) {
     console.error(err);
-    return res.status(503).json({ error: 'POS authentication service unavailable' });
+    return res.status(503).json({ error: "POS authentication service unavailable" });
   }
 });
 
-router.post('/refresh', async (req, res) => {
-  const refreshToken = typeof req.body?.refresh_token === 'string' ? req.body.refresh_token : '';
+router.post("/refresh", async (req, res) => {
+  const refreshToken = typeof req.body?.refresh_token === "string" ? req.body.refresh_token : "";
   if (!refreshToken) {
-    return res.status(400).json({ error: 'refresh_token is required' });
+    return res.status(400).json({ error: "refresh_token is required" });
   }
 
   try {
     const row = await tokenService.findValidRefreshToken(refreshToken);
-    if (!row || row.status !== 'active') {
-      return res.status(401).json({ error: 'Invalid refresh token' });
+    if (!row || row.status !== "active") {
+      return res.status(401).json({ error: "Invalid refresh token" });
     }
 
     const user = await userService.findUserById(row.id);
-    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (!user) return res.status(401).json({ error: "User not found" });
 
     const newRefresh = tokenService.generateRefreshToken();
     const stored = await tokenService.storeRefreshToken({
       user,
       token: newRefresh,
       ipAddress: getClientIp(req),
-      deviceInfo: req.headers['user-agent'] || null,
+      deviceInfo: req.headers["user-agent"] || null,
     });
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken), stored.id);
 
     return res.json({
       access_token: tokenService.generateAccessToken(user),
       refresh_token: newRefresh,
-      token_type: 'Bearer',
+      token_type: "Bearer",
     });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Unable to refresh token' });
+    return res.status(500).json({ error: "Unable to refresh token" });
   }
 });
 
-router.post('/logout', authenticateErp, async (req, res) => {
-  const refreshToken = typeof req.body?.refresh_token === 'string' ? req.body.refresh_token : '';
+router.post("/logout", authenticateErp, async (req, res) => {
+  const refreshToken = typeof req.body?.refresh_token === "string" ? req.body.refresh_token : "";
   if (refreshToken) {
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken));
   }
   await logAudit({
     companyId: req.user.company_id,
     userId: req.user.id,
-    entityType: 'erp_users',
+    entityType: "erp_users",
     entityId: req.user.id,
-    action: 'logout',
+    action: "logout",
     ipAddress: getClientIp(req),
-    userAgent: req.headers['user-agent'],
+    userAgent: req.headers["user-agent"],
   });
   return res.json({ ok: true });
 });
 
-router.get('/me', authenticateErp, async (req, res) => {
+router.get("/me", authenticateErp, async (req, res) => {
   return res.json(req.user);
 });
 
-router.post('/mfa/setup', authenticateErp, async (req, res) => {
+router.post("/mfa/setup", authenticateErp, async (req, res) => {
   const secret = mfaService.generateMfaSecret();
   await mfaService.enableMfaPending(req.user.id, req.user.company_id, secret);
   const otpauthUrl = mfaService.getOtpAuthUrl({ secret, email: req.user.email });
   return res.json({ secret, otpauth_url: otpauthUrl });
 });
 
-router.post('/mfa/verify', authenticateErp, async (req, res) => {
-  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
-  if (!token) return res.status(400).json({ error: 'token is required' });
+router.post("/mfa/verify", authenticateErp, async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  if (!token) return res.status(400).json({ error: "token is required" });
 
   const secret = await mfaService.getDecryptedSecret(req.user.id);
   if (!secret || !mfaService.verifyTotp(secret, token)) {
-    return res.status(400).json({ error: 'Invalid MFA token' });
+    return res.status(400).json({ error: "Invalid MFA token" });
   }
 
   await mfaService.confirmMfa(req.user.id, req.user.company_id);
   await logAudit({
     companyId: req.user.company_id,
     userId: req.user.id,
-    entityType: 'erp_user_mfa',
+    entityType: "erp_user_mfa",
     entityId: req.user.id,
-    action: 'mfa_enabled',
+    action: "mfa_enabled",
     ipAddress: getClientIp(req),
-    userAgent: req.headers['user-agent'],
+    userAgent: req.headers["user-agent"],
   });
   return res.json({ ok: true, mfa_enabled: true });
 });
 
-router.patch('/profile', authenticateErp, async (req, res) => {
-  const { full_name, phone, locale, job_title, department, notification_preferences } = req.body || {};
+router.patch("/profile", authenticateErp, async (req, res) => {
+  const { full_name, phone, locale, job_title, department, notification_preferences } =
+    req.body || {};
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query("BEGIN");
     if (full_name || phone || locale) {
       await client.query(
         `UPDATE erp_users
@@ -283,13 +308,13 @@ router.patch('/profile', authenticateErp, async (req, res) => {
         ],
       );
     }
-    await client.query('COMMIT');
+    await client.query("COMMIT");
     const user = await userService.findUserById(req.user.id);
     return res.json(userService.sanitizeUser(user));
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query("ROLLBACK");
     console.error(err);
-    return res.status(500).json({ error: 'Unable to update profile' });
+    return res.status(500).json({ error: "Unable to update profile" });
   } finally {
     client.release();
   }

@@ -134,7 +134,7 @@ SELECT
   b.id,
   r.id,
   'admin',
-  'admin@martin.co.ke',
+  'bonnkereinhard654@gmail.com',
   'System Administrator',
   '+254700000001',
   'active',
@@ -144,14 +144,14 @@ JOIN erp_branches b ON b.company_id = c.id AND b.code = 'HQ'
 JOIN erp_roles r ON r.company_id = c.id AND r.name = 'System Administrator'
 WHERE c.code = 'MARTIN'
   AND NOT EXISTS (
-    SELECT 1 FROM erp_users u WHERE u.company_id = c.id AND u.email = 'admin@martin.co.ke'
+    SELECT 1 FROM erp_users u WHERE u.company_id = c.id AND u.email = 'bonnkereinhard654@gmail.com'
   );
 
 INSERT INTO erp_user_profiles (company_id, user_id, job_title, department)
 SELECT u.company_id, u.id, 'Chief Executive', 'Executive'
 FROM erp_users u
 JOIN erp_companies c ON c.id = u.company_id AND c.code = 'MARTIN'
-WHERE u.email = 'admin@martin.co.ke'
+WHERE u.email = 'bonnkereinhard654@gmail.com'
   AND NOT EXISTS (SELECT 1 FROM erp_user_profiles p WHERE p.user_id = u.id);
 
 INSERT INTO erp_user_branches (company_id, user_id, branch_id)
@@ -159,7 +159,7 @@ SELECT u.company_id, u.id, b.id
 FROM erp_users u
 JOIN erp_companies c ON c.id = u.company_id AND c.code = 'MARTIN'
 JOIN erp_branches b ON b.company_id = c.id
-WHERE u.email = 'admin@martin.co.ke'
+WHERE u.email = 'bonnkereinhard654@gmail.com'
   AND NOT EXISTS (
     SELECT 1 FROM erp_user_branches ub WHERE ub.user_id = u.id AND ub.branch_id = b.id
   );

@@ -7,12 +7,32 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { SearchBar } from "@/components/SearchBar";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
@@ -25,13 +45,13 @@ import {
   createSupplier,
   deleteSupplier,
   fetchPurchaseOrders,
-    fetchGoodsReceipts,
+  fetchGoodsReceipts,
   fetchSuppliers,
   receivePurchaseOrder,
   updatePurchaseOrderStatus,
   updateSupplier,
   type BackendPurchaseOrder,
-    type BackendGoodsReceipt,
+  type BackendGoodsReceipt,
   type BackendSupplier,
 } from "@/lib/api";
 import { toast } from "sonner";
@@ -60,7 +80,7 @@ const emptySupplierForm = (): SupplierFormState => ({
 
 export const Route = createFileRoute("/_app/procurement")({
   component: Procurement,
-  head: () => ({ meta: [{ title: "Procurement - Ayawin Enterprise ERP" }] }),
+  head: () => ({ meta: [{ title: "Procurement - Ayawin Stock Solution" }] }),
 });
 
 function Procurement() {
@@ -75,7 +95,7 @@ function Procurement() {
   const [orders, setOrders] = useState<BackendPurchaseOrder[]>([]);
   const [suppliersLoading, setSuppliersLoading] = useState(true);
   const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
-    const [receipts, setReceipts] = useState<BackendGoodsReceipt[]>([]);
+  const [receipts, setReceipts] = useState<BackendGoodsReceipt[]>([]);
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [supplierSaving, setSupplierSaving] = useState(false);
   const [supplierEditing, setSupplierEditing] = useState<BackendSupplier | null>(null);
@@ -116,7 +136,10 @@ function Procurement() {
 
   useEffect(() => {
     if (tab === "suppliers") void loadSuppliers();
-    if (tab === "receipts" && token) void fetchGoodsReceipts(token).then(setReceipts).catch(() => setReceipts([]));
+    if (tab === "receipts" && token)
+      void fetchGoodsReceipts(token)
+        .then(setReceipts)
+        .catch(() => setReceipts([]));
   }, [tab, token]);
 
   useEffect(() => {
@@ -130,7 +153,8 @@ function Procurement() {
         .filter(
           (p) =>
             (status === "all" || p.status === status) &&
-            (p.id.toLowerCase().includes(q.toLowerCase()) || p.supplier.toLowerCase().includes(q.toLowerCase())),
+            (p.id.toLowerCase().includes(q.toLowerCase()) ||
+              p.supplier.toLowerCase().includes(q.toLowerCase())),
         )
         .sort((a, b) => {
           if (sort === "total") return b.total - a.total;
@@ -204,7 +228,7 @@ function Procurement() {
       context: { q, status, sort, orders: orderRows.length, suppliers: supplierRows.length },
     });
 
-    exportWorkbook("ayawin-enterprise-procurement.xlsx", [
+    exportWorkbook("ayawin-stock-solution-procurement.xlsx", [
       {
         name: "Purchase Orders",
         rows: orderRows.map((p) => ({
@@ -219,7 +243,10 @@ function Procurement() {
       {
         name: "Suppliers",
         rows: supplierRows.map((s) => {
-          const score = supplierScoreFromBalances(Number(s.balance || 0), Number(s.credit_limit || 0));
+          const score = supplierScoreFromBalances(
+            Number(s.balance || 0),
+            Number(s.credit_limit || 0),
+          );
           return {
             Supplier: s.name,
             "KRA PIN": s.kra_pin,
@@ -353,7 +380,10 @@ function Procurement() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Draft / Approved", v: `${orders.filter((row) => row.status === "Draft").length} / ${orders.filter((row) => row.status === "Approved").length}` },
+          {
+            l: "Draft / Approved",
+            v: `${orders.filter((row) => row.status === "Draft").length} / ${orders.filter((row) => row.status === "Approved").length}`,
+          },
           { l: "Sent", v: String(orders.filter((row) => row.status === "Sent").length) },
           { l: "Received", v: String(receipts.length) },
           { l: "Suppliers", v: String(suppliers.length) },
@@ -377,28 +407,42 @@ function Procurement() {
       <Card className="mb-4">
         <CardContent className="grid gap-3 p-4 md:grid-cols-3">
           {summarySuppliers.map((supplier) => {
-            const score = supplierScoreFromBalances(Number(supplier.balance || 0), Number(supplier.credit_limit || 0));
+            const score = supplierScoreFromBalances(
+              Number(supplier.balance || 0),
+              Number(supplier.credit_limit || 0),
+            );
             return (
-              <div key={supplier.id} className="rounded-xl border border-border/70 bg-background/60 p-3">
+              <div
+                key={supplier.id}
+                className="rounded-xl border border-border/70 bg-background/60 p-3"
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold">{supplier.name}</div>
-                    <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{supplier.kra_pin}</div>
+                    <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                      {supplier.kra_pin}
+                    </div>
                   </div>
                   <Badge variant="outline">{score.score}</Badge>
                 </div>
                 <div className="mt-3 grid gap-1 text-xs text-muted-foreground">
                   <div className="flex items-center justify-between">
                     <span>Terms</span>
-                    <span className="font-medium text-foreground">{supplier.payment_terms || "-"}</span>
+                    <span className="font-medium text-foreground">
+                      {supplier.payment_terms || "-"}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span>Credit</span>
-                    <span className="font-medium text-foreground">{KES(Number(supplier.credit_limit || 0))}</span>
+                    <span className="font-medium text-foreground">
+                      {KES(Number(supplier.credit_limit || 0))}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span>Balance</span>
-                    <span className="font-semibold text-foreground">{KES(Number(supplier.balance || 0))}</span>
+                    <span className="font-semibold text-foreground">
+                      {KES(Number(supplier.balance || 0))}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -412,7 +456,13 @@ function Procurement() {
         </CardContent>
       </Card>
 
-      <Tabs value={tab} onValueChange={(value) => { setTab(value); window.history.replaceState({}, "", `${window.location.pathname}#${value}`); }}>
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value);
+          window.history.replaceState({}, "", `${window.location.pathname}#${value}`);
+        }}
+      >
         <TabsList>
           <TabsTrigger value="purchase-orders">Purchase Orders</TabsTrigger>
           <TabsTrigger value="receipts">Goods Receipts</TabsTrigger>
@@ -479,50 +529,64 @@ function Procurement() {
                 <TableBody>
                   {ordersLoading ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={8}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         Loading purchase orders...
                       </TableCell>
                     </TableRow>
-                  ) : pagedOrders.map((p: any) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-mono text-xs">{p.id}</TableCell>
-                      <TableCell>{fmtDate(p.date)}</TableCell>
-                      <TableCell className="font-medium">{p.supplier}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{p.warehouse ?? "-"}</TableCell>
-                      <TableCell className="text-right">{p.items}</TableCell>
-                      <TableCell className="text-right font-semibold">{KES(p.total)}</TableCell>
-                      <TableCell>
-                        <StatusBadge status={p.status} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          <ConfirmActionDialog
-                            title="Approve purchase order?"
-                            description="Moves the PO to Approved for sending to the supplier."
-                            confirmLabel="Approve"
-                            onConfirm={() => void setOrderStatus(p, "Approved")}
-                          >
-                            <Button variant="ghost" size="sm" disabled={p.status !== "Draft"}>
-                              Approve
-                            </Button>
-                          </ConfirmActionDialog>
-                          <ConfirmActionDialog
-                            title="Receive purchase order?"
-                            description="Creates a GRN and posts stock-in movements to inventory."
-                            confirmLabel="Receive"
-                            onConfirm={() => void receiveOrder(p)}
-                          >
-                            <Button variant="ghost" size="sm" disabled={p.status !== "Sent" && p.status !== "Approved"}>
-                              Receive
-                            </Button>
-                          </ConfirmActionDialog>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  ) : (
+                    pagedOrders.map((p: any) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="font-mono text-xs">{p.id}</TableCell>
+                        <TableCell>{fmtDate(p.date)}</TableCell>
+                        <TableCell className="font-medium">{p.supplier}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {p.warehouse ?? "-"}
+                        </TableCell>
+                        <TableCell className="text-right">{p.items}</TableCell>
+                        <TableCell className="text-right font-semibold">{KES(p.total)}</TableCell>
+                        <TableCell>
+                          <StatusBadge status={p.status} />
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <ConfirmActionDialog
+                              title="Approve purchase order?"
+                              description="Moves the PO to Approved for sending to the supplier."
+                              confirmLabel="Approve"
+                              onConfirm={() => void setOrderStatus(p, "Approved")}
+                            >
+                              <Button variant="ghost" size="sm" disabled={p.status !== "Draft"}>
+                                Approve
+                              </Button>
+                            </ConfirmActionDialog>
+                            <ConfirmActionDialog
+                              title="Receive purchase order?"
+                              description="Creates a GRN and posts stock-in movements to inventory."
+                              confirmLabel="Receive"
+                              onConfirm={() => void receiveOrder(p)}
+                            >
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={p.status !== "Sent" && p.status !== "Approved"}
+                              >
+                                Receive
+                              </Button>
+                            </ConfirmActionDialog>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                   {!ordersLoading && pagedOrders.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={8}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         No purchase orders match your filters.
                       </TableCell>
                     </TableRow>
@@ -530,19 +594,62 @@ function Procurement() {
                 </TableBody>
               </Table>
 
-              <ListPagination page={page} totalPages={totalPages} totalItems={orderRows.length} pageSize={pageSize} onPageChange={setPage} />
+              <ListPagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={orderRows.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="receipts" className="mt-4">
-          <Card><CardContent className="p-4">
-            <div className="mb-4"><h2 className="font-semibold">Goods receipt history</h2><p className="text-sm text-muted-foreground">Posted receipts update stock and create the procurement audit trail.</p></div>
-            <Table><TableHeader><TableRow><TableHead>GRN</TableHead><TableHead>Purchase order</TableHead><TableHead>Date</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>
-              {receipts.map((receipt) => <TableRow key={receipt.id}><TableCell className="font-mono text-xs">{receipt.grn_number}</TableCell><TableCell>{receipt.po_number || "—"}</TableCell><TableCell>{receipt.receipt_date ? fmtDate(receipt.receipt_date) : "—"}</TableCell><TableCell><StatusBadge status={receipt.status || "Posted"} /></TableCell></TableRow>)}
-              {!receipts.length && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No goods receipts posted yet.</TableCell></TableRow>}
-            </TableBody></Table>
-          </CardContent></Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-4">
+                <h2 className="font-semibold">Goods receipt history</h2>
+                <p className="text-sm text-muted-foreground">
+                  Posted receipts update stock and create the procurement audit trail.
+                </p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>GRN</TableHead>
+                    <TableHead>Purchase order</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {receipts.map((receipt) => (
+                    <TableRow key={receipt.id}>
+                      <TableCell className="font-mono text-xs">{receipt.grn_number}</TableCell>
+                      <TableCell>{receipt.po_number || "—"}</TableCell>
+                      <TableCell>
+                        {receipt.receipt_date ? fmtDate(receipt.receipt_date) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={receipt.status || "Posted"} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!receipts.length && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={4}
+                        className="py-8 text-center text-sm text-muted-foreground"
+                      >
+                        No goods receipts posted yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="suppliers" className="mt-4">
@@ -550,7 +657,8 @@ function Procurement() {
             <CardContent className="p-4">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="text-xs text-muted-foreground">
-                  Supplier directory is searchable by the same keyword bar above and sorted alphabetically for quick lookup.
+                  Supplier directory is searchable by the same keyword bar above and sorted
+                  alphabetically for quick lookup.
                 </div>
                 <Button variant="outline" onClick={openCreateSupplier}>
                   <Plus className="mr-2 h-4 w-4" />
@@ -574,52 +682,71 @@ function Procurement() {
                 <TableBody>
                   {suppliersLoading ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={8}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         Loading suppliers...
                       </TableCell>
                     </TableRow>
-                  ) : supplierRows.map((s) => {
-                    const score = supplierScoreFromBalances(Number(s.balance || 0), Number(s.credit_limit || 0));
-                    return (
-                      <TableRow key={s.id}>
-                        <TableCell className="font-medium">{s.name}</TableCell>
-                        <TableCell className="font-mono text-xs">{s.kra_pin}</TableCell>
-                        <TableCell className="text-xs">
-                          {s.email || s.contact || "-"}
-                          <br />
-                          <span className="text-muted-foreground">{s.phone || "-"}</span>
-                        </TableCell>
-                        <TableCell>{s.payment_terms || "-"}</TableCell>
-                        <TableCell className="text-right">{KES(Number(s.credit_limit || 0))}</TableCell>
-                        <TableCell className="text-right font-semibold">{KES(Number(s.balance || 0))}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{score.score}</Badge>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button variant="ghost" size="sm" onClick={() => openEditSupplier(s)}>
-                              <Pencil className="mr-2 h-4 w-4" />
-                              Edit
-                            </Button>
-                            <ConfirmActionDialog
-                              title="Delete supplier?"
-                              description="This permanently removes the supplier record."
-                              confirmLabel="Delete"
-                              onConfirm={() => void removeSupplier(s)}
-                            >
-                              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete
+                  ) : (
+                    supplierRows.map((s) => {
+                      const score = supplierScoreFromBalances(
+                        Number(s.balance || 0),
+                        Number(s.credit_limit || 0),
+                      );
+                      return (
+                        <TableRow key={s.id}>
+                          <TableCell className="font-medium">{s.name}</TableCell>
+                          <TableCell className="font-mono text-xs">{s.kra_pin}</TableCell>
+                          <TableCell className="text-xs">
+                            {s.email || s.contact || "-"}
+                            <br />
+                            <span className="text-muted-foreground">{s.phone || "-"}</span>
+                          </TableCell>
+                          <TableCell>{s.payment_terms || "-"}</TableCell>
+                          <TableCell className="text-right">
+                            {KES(Number(s.credit_limit || 0))}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold">
+                            {KES(Number(s.balance || 0))}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{score.score}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button variant="ghost" size="sm" onClick={() => openEditSupplier(s)}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Edit
                               </Button>
-                            </ConfirmActionDialog>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
+                              <ConfirmActionDialog
+                                title="Delete supplier?"
+                                description="This permanently removes the supplier record."
+                                confirmLabel="Delete"
+                                onConfirm={() => void removeSupplier(s)}
+                              >
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-destructive hover:text-destructive"
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Delete
+                                </Button>
+                              </ConfirmActionDialog>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
                   {!suppliersLoading && supplierRows.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell
+                        colSpan={8}
+                        className="py-10 text-center text-sm text-muted-foreground"
+                      >
                         No suppliers match your filters.
                       </TableCell>
                     </TableRow>
@@ -635,20 +762,60 @@ function Procurement() {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{supplierEditing ? "Edit Supplier" : "New Supplier"}</DialogTitle>
-            <DialogDescription>Maintain supplier KRA details, payment terms, and credit limits.</DialogDescription>
+            <DialogDescription>
+              Maintain supplier KRA details, payment terms, and credit limits.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2 sm:grid-cols-2">
-            <Field label="Supplier Name" value={supplierForm.name} onChange={(value) => setSupplierForm((prev) => ({ ...prev, name: value }))} />
-            <Field label="KRA PIN" value={supplierForm.kra_pin} onChange={(value) => setSupplierForm((prev) => ({ ...prev, kra_pin: value }))} />
-            <Field label="Contact" value={supplierForm.contact} onChange={(value) => setSupplierForm((prev) => ({ ...prev, contact: value }))} />
-            <Field label="Email" value={supplierForm.email} onChange={(value) => setSupplierForm((prev) => ({ ...prev, email: value }))} />
-            <Field label="Phone" value={supplierForm.phone} onChange={(value) => setSupplierForm((prev) => ({ ...prev, phone: value }))} />
-            <Field label="Payment Terms" value={supplierForm.payment_terms} onChange={(value) => setSupplierForm((prev) => ({ ...prev, payment_terms: value }))} />
-            <Field label="Credit Limit" type="number" value={supplierForm.credit_limit} onChange={(value) => setSupplierForm((prev) => ({ ...prev, credit_limit: value }))} />
-            <Field label="Balance" type="number" value={supplierForm.balance} onChange={(value) => setSupplierForm((prev) => ({ ...prev, balance: value }))} />
+            <Field
+              label="Supplier Name"
+              value={supplierForm.name}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, name: value }))}
+            />
+            <Field
+              label="KRA PIN"
+              value={supplierForm.kra_pin}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, kra_pin: value }))}
+            />
+            <Field
+              label="Contact"
+              value={supplierForm.contact}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, contact: value }))}
+            />
+            <Field
+              label="Email"
+              value={supplierForm.email}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, email: value }))}
+            />
+            <Field
+              label="Phone"
+              value={supplierForm.phone}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, phone: value }))}
+            />
+            <Field
+              label="Payment Terms"
+              value={supplierForm.payment_terms}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, payment_terms: value }))}
+            />
+            <Field
+              label="Credit Limit"
+              type="number"
+              value={supplierForm.credit_limit}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, credit_limit: value }))}
+            />
+            <Field
+              label="Balance"
+              type="number"
+              value={supplierForm.balance}
+              onChange={(value) => setSupplierForm((prev) => ({ ...prev, balance: value }))}
+            />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSupplierDialogOpen(false)} disabled={supplierSaving}>
+            <Button
+              variant="outline"
+              onClick={() => setSupplierDialogOpen(false)}
+              disabled={supplierSaving}
+            >
               Cancel
             </Button>
             <Button onClick={saveSupplier} disabled={supplierSaving}>
