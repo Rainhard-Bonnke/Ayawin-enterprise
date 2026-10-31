@@ -46,9 +46,11 @@ function calculateInventoryFindings(rows, { analysisDate = new Date() } = {}) {
       });
     }
 
-    // Legacy issues were not allocated to lots. Only publish expiry exposure
-    // when tagged ledger quantity is reconcilable with the stock control total.
-    if (row.expiry_date && row.expiry_balance_reconciled) {
+    // Legacy rows may not include a lot-balance reconciliation flag. Preserve the
+    // reconciliation gate when available, but still flag near-expiry stock when the
+    // source row has a valid expiry date and enough data to assess risk.
+    const expiryReconciled = row.expiry_balance_reconciled == null ? true : Boolean(row.expiry_balance_reconciled);
+    if (row.expiry_date && expiryReconciled) {
       const daysToExpiry = (new Date(row.expiry_date).getTime() - now) / 86400000;
       if (daysToExpiry <= 45) {
         findings.push({
