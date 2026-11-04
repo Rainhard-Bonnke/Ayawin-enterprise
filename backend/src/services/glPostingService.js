@@ -1,9 +1,9 @@
 const pool = require("../db");
+const { nextDocumentNo } = require("./documentNumberingService");
+const { toMinorUnits } = require("../lib/money");
 
 async function nextJournalNo(client, companyId) {
-  await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [companyId, "journal-sequence"]);
-  const result = await client.query("SELECT COUNT(*)::int AS n FROM erp_journals WHERE company_id = $1", [companyId]);
-  return `JE-${new Date().getFullYear()}-${String(Number(result.rows[0].n) + 1).padStart(4, "0")}`;
+  return nextDocumentNo(client, { companyId, docType: "erp_journals", prefix: "JE" });
 }
 
 async function getOpenPeriod(client, companyId, entryDate) {
@@ -25,9 +25,11 @@ function validateLinesBalanced(lines) {
       throw new Error("Journal line amounts must be non-negative and use either debit or credit, not both");
     }
   }
-  const totalDebit = lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
-  const totalCredit = lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-  if (Math.abs(totalDebit - totalCredit) > 0.0001) throw new Error(`Journal not balanced: debit ${totalDebit} != credit ${totalCredit}`);
+  const debitMinor = lines.reduce((sum, line) => sum + toMinorUnits(line.debit || 0), 0n);
+  const creditMinor = lines.reduce((sum, line) => sum + toMinorUnits(line.credit || 0), 0n);
+  const totalDebit = Number(debitMinor) / 100;
+  const totalCredit = Number(creditMinor) / 100;
+  if (debitMinor !== creditMinor) throw new Error(`Journal not balanced: debit ${totalDebit} != credit ${totalCredit}`);
   if (totalDebit <= 0) throw new Error("Journal totals must be greater than zero");
   return { totalDebit, totalCredit };
 }
