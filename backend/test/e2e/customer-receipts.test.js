@@ -53,6 +53,32 @@ test("receipt retry with one idempotency key posts once to the mapped M-Pesa acc
   assert.equal(lines.rows.reduce((sum, line) => sum + Number(line.debit), 0), 1.23);
 });
 
+test("one payment on account can be allocated across multiple invoices to the cent", async () => {
+  const ctx = await getTestContext();
+  const customerId = await getCustomerId(ctx.companyId);
+  const firstInvoice = await makeInvoice(ctx, customerId);
+  const secondInvoice = await makeInvoice(ctx, customerId);
+  const referenceNo = `E2E-MULTI-ALLOC-${Date.now()}`;
+  let receiptId;
+  try {
+    const receipt = await receipts.createCustomerReceipt({ companyId:ctx.companyId,userId:ctx.userId,customerId,
+      amount:0.30,paymentMethod:"mpesa",referenceNo });
+    receiptId = receipt.receipt_id;
+    assert.equal(receipt.unapplied_amount, 0.30);
+    const allocation = await receipts.allocateCustomerReceipt({ companyId:ctx.companyId,userId:ctx.userId,
+      receiptId,allocations:[{invoice_id:firstInvoice.id,amount:0.10},{invoice_id:secondInvoice.id,amount:0.20}] });
+    assert.equal(allocation.unapplied_amount, 0);
+    const paid = await pool.query("SELECT id,amount_paid FROM erp_customer_invoices WHERE id=ANY($1::uuid[]) ORDER BY id", [[firstInvoice.id,secondInvoice.id]]);
+    assert.deepEqual(paid.rows.map((row) => Number(row.amount_paid)).sort((a,b) => a-b), [0.10,0.20]);
+  } finally {
+    if (receiptId) {
+      await pool.query("DELETE FROM erp_receipt_allocations WHERE receipt_id=$1 AND company_id=$2", [receiptId,ctx.companyId]);
+      await pool.query("DELETE FROM erp_customer_receipts WHERE id=$1 AND company_id=$2", [receiptId,ctx.companyId]);
+    }
+    await pool.query("UPDATE erp_customer_invoices SET is_deleted=TRUE WHERE id=ANY($1::uuid[])", [[firstInvoice.id,secondInvoice.id]]);
+  }
+});
+
 test("closing a POS till posts a signed cash over/short journal", async () => {
   const ctx = await getTestContext();
   const session = await receipts.openTillSession({ companyId: ctx.companyId, userId: ctx.userId, openingFloat: 10 });

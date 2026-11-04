@@ -2,8 +2,9 @@ const pool = require("../db");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit } = require("./auditService");
+const { roundMoney, sumMoney, toMinorUnits } = require("../lib/money");
 
-const money = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const money = roundMoney;
 
 async function getSetup(companyId) {
   const [claims, bills, sourceLines, accounts] = await Promise.all([
@@ -124,7 +125,7 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
   refundReferenceNo, unappliedAmount, unappliedAccountId, courtDisputeDeterminedOn, courtCaseReference }) {
   const principal = money(inventoryClaimAmount);
   const tax = money(vatAmount);
-  const total = money(principal + tax);
+  const total = sumMoney([principal, tax]);
   const noteNo = String(creditNoteNo || "").trim().slice(0, 100);
   const normalized = (Array.isArray(allocations) ? allocations : []).map((entry) => ({ billId: entry.bill_id, amount: money(entry.amount) }));
   const refund = money(refundAmount || 0);
@@ -139,8 +140,8 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
       || new Set(normalized.map((entry) => entry.billId)).size !== normalized.length) {
     throw new Error("Each bill allocation needs a unique open bill and a positive amount");
   }
-  const allocated = money(normalized.reduce((sum, entry) => sum + entry.amount, 0));
-  if (Math.abs(allocated + refund + unapplied - total) > 0.005) throw new Error("Bill allocations, cash refund and unapplied supplier credit must equal the full credit note amount");
+  const allocated = sumMoney(normalized.map((entry) => entry.amount));
+  if (toMinorUnits(sumMoney([allocated, refund, unapplied])) !== toMinorUnits(total)) throw new Error("Bill allocations, cash refund and unapplied supplier credit must equal the full credit note amount");
   if (refund > 0 && (!refundBankAccountId || !refundRef)) throw new Error("Choose the receiving bank/cash account and enter the refund reference");
   if (unapplied > 0 && !unappliedAccountId) throw new Error("Choose an asset account to hold unapplied supplier credit");
   if ((creditDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(creditDate)))
@@ -234,12 +235,12 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
     if (returnedQty > sourceQty - Number(used.quantity) + 0.00005) throw new Error("Returned quantity exceeds the unreturned quantity on this received supplier invoice line");
     const sourceNetRemaining = Number(source.net_amount) - Number(used.principal);
     const sourceVatRemaining = Number(source.tax_amount) - Number(used.tax);
-    if (principal > sourceNetRemaining + 0.005 || principal > Number(source.net_amount) / Number(source.quantity) * returnedQty + 0.005) {
+    if (toMinorUnits(principal) > toMinorUnits(sourceNetRemaining) || toMinorUnits(principal) > toMinorUnits(Number(source.net_amount) / Number(source.quantity) * returnedQty)) {
       throw new Error("Inventory claim amount exceeds the uncredited value for the quantity on the original supplier invoice");
     }
     const expectedTax = money(principal * Number(source.tax_rate || 0) / 100);
-    if (Math.abs(tax - expectedTax) > 0.02 || tax > sourceVatRemaining + 0.005
-        || tax > Number(source.tax_amount) / Number(source.quantity) * returnedQty + 0.005) {
+    if (toMinorUnits(tax) !== toMinorUnits(expectedTax) || toMinorUnits(tax) > toMinorUnits(sourceVatRemaining)
+        || toMinorUnits(tax) > toMinorUnits(Number(source.tax_amount) / Number(source.quantity) * returnedQty)) {
       throw new Error("VAT reversal must match the original invoice line tax rate and remaining deductible input VAT");
     }
     const claimValue = money(Number(dispositionLine.value));
@@ -250,7 +251,7 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
          AND status <> 'cancelled' AND is_deleted = FALSE`,
       [companyId, dispositionId, sourceBillLineId],
     );
-    if (principal > claimValue - Number(claimReserved.rows[0].amount) + 0.005) throw new Error("Inventory credit amount exceeds the remaining supplier-return claim value");
+    if (toMinorUnits(principal) > toMinorUnits(claimValue) - toMinorUnits(claimReserved.rows[0].amount)) throw new Error("Inventory credit amount exceeds the remaining supplier-return claim value");
     if (returnedQty > Number(dispositionLine.quantity) - Number(claimReserved.rows[0].quantity) + 0.00005) throw new Error("Returned quantity exceeds the remaining quantity on this return claim");
 
     const billIds = normalized.map((entry) => entry.billId);
@@ -267,7 +268,7 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
         const bill = billById.get(allocation.billId);
         if (!bill || !["posted", "partial", "overdue"].includes(bill.status)) throw new Error("Credit allocations can only use open posted bills for this supplier");
         if (bill.currency_code !== "KES") throw new Error("Supplier return credit allocation currently requires KES bills");
-        if (allocation.amount > Number(bill.total_amount) - Number(bill.amount_paid) + 0.005) throw new Error("An allocation exceeds the bill's remaining payable balance");
+        if (toMinorUnits(allocation.amount) > toMinorUnits(Number(bill.total_amount) - Number(bill.amount_paid))) throw new Error("An allocation exceeds the bill's remaining payable balance");
       }
     }
     if (refund > 0) {
@@ -339,10 +340,10 @@ async function post({ companyId, id, user }) {
        WHERE company_id = $1 AND disposition_id = $2 AND id <> $3 AND status <> 'cancelled' AND is_deleted = FALSE`,
       [companyId, credit.disposition_id, id],
     );
-    if (Number(credit.inventory_claim_amount) > claimValue - Number(reserved.rows[0].amount) + 0.005) throw new Error("Posted and draft credits exceed the return claim value");
+    if (toMinorUnits(credit.inventory_claim_amount) > toMinorUnits(claimValue) - toMinorUnits(reserved.rows[0].amount)) throw new Error("Posted and draft credits exceed the return claim value");
     if (Number(credit.returned_quantity) > Number(disposition.quantity) - Number(reserved.rows[0].quantity) + 0.00005) throw new Error("Posted and draft credits exceed the return claim quantity");
-    if (Math.abs(Number(credit.amount) - Number(credit.inventory_claim_amount) - Number(credit.vat_amount)) > 0.005
-        || Math.abs(Number(credit.amount) - Number(credit.allocated_amount) - Number(credit.refund_amount) - Number(credit.unapplied_amount)) > 0.005) {
+    if (toMinorUnits(credit.amount) !== toMinorUnits(sumMoney([credit.inventory_claim_amount, credit.vat_amount]))
+        || toMinorUnits(credit.amount) !== toMinorUnits(sumMoney([credit.allocated_amount, credit.refund_amount, credit.unapplied_amount]))) {
       throw new Error("Credit note values or settlement split no longer balance");
     }
     if (credit.source_bill_line_id) {
@@ -396,7 +397,7 @@ async function post({ companyId, id, user }) {
         [companyId, credit.disposition_id, credit.source_bill_line_id, id],
       );
       if (Number(credit.returned_quantity) > Number(matchedDisposition.rows[0].quantity) - Number(matchedClaimUsage.rows[0].quantity) + 0.00005
-          || Number(credit.inventory_claim_amount) > Number(matchedDisposition.rows[0].value) - Number(matchedClaimUsage.rows[0].principal) + 0.005) {
+          || toMinorUnits(credit.inventory_claim_amount) > toMinorUnits(matchedDisposition.rows[0].value) - toMinorUnits(matchedClaimUsage.rows[0].principal)) {
         throw new Error("Credit quantity or principal exceeds the remaining receipt-layer allocation on this return claim");
       }
       const usage = await client.query(
@@ -412,11 +413,11 @@ async function post({ companyId, id, user }) {
       const maxNetForQty = Number(source.net_amount) / Number(source.quantity) * Number(credit.returned_quantity);
       const maxVatForQty = Number(source.tax_amount) / Number(source.quantity) * Number(credit.returned_quantity);
       if (Number(credit.returned_quantity) > availableQty + 0.00005
-          || Number(credit.inventory_claim_amount) > Number(source.net_amount) - Number(already.principal) + 0.005
-          || Number(credit.inventory_claim_amount) > maxNetForQty + 0.005
-          || Number(credit.vat_amount) > Number(source.tax_amount) - Number(already.tax) + 0.005
-          || Number(credit.vat_amount) > maxVatForQty + 0.005
-          || Math.abs(Number(credit.vat_amount) - money(Number(credit.inventory_claim_amount) * Number(source.tax_rate || 0) / 100)) > 0.02) {
+          || toMinorUnits(credit.inventory_claim_amount) > toMinorUnits(Number(source.net_amount) - Number(already.principal))
+          || toMinorUnits(credit.inventory_claim_amount) > toMinorUnits(maxNetForQty)
+          || toMinorUnits(credit.vat_amount) > toMinorUnits(Number(source.tax_amount) - Number(already.tax))
+          || toMinorUnits(credit.vat_amount) > toMinorUnits(maxVatForQty)
+          || toMinorUnits(credit.vat_amount) !== toMinorUnits(money(Number(credit.inventory_claim_amount) * Number(source.tax_rate || 0) / 100))) {
         throw new Error("Return quantity, principal or VAT exceeds the remaining source invoice line amounts");
       }
       const timing = await client.query(
@@ -441,13 +442,13 @@ async function post({ companyId, id, user }) {
        WHERE a.credit_note_id = $1 AND a.company_id = $2 ORDER BY b.id FOR UPDATE OF b`,
       [id, companyId],
     );
-    if (Math.abs(allocationResult.rows.reduce((sum, row) => sum + Number(row.amount), 0) - Number(credit.allocated_amount)) > 0.005) {
+    if (toMinorUnits(sumMoney(allocationResult.rows.map((row) => row.amount))) !== toMinorUnits(credit.allocated_amount)) {
       throw new Error("Supplier bill allocations must equal the allocated portion of the note");
     }
     for (const allocation of allocationResult.rows) {
       if (allocation.vendor_id !== credit.vendor_id || allocation.currency_code !== "KES"
           || !["posted", "partial", "overdue"].includes(allocation.status)
-          || Number(allocation.amount) > Number(allocation.total_amount) - Number(allocation.amount_paid) + 0.005) {
+          || toMinorUnits(allocation.amount) > toMinorUnits(Number(allocation.total_amount) - Number(allocation.amount_paid))) {
         throw new Error(`Supplier bill ${allocation.supplier_invoice_no} is no longer available for this credit`);
       }
     }
@@ -505,8 +506,8 @@ async function post({ companyId, id, user }) {
     });
     await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
     for (const allocation of allocations) {
-      const paid = Number(allocation.amount_paid) + Number(allocation.amount);
-      const status = paid >= Number(allocation.total_amount) - 0.005 ? "paid" : "partial";
+      const paid = sumMoney([allocation.amount_paid, allocation.amount]);
+      const status = toMinorUnits(paid) >= toMinorUnits(allocation.total_amount) ? "paid" : "partial";
       await client.query(
         `UPDATE erp_supplier_bills SET amount_paid = $3, status = $4, updated_by = $5
          WHERE id = $1 AND company_id = $2`,

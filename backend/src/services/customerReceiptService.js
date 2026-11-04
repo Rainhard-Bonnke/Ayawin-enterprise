@@ -4,6 +4,7 @@ const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit, assertDifferentUser } = require("./auditService");
 const { nextDocumentNo } = require("./documentNumberingService");
+const { sumMoney, toMinorUnits } = require("../lib/money");
 
 function normalizeAllocations(invoiceId, allocations, amount) {
   const values = Array.isArray(allocations) && allocations.length
@@ -17,7 +18,7 @@ function normalizeAllocations(invoiceId, allocations, amount) {
     if (seen.has(value.invoiceId)) throw new Error("Use one allocation per invoice");
     seen.add(value.invoiceId);
   }
-  if (values.reduce((sum, value) => sum + value.amount, 0) - Number(amount) > 0.0001) {
+  if (toMinorUnits(sumMoney(values.map((value) => value.amount))) > toMinorUnits(amount)) {
     throw new Error("Receipt allocations exceed the receipt amount");
   }
   return values.sort((a, b) => a.invoiceId.localeCompare(b.invoiceId));
@@ -42,10 +43,10 @@ async function applyReceiptAllocations(client, { companyId, customerId, allocati
     );
     const invoice = invoiceResult.rows[0];
     if (!invoice || !["posted","partial","overdue"].includes(invoice.status)) throw new Error("An allocation invoice is not an open invoice for this customer");
-    const outstanding = Number(invoice.total_amount) - Number(invoice.amount_paid || 0) - Number(invoice.credited_amount || 0);
-    if (Number(allocation.amount) - outstanding > 0.0001) throw new Error(`Allocation exceeds the open balance on invoice ${invoice.invoice_no}`);
-    const newPaid = Number(invoice.amount_paid || 0) + Number(allocation.amount);
-    const status = newPaid + Number(invoice.credited_amount || 0) >= Number(invoice.total_amount) - 0.0001
+    const outstanding = toMinorUnits(invoice.total_amount) - toMinorUnits(invoice.amount_paid || 0) - toMinorUnits(invoice.credited_amount || 0);
+    if (toMinorUnits(allocation.amount) > outstanding) throw new Error(`Allocation exceeds the open balance on invoice ${invoice.invoice_no}`);
+    const newPaid = sumMoney([invoice.amount_paid || 0, allocation.amount]);
+    const status = toMinorUnits(newPaid) + toMinorUnits(invoice.credited_amount || 0) >= toMinorUnits(invoice.total_amount)
       ? "paid" : "partial";
     await client.query("UPDATE erp_customer_invoices SET amount_paid=$3,status=$4,updated_at=NOW(),updated_by=$5 WHERE id=$1 AND company_id=$2",
       [invoice.id, companyId, newPaid, status, userId]);
@@ -64,8 +65,8 @@ async function postReceipt(client, { companyId, userId, receipt, method }) {
   );
   await applyReceiptAllocations(client, { companyId, customerId: receipt.customer_id,
     allocations: allocations.rows.map((row) => ({ invoiceId: row.invoice_id, amount: Number(row.amount) })), userId });
-  const allocationTotal = allocations.rows.reduce((sum, row) => sum + Number(row.amount), 0);
-  const unapplied = Math.max(0, Number(receipt.amount) - allocationTotal);
+  const allocationTotal = sumMoney(allocations.rows.map((row) => row.amount));
+  const unapplied = Math.max(0, sumMoney([receipt.amount, -allocationTotal]));
   const journal = await gl.createJournalInTransaction(client, {
     companyId, userId, entryDate: receipt.receipt_date, journalType: "receipt", source: "module",
     referenceNo: receipt.receipt_no, description: `Customer receipt ${receipt.receipt_no} (${method.method_code})`,
@@ -206,13 +207,13 @@ async function allocateCustomerReceipt({ companyId, userId, receiptId, allocatio
     const available = Number(receipt.unapplied_amount || 0);
     if (available <= 0) throw new Error("Receipt has no unapplied balance");
     const normalized = normalizeAllocations(null, allocations, available);
-    const allocationTotal = normalized.reduce((sum, allocation) => sum + allocation.amount, 0);
+    const allocationTotal = sumMoney(normalized.map((allocation) => allocation.amount));
     for (const allocation of normalized) {
       await client.query("INSERT INTO erp_receipt_allocations (company_id,receipt_id,invoice_id,amount,created_by) VALUES ($1,$2,$3,$4,$5)",
         [companyId, receiptId, allocation.invoiceId, allocation.amount, userId]);
     }
     await applyReceiptAllocations(client, { companyId, customerId: receipt.customer_id, allocations: normalized, userId });
-    const newUnapplied = available - allocationTotal;
+    const newUnapplied = sumMoney([available, -allocationTotal]);
     await client.query("UPDATE erp_customer_receipts SET unapplied_amount=$3,updated_at=NOW(),updated_by=$4 WHERE id=$1 AND company_id=$2", [receiptId, companyId, newUnapplied, userId]);
     await logAudit({ client, companyId, userId, entityType: "erp_customer_receipts", entityId: receiptId,
       action: "customer_receipt_allocated", newValues: { allocations: normalized, unapplied_amount: newUnapplied } });
@@ -251,8 +252,8 @@ async function closeTillSession({ companyId, userId, sessionId, countedCash }) {
     const pending = await client.query("SELECT COUNT(*)::int AS count FROM erp_customer_receipts WHERE till_session_id=$1 AND status='pending_approval' AND is_deleted=FALSE", [sessionId]);
     if (Number(pending.rows[0].count)) throw new Error("Approve or cancel pending cash receipts before closing the till");
     const receipts = await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM erp_customer_receipts WHERE till_session_id=$1 AND payment_method='cash' AND status='posted' AND is_deleted=FALSE", [sessionId]);
-    const expected = Number(session.opening_float) + Number(receipts.rows[0].amount || 0);
-    const variance = counted - expected;
+    const expected = sumMoney([session.opening_float, receipts.rows[0].amount || 0]);
+    const variance = sumMoney([counted, -expected]);
     let journalId = null;
     if (Math.abs(variance) >= 0.005) {
       const accounts = await client.query("SELECT id,account_code FROM erp_chart_of_accounts WHERE company_id=$1 AND account_code=ANY($2::text[]) AND is_active=TRUE AND is_postable=TRUE AND is_deleted=FALSE", [companyId, ["1110","5300"]]);
@@ -321,12 +322,15 @@ async function getCustomerStatement({ companyId, customerId, fromDate = null, to
   let opening = 0;
   const visible = [];
   for (const event of ordered) {
-    const value = Number(event.debit) - Number(event.credit);
-    if (dateKey(event.event_date) < from) opening += value;
+    const value = sumMoney([event.debit, -Number(event.credit)]);
+    if (dateKey(event.event_date) < from) opening = sumMoney([opening, value]);
     else if (dateKey(event.event_date) <= to) visible.push({ ...event, event_date: dateKey(event.event_date), debit: Number(event.debit), credit: Number(event.credit), amount: value });
   }
   let balance = opening;
-  const transactions = visible.map((event) => ({ ...event, balance: (balance += event.amount) }));
+  const transactions = visible.map((event) => {
+    balance = sumMoney([balance, event.amount]);
+    return { ...event, balance };
+  });
   return { customer: customer.rows[0], from, to, opening_balance: opening, transactions,
     closing_balance: balance };
 }
