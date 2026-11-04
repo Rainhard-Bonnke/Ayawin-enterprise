@@ -1,4 +1,6 @@
 const crypto = require("crypto");
+const dns = require("dns").promises;
+const ipaddr = require("ipaddr.js");
 const pool = require("../db");
 
 const EVENTS = [
@@ -9,6 +11,22 @@ const EVENTS = [
   "payroll.posted",
   "stock.low",
 ];
+
+async function validateWebhookUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error("Webhook URL must be valid HTTPS"); }
+  if (url.protocol !== "https:" || url.username || url.password) throw new Error("Webhook URL must use HTTPS without embedded credentials");
+  const addresses = await dns.lookup(url.hostname, { all: true, verbatim: true });
+  if (!addresses.length) throw new Error("Webhook host did not resolve");
+  for (const entry of addresses) {
+    const address = ipaddr.process(entry.address);
+    if (address.range() !== "unicast") throw new Error("Webhook URL resolves to a non-public IP address");
+    if (address.kind() === "ipv4" && address.match(ipaddr.parse("169.254.169.254"), 32)) {
+      throw new Error("Webhook URL resolves to a blocked metadata address");
+    }
+  }
+  return url.toString();
+}
 
 async function emitEvent({ companyId, eventType, payload }) {
   const subs = await pool.query(
@@ -36,6 +54,7 @@ async function emitEvent({ companyId, eventType, payload }) {
 
     try {
       if (typeof fetch === "function" && sub.url.startsWith("http")) {
+        await validateWebhookUrl(sub.url);
         const resp = await fetch(sub.url, {
           method: "POST",
           headers: {
@@ -43,10 +62,11 @@ async function emitEvent({ companyId, eventType, payload }) {
             ...(signature ? { "X-ERP-Signature": signature } : {}),
           },
           body,
+          redirect: "error",
           signal: AbortSignal.timeout(10000),
         });
         responseStatus = resp.status;
-        responseBody = (await resp.text()).slice(0, 2000);
+        await resp.body?.cancel();
         success = resp.ok;
       } else {
         console.log(`[webhook] ${eventType} -> ${sub.url}`);
@@ -69,4 +89,4 @@ async function emitEvent({ companyId, eventType, payload }) {
   return { event: eventType, delivered: results.length, results };
 }
 
-module.exports = { emitEvent, EVENTS };
+module.exports = { emitEvent, EVENTS, validateWebhookUrl };

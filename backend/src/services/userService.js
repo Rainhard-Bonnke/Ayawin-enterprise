@@ -1,4 +1,18 @@
 const pool = require("../db");
+const ipaddr = require("ipaddr.js");
+const { cacheDel } = require("../lib/redis");
+
+async function invalidateUserCache(userId) {
+  await cacheDel(`erp:user:${userId}`);
+}
+
+async function invalidateRoleUserCaches(roleId, companyId) {
+  const result = await pool.query(
+    "SELECT id FROM erp_users WHERE role_id = $1 AND company_id = $2 AND is_deleted = FALSE",
+    [roleId, companyId],
+  );
+  await Promise.all(result.rows.map((row) => invalidateUserCache(row.id)));
+}
 
 async function loadUserPermissions(userId, roleId) {
   if (!roleId) return [];
@@ -55,6 +69,12 @@ async function findUserById(id) {
 
 async function checkIpWhitelist(user, ip) {
   if (!ip) return true;
+  let address;
+  try {
+    address = ipaddr.process(ip);
+  } catch {
+    return false;
+  }
   const result = await pool.query(
     `SELECT cidr FROM erp_ip_whitelist
      WHERE company_id = $1 AND is_deleted = FALSE
@@ -62,8 +82,15 @@ async function checkIpWhitelist(user, ip) {
     [user.company_id, user.id, user.role_id],
   );
   if (result.rowCount === 0) return true;
-  // Simple prefix match for MVP; production should use inet operators
-  return result.rows.some((row) => ip.startsWith(row.cidr.replace("/32", "").replace("*", "")));
+  return result.rows.some((row) => ipMatchesCidr(address, row.cidr));
+}
+
+function ipMatchesCidr(addressOrString, cidr) {
+  try {
+    const address = typeof addressOrString === "string" ? ipaddr.process(addressOrString) : addressOrString;
+    const [range, prefix] = ipaddr.parseCIDR(cidr);
+    return address.kind() === range.kind() && address.match(range, prefix);
+  } catch { return false; }
 }
 
 function sanitizeUser(user) {
@@ -92,4 +119,7 @@ module.exports = {
   loadUserPermissions,
   checkIpWhitelist,
   sanitizeUser,
+  invalidateUserCache,
+  invalidateRoleUserCaches,
+  ipMatchesCidr,
 };
