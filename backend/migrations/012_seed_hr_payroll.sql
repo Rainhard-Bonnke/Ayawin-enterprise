@@ -32,24 +32,4 @@ CROSS JOIN (VALUES
 WHERE c.code = 'MARTIN'
   AND NOT EXISTS (SELECT 1 FROM erp_holidays h WHERE h.company_id = c.id AND h.holiday_date = v.dt::date);
 
-INSERT INTO erp_employee_contracts (company_id, employee_id, contract_type, start_date, basic_salary, house_allowance, transport_allowance)
-SELECT c.id, e.id, e.employment_type, COALESCE(e.hire_date, '2020-01-01'::date),
-       e.basic_salary, e.basic_salary * 0.15, 3000
-FROM erp_companies c
-JOIN erp_employees e ON e.company_id = c.id AND e.is_active = TRUE
-WHERE c.code = 'MARTIN'
-  AND NOT EXISTS (SELECT 1 FROM erp_employee_contracts ec WHERE ec.employee_id = e.id AND ec.status = 'active');
-
-INSERT INTO erp_leave_balances (company_id, employee_id, leave_type_id, balance_days)
-SELECT c.id, e.id, lt.id, lt.days_per_year
-FROM erp_companies c
-JOIN erp_employees e ON e.company_id = c.id
-JOIN erp_leave_types lt ON lt.company_id = c.id AND lt.code = 'ANNUAL'
-WHERE c.code = 'MARTIN'
-  AND NOT EXISTS (SELECT 1 FROM erp_leave_balances b WHERE b.employee_id = e.id AND b.leave_type_id = lt.id);
-
--- May 2026 payroll run (posted)
-INSERT INTO erp_payroll_runs (company_id, run_no, payroll_month, status, posted_at)
-SELECT c.id, 'PR-2026-05', '2026-05-01'::date, 'posted', NOW()
-FROM erp_companies c WHERE c.code = 'MARTIN'
-  AND NOT EXISTS (SELECT 1 FROM erp_payroll_runs pr WHERE pr.company_id = c.id AND pr.run_no = 'PR-2026-05');
+-- Employee contracts, leave balances and sample payroll runs are explicit demo fixtures.

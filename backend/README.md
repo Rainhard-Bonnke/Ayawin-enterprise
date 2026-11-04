@@ -1,3 +1,9 @@
+## Database fixtures
+
+Migrations seed reference records only. For local or test data, run `npm run db:seed:demo` with `NODE_ENV` other than `production`.
+To rebuild a development database, set `ALLOW_DB_RESET=true` and run `npm run db:reset`. The reset command refuses to run in production.
+Create the first ERP administrator by setting `ADMIN_EMAIL` and `ADMIN_PASSWORD` before bootstrap.
+
 # Ayawin Enterprise Backend
 
 ## Local development

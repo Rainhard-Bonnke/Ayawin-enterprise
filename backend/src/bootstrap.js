@@ -30,27 +30,6 @@ const REQUIRED_TABLES = [
 
 let bootstrapPromise = null;
 
-async function ensureSeedPatches() {
-  // Idempotent seed patches for environments that were bootstrapped before new seed blocks were added.
-  await pool.query(
-    `
-    INSERT INTO purchase_order_items (purchase_order_id, product_id, quantity, unit_cost, line_total)
-    SELECT po.id, p.id, v.quantity, v.unit_cost, (v.quantity * v.unit_cost)
-    FROM (VALUES
-      ('PO-2026-0088', 'JW-RED', 120, 1850),
-      ('PO-2026-0088', 'SMV-750', 160, 1200),
-      ('PO-2026-0086', 'BLZ-500', 600, 160),
-      ('PO-2026-0085', 'TSK-500', 800, 180),
-      ('PO-2026-0085', 'GNS-500', 420, 220)
-    ) AS v(po_number, sku, quantity, unit_cost)
-    JOIN purchase_orders po ON po.po_number = v.po_number
-    JOIN products p ON p.sku = v.sku
-    LEFT JOIN purchase_order_items existing ON existing.purchase_order_id = po.id AND existing.product_id = p.id
-    WHERE existing.id IS NULL;
-    `,
-  );
-}
-
 async function getMissingTables() {
   const result = await pool.query(
     `SELECT table_name
@@ -129,13 +108,7 @@ async function ensureBootstrap() {
     });
   }
 
-  const result = await bootstrapPromise;
-  // Only run seed patches once the base schema exists.
-  const stillMissing = await getMissingTables();
-  if (stillMissing.length === 0) {
-    await ensureSeedPatches();
-  }
-  return result;
+  return bootstrapPromise;
 }
 
 async function getSchemaStatus() {

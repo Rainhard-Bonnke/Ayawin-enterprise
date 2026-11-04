@@ -1,16 +1,26 @@
 const pool = require("../../src/db");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const { ensureErpFoundation } = require("../../src/erpBootstrap");
+const { seedDemo } = require("../../scripts/seed-demo.cjs");
+
+if (!process.env.DOC_VERIFY_SECRET || process.env.DOC_VERIFY_SECRET.length < 32) {
+  process.env.DOC_VERIFY_SECRET = crypto.randomBytes(48).toString("hex");
+}
 
 let cachedContext = null;
 
 async function getTestContext() {
   if (cachedContext) return cachedContext;
   await ensureErpFoundation();
+  await seedDemo();
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) throw new Error("E2E setup requires ADMIN_EMAIL and ADMIN_PASSWORD");
 
   const company = await pool.query(`SELECT id FROM erp_companies WHERE code = 'MARTIN' LIMIT 1`);
   const user = await pool.query(
-    `SELECT id, email FROM erp_users WHERE email = 'bonnkereinhard654@gmail.com' LIMIT 1`,
+    `SELECT id, email FROM erp_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    [adminEmail],
   );
   const branch = await pool.query(
     `SELECT id FROM erp_branches WHERE company_id = $1 AND code = 'HQ' LIMIT 1`,

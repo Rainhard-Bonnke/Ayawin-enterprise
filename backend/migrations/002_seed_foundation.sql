@@ -56,7 +56,7 @@ INSERT INTO erp_permissions (module, action, code, description) VALUES
   ('reports', 'export', 'reports.export', 'Export reports')
 ON CONFLICT (code) DO NOTHING;
 
--- Demo company (idempotent via code)
+-- Default tenant scaffold; administrator credentials are configured via environment.
 INSERT INTO erp_companies (
   code, name, legal_name, tax_registration_no, base_currency_code,
   fiscal_year_start_month, default_language_code, timezone
@@ -78,16 +78,6 @@ CROSS JOIN (VALUES
 WHERE c.code = 'MARTIN'
   AND NOT EXISTS (
     SELECT 1 FROM erp_branches b WHERE b.company_id = c.id AND b.code = v.code
-  );
-
--- Exchange rate sample
-INSERT INTO erp_exchange_rates (company_id, from_currency_code, to_currency_code, rate, effective_date, source)
-SELECT c.id, 'USD', 'KES', 129.50, CURRENT_DATE, 'seed'
-FROM erp_companies c
-WHERE c.code = 'MARTIN'
-  AND NOT EXISTS (
-    SELECT 1 FROM erp_exchange_rates r
-    WHERE r.company_id = c.id AND r.from_currency_code = 'USD' AND r.effective_date = CURRENT_DATE
   );
 
 -- System Administrator role with all permissions
@@ -125,45 +115,6 @@ WHERE r.name = 'Operations Manager'
     SELECT 1 FROM erp_role_permissions rp WHERE rp.role_id = r.id AND rp.permission_id = p.id
   );
 
--- Admin user (password set by bootstrap: demo in dev)
-INSERT INTO erp_users (
-  company_id, default_branch_id, role_id, username, email, full_name, phone, status, locale
-)
-SELECT
-  c.id,
-  b.id,
-  r.id,
-  'admin',
-  'bonnkereinhard654@gmail.com',
-  'System Administrator',
-  '+254700000001',
-  'active',
-  'en'
-FROM erp_companies c
-JOIN erp_branches b ON b.company_id = c.id AND b.code = 'HQ'
-JOIN erp_roles r ON r.company_id = c.id AND r.name = 'System Administrator'
-WHERE c.code = 'MARTIN'
-  AND NOT EXISTS (
-    SELECT 1 FROM erp_users u WHERE u.company_id = c.id AND u.email = 'bonnkereinhard654@gmail.com'
-  );
-
-INSERT INTO erp_user_profiles (company_id, user_id, job_title, department)
-SELECT u.company_id, u.id, 'Chief Executive', 'Executive'
-FROM erp_users u
-JOIN erp_companies c ON c.id = u.company_id AND c.code = 'MARTIN'
-WHERE u.email = 'bonnkereinhard654@gmail.com'
-  AND NOT EXISTS (SELECT 1 FROM erp_user_profiles p WHERE p.user_id = u.id);
-
-INSERT INTO erp_user_branches (company_id, user_id, branch_id)
-SELECT u.company_id, u.id, b.id
-FROM erp_users u
-JOIN erp_companies c ON c.id = u.company_id AND c.code = 'MARTIN'
-JOIN erp_branches b ON b.company_id = c.id
-WHERE u.email = 'bonnkereinhard654@gmail.com'
-  AND NOT EXISTS (
-    SELECT 1 FROM erp_user_branches ub WHERE ub.user_id = u.id AND ub.branch_id = b.id
-  );
-
 -- System settings
 INSERT INTO erp_system_settings (company_id, category, setting_key, setting_value, description)
 SELECT c.id, v.category, v.key, v.val::jsonb, v.descr
@@ -171,8 +122,6 @@ FROM erp_companies c
 CROSS JOIN (VALUES
   ('general', 'password_policy', '{"min_length":12,"require_uppercase":true,"require_number":true,"require_special":true,"max_age_days":90}', 'Password policy'),
   ('general', 'session_timeout_minutes', '30', 'Inactivity logout'),
-  ('finance', 'fiscal_year', '{"start_month":1,"label":"2026"}', 'Active fiscal year'),
-  ('tax', 'vat_registration', '{"number":"P051000099Z","authority":"KRA"}', 'VAT registration'),
   ('integrations', 'etims_enabled', 'false', 'KRA eTIMS integration flag')
 ) AS v(category, key, val, descr)
 WHERE c.code = 'MARTIN'

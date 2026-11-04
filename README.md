@@ -63,8 +63,7 @@ If you run the backend inside Docker, use `DATABASE_HOST=db`.
 
 Default seed login:
 
-- Email: `admin@martin.co.ke`
-- Password: `demo`
+- Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in the backend environment before first startup.
 
 ## ERP API (Module 1 — Foundation & Auth)
 
@@ -83,7 +82,7 @@ Example login:
 ```bash
 curl -X POST http://localhost:4000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@martin.co.ke","password":"demo"}'
+  -d '{"email":"your-admin@example.com","password":"your-configured-password"}'
 ```
 
 Legacy routes (`/api/auth/login`, `/api/products`, etc.) remain for the existing React UI until each module is migrated.
@@ -109,7 +108,9 @@ This repo includes a Render blueprint at `render.yaml` for:
 
 ### Important production settings
 
-- Keep `ENABLE_DEMO_MODE=false`
+- Set independent random `JWT_SECRET` and `MFA_ENCRYPTION_KEY` values of at least 32 characters.
+- Set a separate random `DOC_VERIFY_SECRET` of at least 32 characters for invoice verification links.
+- Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` before first administrator bootstrap.
 - Rotate `JWT_SECRET` and `DOC_VERIFY_SECRET` if you ever expose them
 - Attach custom domains:
   - frontend: `app.yourdomain.com`
