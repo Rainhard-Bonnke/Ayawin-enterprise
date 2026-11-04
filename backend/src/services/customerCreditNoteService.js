@@ -4,8 +4,9 @@ const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit, assertDifferentUser } = require("./auditService");
 const { nextDocumentNo } = require("./documentNumberingService");
+const { roundMoney, sumMoney, lineMoney, toMinorUnits } = require("../lib/money");
 
-const money = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const money = roundMoney;
 const dateShape = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
 async function nextNo(client, companyId) {
@@ -28,7 +29,7 @@ async function getSetup(companyId) {
        ) drafts ON TRUE
        WHERE inv.company_id = $1 AND inv.is_deleted = FALSE AND inv.status IN ('posted','partial','overdue','paid','credited')
          AND inv.currency_code = 'KES'
-         AND (inv.total_amount - inv.amount_paid - inv.credited_amount - COALESCE(drafts.amount,0) > 0.005
+         AND (inv.total_amount - inv.amount_paid - inv.credited_amount - COALESCE(drafts.amount,0) > 0
            OR inv.status = 'paid')
        ORDER BY inv.invoice_date DESC, inv.invoice_no`, [companyId],
     ),
@@ -239,7 +240,7 @@ async function createDraft({ companyId, user, invoiceId, creditDate, reason, lin
         Number(source.quantity) - Number(layerUse.rows[0].quantity) - (stagedSourceQty.get(sourceKey) || 0),
       );
       if (input.quantity > available + 0.00005) throw new Error("Credit quantity exceeds the unreturned invoice, delivery, or batch quantity");
-      const netAmount = money(input.quantity * Number(invoiceLine.unit_price));
+      const netAmount = lineMoney(input.quantity, invoiceLine.unit_price);
       const priorLineTax = await client.query(
         `SELECT COALESCE(SUM(l.tax_amount),0) AS amount FROM erp_customer_credit_note_lines l
          JOIN erp_customer_credit_notes n ON n.id = l.credit_note_id AND n.company_id = l.company_id
@@ -260,16 +261,16 @@ async function createDraft({ companyId, user, invoiceId, creditDate, reason, lin
       stagedDeliveryQty.set(input.deliveryLineId, (stagedDeliveryQty.get(input.deliveryLineId) || 0) + input.quantity);
       stagedSourceQty.set(sourceKey, (stagedSourceQty.get(sourceKey) || 0) + input.quantity);
     }
-    const subtotal = money(prepared.reduce((sum, line) => sum + line.netAmount, 0));
-    const taxAmount = money(prepared.reduce((sum, line) => sum + line.taxAmount, 0));
-    const total = money(subtotal + taxAmount);
+    const subtotal = sumMoney(prepared.map((line) => line.netAmount));
+    const taxAmount = sumMoney(prepared.map((line) => line.taxAmount));
+    const total = sumMoney([subtotal, taxAmount]);
     const drafts = await client.query(
       `SELECT COALESCE(SUM(total_amount - refund_amount),0) AS amount FROM erp_customer_credit_notes
        WHERE company_id = $1 AND invoice_id = $2 AND status = 'draft'`, [companyId, invoiceId],
     );
     const outstanding = Number(invoice.total_amount) - Number(invoice.amount_paid) - Number(invoice.credited_amount) - Number(drafts.rows[0].amount);
-    if (refund > total + 0.005) throw new Error("Cash refund cannot exceed the credit note total");
-    if (total - refund > outstanding + 0.005) throw new Error("The amount applied to this invoice exceeds its open receivable balance; refund the excess");
+    if (toMinorUnits(refund) > toMinorUnits(total)) throw new Error("Cash refund cannot exceed the credit note total");
+    if (toMinorUnits(sumMoney([total, -refund])) > toMinorUnits(outstanding)) throw new Error("The amount applied to this invoice exceeds its open receivable balance; refund the excess");
     if (refund > 0) {
       const bank = await client.query(
         `SELECT id FROM erp_chart_of_accounts WHERE id = $1 AND company_id = $2 AND account_type = 'asset'
@@ -331,7 +332,7 @@ async function postCreditNote({ companyId, noteId, user }) {
        WHERE company_id = $1 AND invoice_id = $2 AND status = 'draft' AND id <> $3`, [companyId, note.invoice_id, noteId],
     );
     const appliedAmount = Number(note.total_amount) - Number(note.refund_amount || 0);
-    if (appliedAmount > Number(invoice.total_amount) - Number(invoice.amount_paid) - Number(invoice.credited_amount) - Number(otherDrafts.rows[0].amount) + 0.005) {
+    if (toMinorUnits(appliedAmount) > toMinorUnits(Number(invoice.total_amount) - Number(invoice.amount_paid) - Number(invoice.credited_amount) - Number(otherDrafts.rows[0].amount))) {
       throw new Error("Invoice balance changed; credit note exceeds the receivable still open");
     }
     const lines = await client.query(
@@ -430,7 +431,7 @@ async function postCreditNote({ companyId, noteId, user }) {
       refundJournalId = refundJournal.id;
     }
     const credited = Number(invoice.credited_amount) + appliedAmount;
-    const settled = Number(invoice.amount_paid) + credited >= Number(invoice.total_amount) - 0.005;
+    const settled = toMinorUnits(Number(invoice.amount_paid) + credited) >= toMinorUnits(invoice.total_amount);
     const nextStatus = settled ? "credited" : invoice.status === "overdue" ? "overdue"
       : Number(invoice.amount_paid) + credited > 0 ? "partial" : invoice.status;
     await client.query(
