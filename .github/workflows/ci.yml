@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  backend-critical-e2e:
-    name: Backend critical e2e
+  verify:
+    name: Backend tests, e2e, and lint
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -30,6 +30,12 @@ jobs:
       DATABASE_PASSWORD: postgres
       DATABASE_DB: ayawin_enterprise
       NODE_ENV: test
+      JWT_SECRET: ci-jwt-secret-for-automated-tests-32-chars-minimum
+      DOC_VERIFY_SECRET: ci-document-verification-secret-32-chars-minimum
+      MFA_ENCRYPTION_KEY: ci-mfa-key-is-independent-and-long-enough-32
+      ADMIN_EMAIL: admin@example.test
+      ADMIN_PASSWORD: ci-test-admin-password
+      VERIFY_CLEAN_MIGRATIONS: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +53,16 @@ jobs:
         run: npm ci
         working-directory: backend
 
-      - name: Run critical e2e tests
-        run: npm run test:e2e:critical
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run backend unit tests
+        run: npm test
         working-directory: backend
+
+      - name: Run all backend e2e tests
+        run: npm run test:e2e
+        working-directory: backend
+
+      - name: Lint
+        run: npm run lint
