@@ -2,7 +2,7 @@ const pool = require("../db");
 const inventory = require("./inventoryService");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
-const { logAudit } = require("./auditService");
+const { logAudit, assertDifferentUser } = require("./auditService");
 
 function normalizeLines(lines) {
   if (!Array.isArray(lines) || lines.length < 1 || lines.length > 500) throw new Error("Add between 1 and 500 count lines");
@@ -111,7 +111,7 @@ async function post({ companyId, id, user, note }) {
     const headerResult = await client.query("SELECT * FROM erp_stock_adjustments WHERE id = $1 AND company_id = $2 AND status = 'draft' AND is_deleted = FALSE FOR UPDATE", [id, companyId]);
     const header = headerResult.rows[0];
     if (!header) throw new Error("Draft adjustment not found");
-    if (header.created_by === user.id) throw new Error("The preparer cannot approve and post their own adjustment");
+    assertDifferentUser(header.created_by, user.id);
     const lines = await client.query("SELECT * FROM erp_stock_adjustment_lines WHERE company_id = $1 AND adjustment_id = $2 AND is_deleted = FALSE ORDER BY line_no FOR UPDATE", [companyId, id]);
     for (const line of lines.rows) {
       const current = await client.query("SELECT quantity FROM erp_stock_on_hand WHERE company_id = $1 AND warehouse_id = $2 AND item_id = $3 AND is_deleted = FALSE FOR UPDATE", [companyId, header.warehouse_id, line.item_id]);

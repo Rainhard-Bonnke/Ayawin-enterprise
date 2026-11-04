@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { nextDocumentNo } = require("./documentNumberingService");
 const { toMinorUnits } = require("../lib/money");
+const { assertDifferentUser } = require("./auditService");
 
 async function nextJournalNo(client, companyId) {
   return nextDocumentNo(client, { companyId, docType: "erp_journals", prefix: "JE" });
@@ -115,14 +116,14 @@ async function postJournalInTransaction(client, { journalId, companyId, userId }
   const journal = journalResult.rows[0];
   if (!journal) throw new Error("Journal not found");
   if (journal.status !== "draft") throw new Error("Only a draft journal can be posted");
-  if (journal.journal_type === "general" && journal.source_type === "manual" && journal.created_by === userId) {
+  if (journal.journal_type === "general" && journal.source_type === "manual") {
     const setting = await client.query(
       `SELECT setting_value FROM erp_system_settings
        WHERE company_id = $1 AND category = 'finance' AND setting_key = 'manual_journal_maker_checker'`,
       [companyId],
     );
     const makerChecker = setting.rowCount === 0 || setting.rows[0].setting_value === true || setting.rows[0].setting_value === "true";
-    if (makerChecker) throw new Error("Manual journal creator cannot post their own journal");
+    if (makerChecker) assertDifferentUser(journal.created_by, userId);
   }
   const period = await client.query(
     "SELECT status FROM erp_fiscal_periods WHERE id = $1 AND company_id = $2 FOR UPDATE",
