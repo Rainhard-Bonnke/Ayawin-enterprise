@@ -1,5 +1,7 @@
 const pool = require("../db");
 const inventory = require("./inventoryService");
+const gl = require("./glPostingService");
+const { ACCOUNT_CODES } = require("./accountCodes");
 
 function isDriver(user) {
   return String(user?.role_name || user?.role || "")
@@ -250,9 +252,20 @@ async function reviewStocktake({ companyId, stocktakeId, decision, note, user })
       }
     }
 
+    const journalLines = [];
+    const accounts = await client.query(
+      `SELECT id, account_code FROM erp_chart_of_accounts
+       WHERE company_id = $1 AND account_code = ANY($2::text[]) AND is_active = TRUE AND is_postable = TRUE AND is_deleted = FALSE`,
+      [companyId, [ACCOUNT_CODES.inventory, ACCOUNT_CODES.inventoryAdjustment]],
+    );
+    const accountByCode = Object.fromEntries(accounts.rows.map((account) => [account.account_code, account.id]));
+    if (!accountByCode[ACCOUNT_CODES.inventory] || !accountByCode[ACCOUNT_CODES.inventoryAdjustment]) {
+      throw new Error("Inventory and inventory adjustment accounts are required before posting a stocktake");
+    }
     for (const line of lines.rows) {
       const delta = Number(line.variance || 0);
       if (delta > 0) {
+        const value = delta * Number(line.unit_cost || 0);
         await inventory.recordReceipt(client, {
           companyId,
           warehouseId: session.warehouse_id,
@@ -263,8 +276,10 @@ async function reviewStocktake({ companyId, stocktakeId, decision, note, user })
           referenceId: stocktakeId,
           userId: user.id,
         });
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventory], debit: value, credit: 0, description: "Stocktake gain" });
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventoryAdjustment], debit: 0, credit: value, description: "Stocktake gain" });
       } else if (delta < 0) {
-        await inventory.recordIssue(client, {
+        const issued = await inventory.recordIssue(client, {
           companyId,
           warehouseId: session.warehouse_id,
           itemId: line.item_id,
@@ -273,14 +288,22 @@ async function reviewStocktake({ companyId, stocktakeId, decision, note, user })
           referenceType: "stocktake",
           referenceId: stocktakeId,
           userId: user.id,
+          returnAllocations: true,
         });
+        const value = Math.abs(delta) * Number(issued.unitCost || 0);
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventoryAdjustment], debit: value, credit: 0, description: "Stocktake loss" });
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventory], debit: 0, credit: value, description: "Stocktake loss" });
       }
     }
+    const journal = await gl.createJournalInTransaction(client, { companyId, userId: user.id,
+      entryDate: session.snapshot_at, journalType: "adjustment", source: "module",
+      referenceNo: session.count_no, description: `Stocktake adjustment ${session.count_no}`, lines: journalLines });
+    await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
     const posted = await client.query(
-      `UPDATE erp_stocktake_sessions SET status = 'posted', reviewed_at = NOW(),
-       reviewed_by = $3, review_note = $4, posted_at = NOW(), updated_at = NOW()
+      `UPDATE erp_stocktake_sessions SET status = 'posted', reviewed_at = NOW(), journal_id = $4,
+       reviewed_by = $3, review_note = $5, posted_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND company_id = $2 RETURNING *`,
-      [stocktakeId, companyId, user.id, note || null],
+      [stocktakeId, companyId, user.id, journal.id, note || null],
     );
     await client.query("COMMIT");
     return posted.rows[0];

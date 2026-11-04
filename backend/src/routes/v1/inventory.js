@@ -23,6 +23,19 @@ router.get("/stock", requirePermission("procurement.view"), async (req, res) => 
   return res.json(rows);
 });
 
+router.get("/valuation-reconciliation", requirePermission("procurement.view"), async (req, res) => {
+  const asOf = String(req.query.as_of || new Date().toISOString().slice(0, 10));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf) || Number.isNaN(Date.parse(`${asOf}T00:00:00Z`))
+      || new Date(`${asOf}T00:00:00Z`).toISOString().slice(0, 10) !== asOf) {
+    return res.status(400).json({ error: "as_of must be a valid YYYY-MM-DD date" });
+  }
+  try {
+    return res.json(await inventory.getValuationReconciliation(req.user.company_id, asOf));
+  } catch (error) {
+    return res.status(503).json({ error: "Unable to reconcile inventory valuation" });
+  }
+});
+
 router.get("/lots", requirePermission("procurement.view"), async (req, res) => {
   const rows = await inventory.getLotBalances(req.user.company_id, {
     warehouseId: req.query.warehouse_id,

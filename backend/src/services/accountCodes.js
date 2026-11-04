@@ -2,6 +2,7 @@ const ACCOUNT_CODES = Object.freeze({
   cashAtBank: "1100",
   accountsReceivable: "1200",
   inventory: "1300",
+  inventoryAdjustment: "5200",
   accountsPayable: "2100",
   vatOutput: "2200",
   vatInput: "1400",

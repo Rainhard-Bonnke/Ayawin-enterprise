@@ -1,5 +1,7 @@
 const pool = require("../db");
 const inventory = require("./inventoryService");
+const gl = require("./glPostingService");
+const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit } = require("./auditService");
 
 function normalizeLines(lines) {
@@ -117,16 +119,36 @@ async function post({ companyId, id, user, note }) {
         throw new Error(`Stock changed for ${line.item_id} after the count. Cancel this draft and recount before posting.`);
       }
     }
+    const journalLines = [];
+    const accounts = await client.query(
+      `SELECT id, account_code FROM erp_chart_of_accounts
+       WHERE company_id = $1 AND account_code = ANY($2::text[]) AND is_active = TRUE AND is_postable = TRUE AND is_deleted = FALSE`,
+      [companyId, [ACCOUNT_CODES.inventory, ACCOUNT_CODES.inventoryAdjustment]],
+    );
+    const accountByCode = Object.fromEntries(accounts.rows.map((account) => [account.account_code, account.id]));
+    if (!accountByCode[ACCOUNT_CODES.inventory] || !accountByCode[ACCOUNT_CODES.inventoryAdjustment]) {
+      throw new Error("Inventory and inventory adjustment accounts are required before posting a stock adjustment");
+    }
     for (const line of lines.rows) {
       const delta = Number(line.quantity_delta);
       if (delta > 0) {
         await inventory.recordReceipt(client, { companyId, warehouseId: header.warehouse_id, itemId: line.item_id, quantity: delta, unitCost: Number(line.unit_cost), batchNo: line.batch_no, expiryDate: line.expiry_date, referenceType: "stock_adjustment", referenceId: id, userId: user.id });
+        const value = delta * Number(line.unit_cost);
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventory], debit: value, credit: 0, description: "Inventory count gain" });
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventoryAdjustment], debit: 0, credit: value, description: "Inventory count gain" });
       } else {
-        await inventory.recordIssue(client, { companyId, warehouseId: header.warehouse_id, itemId: line.item_id, quantity: Math.abs(delta), unitCost: Number(line.unit_cost), referenceType: "stock_adjustment", referenceId: id, userId: user.id });
+        const issued = await inventory.recordIssue(client, { companyId, warehouseId: header.warehouse_id, itemId: line.item_id, quantity: Math.abs(delta), unitCost: Number(line.unit_cost), referenceType: "stock_adjustment", referenceId: id, userId: user.id, returnAllocations: true });
+        const value = Math.abs(delta) * Number(issued.unitCost || 0);
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventoryAdjustment], debit: value, credit: 0, description: "Inventory count loss" });
+        journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventory], debit: 0, credit: value, description: "Inventory count loss" });
       }
     }
-    await client.query("UPDATE erp_stock_adjustments SET status = 'posted', posted_at = NOW(), reviewed_by = $3, review_note = $4 WHERE id = $1 AND company_id = $2", [id, companyId, user.id, String(note || "").trim().slice(0, 1000) || null]);
-    await logAudit({ client, companyId, userId: user.id, entityType: "erp_stock_adjustments", entityId: id, action: "stock_adjustment_posted", newValues: { adjustment_no: header.adjustment_no, line_count: lines.rowCount, note: note || null } });
+    const journal = await gl.createJournalInTransaction(client, { companyId, userId: user.id,
+      entryDate: header.adjustment_date, journalType: "adjustment", source: "module",
+      referenceNo: header.adjustment_no, description: `Inventory count adjustment ${header.adjustment_no}`, lines: journalLines });
+    await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
+    await client.query("UPDATE erp_stock_adjustments SET status = 'posted', posted_at = NOW(), reviewed_by = $3, review_note = $4, journal_id = $5 WHERE id = $1 AND company_id = $2", [id, companyId, user.id, String(note || "").trim().slice(0, 1000) || null, journal.id]);
+    await logAudit({ client, companyId, userId: user.id, entityType: "erp_stock_adjustments", entityId: id, action: "stock_adjustment_posted", newValues: { adjustment_no: header.adjustment_no, line_count: lines.rowCount, journal_id: journal.id, note: note || null } });
     await client.query("COMMIT");
     return get(companyId, id);
   } catch (error) { await client.query("ROLLBACK"); throw error; }

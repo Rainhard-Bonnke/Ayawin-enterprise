@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { ACCOUNT_CODES } = require("./accountCodes");
 
 async function getStockOnHand(companyId, { warehouseId, itemId, q = "", limit = 100 } = {}) {
   const params = [companyId];
@@ -45,7 +46,12 @@ async function getStockOnHand(companyId, { warehouseId, itemId, q = "", limit = 
           i.item_code, i.name AS item_name, i.reorder_point,
           ic.name AS category,
             w.code AS warehouse_code, w.name AS warehouse_name,
-            (s.quantity * s.avg_unit_cost) AS stock_value
+            CASE WHEN i.lot_tracking_enabled THEN COALESCE((
+              SELECT SUM(layer.quantity_remaining * layer.unit_cost)
+              FROM erp_inventory_lots lot
+              JOIN erp_inventory_lot_layers layer ON layer.lot_id = lot.id AND layer.company_id = lot.company_id
+              WHERE lot.company_id = s.company_id AND lot.warehouse_id = s.warehouse_id AND lot.item_id = s.item_id
+            ), 0) ELSE (s.quantity * s.avg_unit_cost) END AS stock_value
      FROM erp_stock_on_hand s
     JOIN erp_items i ON i.id = s.item_id
     LEFT JOIN erp_item_categories ic ON ic.id = i.category_id
@@ -238,7 +244,7 @@ async function recordIssue(
       if (remaining <= 0.00005) break;
       const pickedFromLot = Math.min(remaining, Number(lot.available_quantity));
       const layers = await client.query(
-        `SELECT id, source_receipt_line_id, quantity_remaining, quarantined_quantity
+        `SELECT id, source_receipt_line_id, quantity_remaining, quarantined_quantity, unit_cost
          FROM erp_inventory_lot_layers WHERE company_id = $1 AND lot_id = $2
            AND quantity_remaining > quarantined_quantity
          ORDER BY created_at, id FOR UPDATE`, [companyId, lot.id],
@@ -255,7 +261,7 @@ async function recordIssue(
         );
         if (!changed.rowCount) throw new Error("Inventory receipt layer changed while issuing stock; retry the movement");
         allocations.push({ ...lot, layer_id: layer.id, source_receipt_line_id: layer.source_receipt_line_id,
-          quantity: layerPick, unit_cost: Number(lot.unit_cost) });
+          quantity: layerPick, unit_cost: Number(layer.unit_cost) });
         layerRemaining -= layerPick;
         remaining -= layerPick;
       }
@@ -404,5 +410,66 @@ async function getReorderAlerts(companyId, limit = 100) {
   return result.rows;
 }
 
+async function getValuationReconciliation(companyId, asOf) {
+  const [stockResult, transitResult, glResult] = await Promise.all([
+    pool.query(
+      `SELECT i.id AS item_id, i.item_code, i.name AS item_name,
+              COALESCE(SUM(l.quantity * l.unit_cost), 0) AS stock_value
+       FROM erp_items i
+       LEFT JOIN erp_stock_ledger l ON l.company_id = i.company_id AND l.item_id = i.id
+         AND l.movement_date < ($2::date + INTERVAL '1 day')
+       WHERE i.company_id = $1 AND i.is_deleted = FALSE
+       GROUP BY i.id, i.item_code, i.name ORDER BY i.item_code`,
+      [companyId, asOf],
+    ),
+    pool.query(
+      `SELECT ledger.item_id,
+              SUM(CASE
+                WHEN ledger.reference_type = 'stock_transfer' AND ledger.movement_type = 'issue' THEN -ledger.quantity * ledger.unit_cost
+                WHEN ledger.reference_type = 'stock_transfer_receipt' THEN -ledger.quantity * ledger.unit_cost
+                ELSE 0 END) AS in_transit_value
+       FROM erp_stock_transfers transfer
+       JOIN erp_stock_ledger ledger ON ledger.company_id = transfer.company_id AND ledger.reference_id = transfer.id
+       WHERE transfer.company_id = $1 AND ledger.movement_date < ($2::date + INTERVAL '1 day')
+         AND ledger.reference_type IN ('stock_transfer','stock_transfer_receipt')
+       GROUP BY ledger.item_id`,
+      [companyId, asOf],
+    ),
+    pool.query(
+      `SELECT account.id AS account_id, account.account_code,
+              COALESCE(SUM(CASE WHEN journal.id IS NOT NULL THEN line.debit - line.credit ELSE 0 END), 0) AS gl_value
+       FROM erp_chart_of_accounts account
+       LEFT JOIN erp_journal_lines line ON line.company_id = account.company_id AND line.account_id = account.id
+       LEFT JOIN erp_journals journal ON journal.id = line.journal_id AND journal.company_id = line.company_id
+         AND journal.entry_date <= $2::date AND journal.status IN ('posted','reversed') AND journal.is_deleted = FALSE
+       WHERE account.company_id = $1 AND account.account_code = $3 AND account.is_deleted = FALSE
+       GROUP BY account.id, account.account_code`,
+      [companyId, asOf, ACCOUNT_CODES.inventory],
+    ),
+  ]);
+  const transitByItem = new Map(transitResult.rows.map((row) => [row.item_id, Number(row.in_transit_value || 0)]));
+  const items = stockResult.rows.map((row) => {
+    const onHand = Number(row.stock_value || 0);
+    const inTransit = transitByItem.get(row.item_id) || 0;
+    return { item_id: row.item_id, item_code: row.item_code, item_name: row.item_name,
+      on_hand_value: onHand, in_transit_value: inTransit, stock_value: onHand + inTransit };
+  });
+  const stockValue = items.reduce((sum, item) => sum + item.stock_value, 0);
+  const glValue = Number(glResult.rows[0]?.gl_value || 0);
+  return {
+    as_of: asOf,
+    inventory_account: glResult.rows[0]?.account_code || ACCOUNT_CODES.inventory,
+    stock_value: stockValue,
+    gl_value: glValue,
+    variance: stockValue - glValue,
+    items,
+    unposted_movement_types: [
+      { reference_type: "material_issue", reason: "Material consumption changes stock but currently has no linked GL journal; expense account policy is not configured." },
+      { reference_type: "material_return", reason: "Material returns change stock but currently have no linked reversal journal; original issue expense mapping is not retained." },
+      { reference_type: "stock_transfer", reason: "Internal transfer movements have no GL journal by design; outstanding dispatch value is included as in-transit inventory." },
+    ],
+  };
+}
+
 module.exports = { getStockOnHand, getLotBalances, getSellableQuantity, recordReceipt, recordIssue,
-  adjustLotLayerQuarantine, consumeQuarantinedLotLayers, getReorderAlerts };
+  adjustLotLayerQuarantine, consumeQuarantinedLotLayers, getReorderAlerts, getValuationReconciliation };
