@@ -1,8 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { getTestContext, getCustomerId, pool } = require("./helpers");
+const { getTestContext, getCustomerId, getItemId, pool } = require("./helpers");
 const sales = require("../../src/services/salesService");
 const receipts = require("../../src/services/customerReceiptService");
+const { ACCOUNT_CODES } = require("../../src/services/accountCodes");
 
 async function makeInvoice(ctx, customerId) {
   const invoiceNo = `E2E-RCP-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -66,4 +67,33 @@ test("closing a POS till posts a signed cash over/short journal", async () => {
   );
   assert.equal(Number(lines.rows.find((line) => line.account_code==="5300").debit), 1.5);
   assert.equal(Number(lines.rows.find((line) => line.account_code==="1110").credit), 1.5);
+});
+
+test("customer statement movement matches the customer AR journal movement", async () => {
+  const ctx = await getTestContext();
+  const itemId = await getItemId(ctx.companyId, "COKE-500");
+  const customer = await pool.query(
+    "INSERT INTO erp_customers(company_id,customer_code,name,created_by) VALUES($1,$2,$3,$4) RETURNING id",
+    [ctx.companyId,`E2E-STAT-${Date.now()}`,"Statement control test",ctx.userId],
+  );
+  const customerId = customer.rows[0].id;
+  const before = await receipts.getCustomerStatement({ companyId:ctx.companyId,customerId });
+  const invoice = await sales.createCustomerInvoice({ companyId:ctx.companyId,userId:ctx.userId,customerId,
+    lines:[{item_id:itemId,quantity:1}] });
+  const invoiceRow = await pool.query("SELECT total_amount FROM erp_customer_invoices WHERE id=$1", [invoice.invoice_id]);
+  const invoiceTotal = Number(invoiceRow.rows[0].total_amount);
+  const paymentAmount = Math.round(invoiceTotal / 2 * 100) / 100;
+  const receipt = await receipts.createCustomerReceipt({ companyId:ctx.companyId,userId:ctx.userId,customerId,
+    invoiceId:invoice.invoice_id,amount:paymentAmount,paymentMethod:"mpesa",referenceNo:`E2E-STAT-${Date.now()}` });
+  const after = await receipts.getCustomerStatement({ companyId:ctx.companyId,customerId });
+  const expectedOpen = invoiceTotal-paymentAmount;
+  assert.equal(Math.round((after.closing_balance-before.closing_balance)*100),Math.round(expectedOpen*100));
+  const ar = await pool.query(
+    `SELECT COALESCE(SUM(line.debit-line.credit),0) AS balance FROM erp_journal_lines line
+     JOIN erp_journals journal ON journal.id=line.journal_id AND journal.company_id=line.company_id
+     WHERE line.company_id=$1 AND line.account_id=(SELECT id FROM erp_chart_of_accounts WHERE company_id=$1 AND account_code=$2)
+       AND journal.id=ANY($3::uuid[]) AND journal.status='posted'`,
+    [ctx.companyId,ACCOUNT_CODES.accountsReceivable,[invoice.journal_id,receipt.journal_id]],
+  );
+  assert.equal(Math.round(Number(ar.rows[0].balance)*100),Math.round(expectedOpen*100));
 });

@@ -316,13 +316,14 @@ async function getCustomerStatement({ companyId, customerId, fromDate = null, to
        FROM erp_customer_receipts WHERE company_id=$1 AND customer_id=$2 AND status='posted' AND is_deleted=FALSE`,
     [companyId, customerId],
   );
-  const ordered = events.rows.sort((a,b) => String(a.event_date).localeCompare(String(b.event_date)) || String(a.reference).localeCompare(String(b.reference)));
+  const dateKey = (value) => value instanceof Date ? value.toISOString().slice(0,10) : String(value).slice(0,10);
+  const ordered = events.rows.sort((a,b) => dateKey(a.event_date).localeCompare(dateKey(b.event_date)) || String(a.reference).localeCompare(String(b.reference)));
   let opening = 0;
   const visible = [];
   for (const event of ordered) {
     const value = Number(event.debit) - Number(event.credit);
-    if (String(event.event_date).slice(0,10) < from) opening += value;
-    else if (String(event.event_date).slice(0,10) <= to) visible.push({ ...event, debit: Number(event.debit), credit: Number(event.credit), amount: value });
+    if (dateKey(event.event_date) < from) opening += value;
+    else if (dateKey(event.event_date) <= to) visible.push({ ...event, event_date: dateKey(event.event_date), debit: Number(event.debit), credit: Number(event.credit), amount: value });
   }
   let balance = opening;
   const transactions = visible.map((event) => ({ ...event, balance: (balance += event.amount) }));
