@@ -37,6 +37,13 @@ async function getTestContext() {
     branchId: branch.rows[0].id,
     warehouseId: warehouse.rows[0].id,
   };
+  // Demo invoices can age into overdue during long-lived local databases. Keep
+  // workflow E2E fixtures eligible; credit-control tests set and restore their
+  // own limits and overdue thresholds explicitly.
+  await pool.query("UPDATE erp_customers SET credit_limit=1000000000 WHERE company_id=$1 AND customer_code='C001'", [cachedContext.companyId]);
+  await pool.query(
+    `UPDATE erp_system_settings SET setting_value='36500'::jsonb
+     WHERE company_id=$1 AND category='sales' AND setting_key='overdue_block_days'`, [cachedContext.companyId]);
   return cachedContext;
 }
 
