@@ -8,6 +8,7 @@ const ACCOUNT_CODES = Object.freeze({
   salesRevenue: "4000",
   cogs: "5000",
   payrollExpense: "6100",
+  retainedEarnings: "3200",
 });
 
 module.exports = { ACCOUNT_CODES };
