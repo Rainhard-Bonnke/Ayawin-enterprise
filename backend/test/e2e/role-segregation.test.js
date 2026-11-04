@@ -16,4 +16,14 @@ test("no seeded non-admin role holds order maker, approver, invoice poster and r
     const held = new Set(role.codes || []);
     assert.ok(!forbiddenSet.every((code) => held.has(code)), `${role.name} can create, approve, post and receipt the same flow`);
   }
+  const pos = result.rows.find((row) => row.name === "POS Operator");
+  if (pos) {
+    const posCodes = new Set(pos.codes || []);
+    for (const code of ["sales.order.create","sales.invoice.create","sales.receipt.create"]) {
+      assert.ok(posCodes.has(code), `POS Operator is missing ${code}`);
+    }
+    for (const code of ["sales.order.approve","sales.invoice.post","sales.receipt.approve"]) {
+      assert.ok(!posCodes.has(code), `POS Operator must not hold ${code}`);
+    }
+  }
 });

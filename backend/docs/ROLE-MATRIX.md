@@ -7,6 +7,7 @@ Backend permission checks are authoritative. The client hides actions for conven
 | Admin | All sales actions | All sales actions | Administrative access; audit every override |
 | Sales Rep | Orders | None | No delivery, invoice posting, receipt or approval |
 | Cashier/POS | Invoices, receipts | None | Receipt creation only; above-threshold receipts await another approver |
+| POS Operator | Orders, invoices, receipts | None | Checkout creation only; no independent approval rights |
 | Storekeeper/Warehouse | Delivery posting | None | No order, invoice or receipt approval |
 | Accountant | Invoices, receipts, credit notes | Invoice post, receipt approval, credit-note approval | Create and approve checks must be performed by different users |
 | Manager / Operations Manager | None | Order approval, invoice post, receipt and credit-note approval | Discount and credit overrides require reason and separate audit |
