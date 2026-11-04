@@ -2,6 +2,7 @@ const express = require("express");
 const pool = require("../../db");
 const { authenticateErp, requirePermission, getClientIp } = require("../../middleware/erpAuth");
 const { logAudit } = require("../../services/auditService");
+const { normalizeKraPin } = require("../../lib/kraPin");
 
 const router = express.Router();
 
@@ -10,7 +11,7 @@ router.use(authenticateErp);
 router.get("/", requirePermission("foundation.view"), async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, code, name, legal_name, tax_registration_no, logo_url,
+      `SELECT id, code, name, legal_name, tax_registration_no, kra_pin, is_vat_registered, vat_number, logo_url,
               base_currency_code, fiscal_year_start_month, default_language_code,
               timezone, is_active, created_at, updated_at
        FROM erp_companies
@@ -48,6 +49,9 @@ router.patch("/current", requirePermission("foundation.edit"), async (req, res) 
     "name",
     "legal_name",
     "tax_registration_no",
+    "kra_pin",
+    "is_vat_registered",
+    "vat_number",
     "logo_url",
     "base_currency_code",
     "fiscal_year_start_month",
@@ -57,6 +61,10 @@ router.patch("/current", requirePermission("foundation.edit"), async (req, res) 
   const updates = {};
   for (const key of allowed) {
     if (req.body?.[key] !== undefined) updates[key] = req.body[key];
+  }
+  if (updates.kra_pin !== undefined) {
+    try { updates.kra_pin = normalizeKraPin(updates.kra_pin); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
   }
   if (!Object.keys(updates).length) {
     return res.status(400).json({ error: "No valid fields to update" });

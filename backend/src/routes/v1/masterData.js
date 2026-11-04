@@ -2,9 +2,49 @@ const express = require("express");
 const pool = require("../../db");
 const { authenticateErp, requirePermission, getClientIp } = require("../../middleware/erpAuth");
 const { logAudit } = require("../../services/auditService");
+const { normalizeKraPin } = require("../../lib/kraPin");
 const { parsePagination, parseSort } = require("../../lib/queryHelper");
 
 const router = express.Router();
+
+function normalizeAndValidatePin(body, table) {
+  if (!["erp_customers", "erp_vendors"].includes(table) || body.tax_id === undefined || body.tax_id === null) return null;
+  try { body.tax_id = normalizeKraPin(body.tax_id); return null; }
+  catch (error) { return error.message; }
+}
+
+async function masterDataBlockers(table, id, companyId) {
+  const checks = {
+    erp_customers: [
+      ["open invoices", `SELECT id,invoice_no AS reference FROM erp_customer_invoices WHERE company_id=$1 AND customer_id=$2 AND is_deleted=FALSE AND status IN ('posted','partial','overdue') AND GREATEST(total_amount-amount_paid-credited_amount,0)>0`],
+      ["open sales orders", `SELECT id,order_no AS reference FROM erp_sales_orders WHERE company_id=$1 AND customer_id=$2 AND is_deleted=FALSE AND status IN ('draft','confirmed','partial','delivered')`],
+    ],
+    erp_vendors: [
+      ["open supplier bills", `SELECT id,bill_no AS reference FROM erp_supplier_bills WHERE company_id=$1 AND vendor_id=$2 AND is_deleted=FALSE AND status IN ('draft','approved','posting','posted','partial','overdue')`],
+      ["open purchase orders", `SELECT id,po_number AS reference FROM erp_purchase_orders WHERE company_id=$1 AND vendor_id=$2 AND is_deleted=FALSE AND status NOT IN ('closed','cancelled')`],
+    ],
+    erp_items: [
+      ["on-hand stock", `SELECT id,item_id::text AS reference FROM erp_stock_on_hand WHERE company_id=$1 AND item_id=$2 AND is_deleted=FALSE AND quantity>0`],
+      ["active reservations", `SELECT id,sales_order_id::text AS reference FROM erp_sales_order_reservations WHERE company_id=$1 AND item_id=$2 AND status='active' AND reserved_quantity>fulfilled_quantity+released_quantity`],
+      ["open sales documents", `SELECT sol.id,so.order_no AS reference FROM erp_sales_order_lines sol JOIN erp_sales_orders so ON so.id=sol.sales_order_id AND so.company_id=sol.company_id WHERE sol.company_id=$1 AND sol.item_id=$2 AND so.status IN ('draft','confirmed','partial') AND so.is_deleted=FALSE`],
+      ["open purchase documents", `SELECT pol.id,po.po_number AS reference FROM erp_purchase_order_lines pol JOIN erp_purchase_orders po ON po.id=pol.purchase_order_id AND po.company_id=pol.company_id WHERE pol.company_id=$1 AND pol.item_id=$2 AND po.status NOT IN ('closed','cancelled')`],
+    ],
+    erp_warehouses: [
+      ["on-hand stock", `SELECT id,item_id::text AS reference FROM erp_stock_on_hand WHERE company_id=$1 AND warehouse_id=$2 AND is_deleted=FALSE AND quantity>0`],
+      ["open stock transfers", `SELECT id,transfer_no AS reference FROM erp_stock_transfers WHERE company_id=$1 AND (from_warehouse_id=$2 OR to_warehouse_id=$2) AND status IN ('draft','in_transit') AND is_deleted=FALSE`],
+    ],
+    erp_employees: [
+      ["active contracts", `SELECT id,contract_type AS reference FROM erp_employee_contracts WHERE company_id=$1 AND employee_id=$2 AND status='active' AND is_deleted=FALSE`],
+      ["open payroll runs", `SELECT run.id,run.run_no AS reference FROM erp_payroll_runs run JOIN erp_payslips slip ON slip.payroll_run_id=run.id WHERE run.company_id=$1 AND slip.employee_id=$2 AND run.status IN ('draft','calculated','approved') AND run.is_deleted=FALSE`],
+    ],
+  }[table] || [];
+  const blockers = [];
+  for (const [kind, sql] of checks) {
+    const result = await pool.query(sql, [companyId, id]);
+    if (result.rowCount) blockers.push({ kind, documents: result.rows });
+  }
+  return blockers;
+}
 router.use(authenticateErp);
 
 function createCrud(config) {
@@ -69,6 +109,8 @@ function createCrud(config) {
 
   r.post("/", requirePermission(`${permissionModule}.create`), async (req, res) => {
     const body = req.body || {};
+    const pinError = normalizeAndValidatePin(body, table);
+    if (pinError) return res.status(400).json({ error: pinError });
     if (table === "erp_items") {
       if (!body.tax_group_id) {
         const defaultGroup = await pool.query(
@@ -114,12 +156,17 @@ function createCrud(config) {
       return res.status(201).json(result.rows[0]);
     } catch (err) {
       console.error(err);
+      if (err.code === "23505" && String(err.constraint || "").includes("kra_pin")) {
+        return res.status(409).json({ error: "That KRA PIN is already assigned to another record" });
+      }
       return res.status(500).json({ error: `Unable to create ${table}` });
     }
   });
 
   r.patch("/:id", requirePermission(`${permissionModule}.edit`), async (req, res) => {
     const body = req.body || {};
+    const pinError = normalizeAndValidatePin(body, table);
+    if (pinError) return res.status(400).json({ error: pinError });
     if (table === "erp_items" && body.tax_group_id) {
       const group = await pool.query(
         `SELECT 1 FROM erp_tax_groups
@@ -136,6 +183,20 @@ function createCrud(config) {
       [req.params.id, req.user.company_id],
     );
     if (!before.rowCount) return res.status(404).json({ error: "Not found" });
+    if (table === "erp_items" && ["tax_group_id", "uom_id", "cost_method", "standard_cost"]
+      .some((field) => body[field] !== undefined && String(body[field]) !== String(before.rows[0][field]))) {
+      const transactions = await pool.query(
+        `SELECT id,'delivery'::text AS document_type FROM erp_delivery_note_lines line
+         JOIN erp_delivery_notes note ON note.id=line.delivery_note_id AND note.company_id=line.company_id
+         WHERE line.company_id=$1 AND line.item_id=$2 AND note.status='posted'
+         UNION ALL
+         SELECT line.id,'goods_receipt'::text FROM erp_goods_receipt_lines line
+         JOIN erp_goods_receipts receipt ON receipt.id=line.goods_receipt_id AND receipt.company_id=line.company_id
+         WHERE line.company_id=$1 AND line.item_id=$2 AND receipt.status='posted' LIMIT 10`,
+        [req.user.company_id, req.params.id],
+      );
+      if (transactions.rowCount) return res.status(409).json({ error: "Costing and tax fields are locked after posted item transactions", blocking_documents: transactions.rows });
+    }
     if (table === "erp_items" && body.lot_tracking_enabled === true && before.rows[0].lot_tracking_enabled !== true) {
       const legacyStock = await pool.query(
         `SELECT COALESCE(SUM(quantity), 0) AS quantity FROM erp_stock_on_hand
@@ -170,6 +231,9 @@ function createCrud(config) {
       return res.json(result.rows[0]);
     } catch (err) {
       console.error(err);
+      if (err.code === "23505" && String(err.constraint || "").includes("kra_pin")) {
+        return res.status(409).json({ error: "That KRA PIN is already assigned to another record" });
+      }
       return res.status(500).json({ error: "Unable to update" });
     }
   });
@@ -180,6 +244,9 @@ function createCrud(config) {
       [req.params.id, req.user.company_id],
     );
     if (!before.rowCount) return res.status(404).json({ error: "Not found" });
+
+    const blockers = await masterDataBlockers(table, req.params.id, req.user.company_id);
+    if (blockers.length) return res.status(409).json({ error: "This record is in use and cannot be deleted", blockers });
 
     await pool.query(
       `UPDATE ${table} SET is_deleted = TRUE, updated_at = NOW(), updated_by = $3 WHERE id = $1 AND company_id = $2`,
@@ -513,4 +580,5 @@ router.post("/price-lists/:id/items", requirePermission("master_data.create"), a
   return res.status(201).json(result.rows[0]);
 });
 
+router.masterDataBlockers = masterDataBlockers;
 module.exports = router;
