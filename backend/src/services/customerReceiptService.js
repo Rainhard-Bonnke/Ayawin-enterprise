@@ -169,7 +169,7 @@ async function createCustomerReceipt({
       unapplied_amount: posted?.unappliedAmount ?? 0, idempotent: false };
   } catch (error) {
     await client.query("ROLLBACK");
-    if (error.code === "23505" && /erp_customer_receipts_reference_uq|erp_customer_receipts_provider_receipt_no_uq/.test(error.constraint || "")) {
+    if (error.code === "23505" && /erp_customer_receipts_reference_uq|erp_customer_receipts_provider_receipt_no_uq|erp_customer_receipts_mpesa_provider_receipt_uidx/.test(error.constraint || "")) {
       throw new Error("This payment reference has already been recorded");
     }
     throw error;
