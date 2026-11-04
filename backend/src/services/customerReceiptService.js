@@ -2,7 +2,8 @@ const crypto = require("crypto");
 const pool = require("../db");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
-const { logAudit } = require("./auditService");
+const { logAudit, assertDifferentUser } = require("./auditService");
+const { nextDocumentNo } = require("./documentNumberingService");
 
 function normalizeAllocations(invoiceId, allocations, amount) {
   const values = Array.isArray(allocations) && allocations.length
@@ -29,9 +30,7 @@ function receiptRequestHash({ customerId, amount, paymentMethod, referenceNo, pa
 }
 
 async function nextReceiptNo(client, companyId) {
-  await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [companyId, "erp_customer_receipts"]);
-  const result = await client.query("SELECT COUNT(*)::int+1 AS next FROM erp_customer_receipts WHERE company_id=$1", [companyId]);
-  return `RCP-${new Date().getFullYear()}-${String(result.rows[0].next).padStart(4, "0")}`;
+  return nextDocumentNo(client, { companyId, docType: "erp_customer_receipts", prefix: "RCP" });
 }
 
 async function applyReceiptAllocations(client, { companyId, customerId, allocations, userId }) {
@@ -183,7 +182,7 @@ async function approveCustomerReceipt({ companyId, userId, receiptId }) {
     const result = await client.query("SELECT * FROM erp_customer_receipts WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE FOR UPDATE", [receiptId, companyId]);
     const receipt = result.rows[0];
     if (!receipt || receipt.status !== "pending_approval") throw new Error("Receipt is not awaiting approval");
-    if (String(receipt.created_by) === String(userId)) throw new Error("The receipt creator cannot approve their own receipt");
+    assertDifferentUser(receipt.created_by, userId);
     const methodResult = await client.query("SELECT id,method_code,display_name,account_id FROM erp_payment_methods WHERE company_id=$1 AND method_code=$2 AND is_active=TRUE AND is_deleted=FALSE", [companyId, receipt.payment_method]);
     if (!methodResult.rowCount) throw new Error("Receipt payment method is unavailable");
     const posted = await postReceipt(client, { companyId, userId, receipt, method: methodResult.rows[0] });

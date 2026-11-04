@@ -132,7 +132,7 @@ test("overdue invoices block credit according to the company threshold", async (
     assert.equal(result.overdue_days, 30);
     assert.equal(result.ok, false);
   } finally {
-    await pool.query("DELETE FROM erp_customer_invoices WHERE company_id=$1 AND invoice_no=$2", [ctx.companyId, invoiceNo]);
+    await pool.query("UPDATE erp_customer_invoices SET is_deleted=TRUE WHERE company_id=$1 AND invoice_no=$2", [ctx.companyId, invoiceNo]);
     await restore();
   }
 });

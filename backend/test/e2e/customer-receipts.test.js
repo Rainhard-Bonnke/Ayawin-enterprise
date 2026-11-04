@@ -27,7 +27,7 @@ test("an M-Pesa receipt reference cannot be recorded twice for one company", asy
       invoiceId: second.id, amount: 10, referenceNo: receiptReference, paymentMethod: "mpesa", postGl: false }));
   } finally {
     await pool.query("DELETE FROM erp_customer_receipts WHERE company_id=$1 AND reference_no=$2", [ctx.companyId, receiptReference]);
-    await pool.query("DELETE FROM erp_customer_invoices WHERE id=ANY($1::uuid[])", [[first.id, second.id]]);
+    await pool.query("UPDATE erp_customer_invoices SET is_deleted=TRUE WHERE id=ANY($1::uuid[])", [[first.id, second.id]]);
   }
 });
 

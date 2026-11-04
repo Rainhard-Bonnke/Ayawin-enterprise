@@ -2,15 +2,14 @@ const pool = require("../db");
 const inventory = require("./inventoryService");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
-const { logAudit } = require("./auditService");
+const { logAudit, assertDifferentUser } = require("./auditService");
+const { nextDocumentNo } = require("./documentNumberingService");
 
 const money = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const dateShape = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
 async function nextNo(client, companyId) {
-  await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [companyId, "erp_customer_credit_notes"]);
-  const result = await client.query("SELECT COUNT(*)::int AS n FROM erp_customer_credit_notes WHERE company_id = $1", [companyId]);
-  return `CN-${new Date().getFullYear()}-${String(Number(result.rows[0].n) + 1).padStart(5, "0")}`;
+  return nextDocumentNo(client, { companyId, docType: "erp_customer_credit_notes", prefix: "CN", padding: 5 });
 }
 
 async function getSetup(companyId) {
@@ -279,7 +278,7 @@ async function createDraft({ companyId, user, invoiceId, creditDate, reason, lin
       );
       if (!bank.rowCount) throw new Error("Choose an active postable bank or cash account");
     }
-    const noteNo = await nextNo(client, companyId);
+    const noteNo = `TMP-${require("crypto").randomUUID()}`;
     const note = await client.query(
       `INSERT INTO erp_customer_credit_notes
        (company_id, invoice_id, customer_id, credit_note_no, credit_date, reason, court_dispute_determined_on,
@@ -317,9 +316,12 @@ async function postCreditNote({ companyId, noteId, user }) {
     const noteResult = await client.query(
       `SELECT * FROM erp_customer_credit_notes WHERE id = $1 AND company_id = $2 AND status = 'draft' FOR UPDATE`, [noteId, companyId],
     );
-    const note = noteResult.rows[0];
+    let note = noteResult.rows[0];
     if (!note) throw new Error("Customer credit note draft not found");
-    if (String(note.created_by) === String(user.id)) throw new Error("The preparer cannot post their own customer credit note");
+    assertDifferentUser(note.created_by, user.id);
+    const legalCreditNoteNo = await nextNo(client, companyId);
+    const numbered = await client.query("UPDATE erp_customer_credit_notes SET credit_note_no=$3 WHERE id=$1 AND company_id=$2 RETURNING *", [noteId, companyId, legalCreditNoteNo]);
+    note = numbered.rows[0];
     const invoiceResult = await client.query(
       `SELECT * FROM erp_customer_invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`, [note.invoice_id, companyId],
     );
@@ -454,6 +456,24 @@ async function postCreditNote({ companyId, noteId, user }) {
   } finally { client.release(); }
 }
 
+async function voidDraft({ companyId, noteId, user, reason }) {
+  const cleanReason = String(reason || "").trim();
+  if (!cleanReason) throw new Error("A void reason is required");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT id,credit_note_no,status FROM erp_customer_credit_notes WHERE id=$1 AND company_id=$2 AND status='draft' FOR UPDATE", [noteId, companyId]);
+    const note = result.rows[0];
+    if (!note) throw new Error("Credit note draft not found");
+    const updated = await client.query("UPDATE erp_customer_credit_notes SET status='void',void_reason=$3,voided_by=$4,voided_at=NOW(),updated_by=$4,updated_at=NOW() WHERE id=$1 AND company_id=$2 RETURNING *", [noteId, companyId, cleanReason, user.id]);
+    await logAudit({ client, companyId, userId: user.id, entityType: "erp_customer_credit_notes", entityId: noteId,
+      action: "void", oldValues: note, newValues: { status: "void", reason: cleanReason } });
+    await client.query("COMMIT");
+    return updated.rows[0];
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
 async function cancelDraft({ companyId, noteId, user }) {
   const client = await pool.connect();
   try {
@@ -475,4 +495,4 @@ async function cancelDraft({ companyId, noteId, user }) {
   } finally { client.release(); }
 }
 
-module.exports = { getSetup, getReturnOptions, createDraft, postCreditNote, cancelDraft };
+module.exports = { getSetup, getReturnOptions, createDraft, postCreditNote, cancelDraft, voidDraft };
