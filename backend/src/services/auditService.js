@@ -1,5 +1,11 @@
 const pool = require("../db");
 
+function assertDifferentUser(createdBy, actor) {
+  if (createdBy && actor && String(createdBy) === String(actor)) {
+    throw new Error("The document creator cannot approve their own document");
+  }
+}
+
 async function logAudit({
   companyId,
   userId,
@@ -55,4 +61,4 @@ async function listAuditLogs({ companyId, q = "", limit = 50, offset = 0 }) {
   return result.rows;
 }
 
-module.exports = { logAudit, listAuditLogs };
+module.exports = { logAudit, listAuditLogs, assertDifferentUser };
