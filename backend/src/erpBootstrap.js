@@ -2,17 +2,16 @@ const bcrypt = require("bcryptjs");
 const pool = require("./db");
 const { runMigrations } = require("./migrate");
 
-const IS_DEMO_MODE =
-  process.env.ENABLE_DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "bonnkereinhard654@gmail.com").toLowerCase();
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").toLowerCase();
 // Do not silently reset the ERP administrator password on every server boot.
 // Provisioning or resetting credentials requires an explicit environment value.
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
 async function ensureErpAdminPassword() {
   if (!ADMIN_PASSWORD) return { updated: false, created: false };
+  if (!ADMIN_EMAIL) throw new Error("ADMIN_EMAIL is required to bootstrap the administrator");
 
-  const hash = await bcrypt.hash(ADMIN_PASSWORD, 10);
+  const hash = await bcrypt.hash(ADMIN_PASSWORD, 12);
   const companyResult = await pool.query(
     `SELECT c.id AS company_id, b.id AS branch_id, r.id AS role_id
      FROM erp_companies c

@@ -9,24 +9,7 @@ const { authenticateErp, getClientIp } = require("../../middleware/erpAuth");
 
 const router = express.Router();
 
-const IS_DEMO_MODE =
-  process.env.ENABLE_DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS) || 5;
-const POS_USER_EMAIL = (
-  process.env.POS_USER_EMAIL ||
-  process.env.ADMIN_EMAIL ||
-  "bonnkereinhard654@gmail.com"
-).toLowerCase();
-const POS_PASSWORD = process.env.POS_PASSWORD || "";
-
-async function setUserPassword(userId, password) {
-  const hash = await bcrypt.hash(password, 10);
-  await pool.query(
-    `UPDATE erp_users SET password_hash = $1, password_changed_at = NOW(), updated_at = NOW()
-     WHERE id = $2`,
-    [hash, userId],
-  );
-}
 
 router.post("/login", async (req, res) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
@@ -42,36 +25,16 @@ router.post("/login", async (req, res) => {
   try {
     let user = await userService.findUserByEmail(email, companyCode);
 
-    if (
-      !user &&
-      IS_DEMO_MODE &&
-      (password === "Bonnke@123" || password === "demo") &&
-      email === "bonnkereinhard654@gmail.com"
-    ) {
-      await pool.query("SELECT 1");
-      user = await userService.findUserByEmail(email);
-      if (user && !user.password_hash) {
-        await setUserPassword(user.id, "Bonnke@123");
-        user = await userService.findUserByEmail(email);
-      }
-    }
-
     if (!user) {
+      await bcrypt.hash(password, 12);
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    if (user.status === "locked" && user.locked_until && new Date(user.locked_until) > new Date()) {
-      return res.status(403).json({ error: "Account is temporarily locked" });
-    }
+    const accountLocked = user.status === "locked" && user.locked_until && new Date(user.locked_until) > new Date();
+    if (accountLocked) return res.status(401).json({ error: "Invalid credentials" });
+    if (user.status !== "active" && user.status !== "locked") return res.status(401).json({ error: "Invalid credentials" });
 
-    if (!user.password_hash) {
-      if (IS_DEMO_MODE && (password === "Bonnke@123" || password === "demo")) {
-        await setUserPassword(user.id, "Bonnke@123");
-        user.password_hash = await bcrypt.hash("Bonnke@123", 10);
-      } else {
-        return res.status(401).json({ error: "Invalid credentials" });
-      }
-    }
+    if (!user.password_hash) return res.status(401).json({ error: "Invalid credentials" });
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
@@ -86,6 +49,7 @@ router.post("/login", async (req, res) => {
          WHERE id = $3`,
         [attempts, lock, user.id],
       );
+      await userService.invalidateUserCache(user.id);
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -94,21 +58,35 @@ router.post("/login", async (req, res) => {
         return res.status(401).json({ error: "MFA required", mfa_required: true });
       }
       const secret = await mfaService.getDecryptedSecret(user.id);
-      if (!secret || !mfaService.verifyTotp(secret, mfaToken)) {
+      const validTotp = secret && await mfaService.consumeTotp(user.id, secret, mfaToken);
+      const validRecovery = !validTotp && await mfaService.consumeRecoveryCode(user.id, mfaToken);
+      if (!validTotp && !validRecovery) {
+        const attempts = (user.failed_login_attempts || 0) + 1;
+        const lock = attempts >= MAX_FAILED_LOGINS;
+        await pool.query(
+          `UPDATE erp_users SET failed_login_attempts = $1,
+             locked_until = CASE WHEN $2 THEN NOW() + INTERVAL '30 minutes' ELSE locked_until END,
+             status = CASE WHEN $2 THEN 'locked' ELSE status END, updated_at = NOW() WHERE id = $3`,
+          [attempts, lock, user.id],
+        );
+        await userService.invalidateUserCache(user.id);
         return res.status(401).json({ error: "Invalid MFA token" });
       }
     }
 
     const ip = getClientIp(req);
+    const sessionType = user.role_name === "POS Operator" ? "pos" : "user";
+    if (sessionType === "pos") user.permissions = tokenService.permissionsForSession(user, sessionType);
     const refreshToken = tokenService.generateRefreshToken();
     await tokenService.storeRefreshToken({
       user,
       token: refreshToken,
       ipAddress: ip,
       deviceInfo: req.headers["user-agent"] || null,
+      sessionType,
     });
 
-    const accessToken = tokenService.generateAccessToken(user);
+    const accessToken = tokenService.generateAccessToken(user, { sessionType });
 
     await pool.query(
       `UPDATE erp_users
@@ -117,6 +95,7 @@ router.post("/login", async (req, res) => {
        WHERE id = $2`,
       [ip, user.id],
     );
+    await userService.invalidateUserCache(user.id);
 
     await logAudit({
       companyId: user.company_id,
@@ -137,53 +116,8 @@ router.post("/login", async (req, res) => {
       user: userService.sanitizeUser(user),
     });
   } catch (err) {
-    console.error(err);
-    return res.status(503).json({ error: "Authentication service unavailable" });
-  }
-});
-
-router.post("/pos-login", async (req, res) => {
-  const password = typeof req.body?.password === "string" ? req.body.password : "";
-  if (!password || !POS_PASSWORD)
-    return res.status(401).json({ error: "POS login is not configured" });
-
-  try {
-    const user = await userService.findUserByEmail(POS_USER_EMAIL);
-    if (
-      !user ||
-      user.status !== "active" ||
-      !(await bcrypt.compare(
-        password,
-        POS_PASSWORD.startsWith("$2") ? POS_PASSWORD : await bcrypt.hash(POS_PASSWORD, 10),
-      ))
-    ) {
-      return res.status(401).json({ error: "Invalid POS password" });
-    }
-
-    const posUser = {
-      ...user,
-      permissions: ["sales.view", "sales.create", "sales.approve", "master_data.view"],
-      role_name: "POS Operator",
-    };
-    const refreshToken = tokenService.generateRefreshToken();
-    await tokenService.storeRefreshToken({
-      user,
-      token: refreshToken,
-      ipAddress: getClientIp(req),
-      deviceInfo: req.headers["user-agent"] || null,
-    });
-    const accessToken = tokenService.generateAccessToken(posUser, { sessionType: "pos" });
-    return res.json({
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      token_type: "Bearer",
-      expires_in: process.env.JWT_ACCESS_EXPIRES || "15m",
-      user: userService.sanitizeUser(posUser),
-      session_type: "pos",
-    });
-  } catch (err) {
-    console.error(err);
-    return res.status(503).json({ error: "POS authentication service unavailable" });
+    console.error(JSON.stringify({ request_id: req.id, event: "login_error", error: err.message, code: err.code }));
+    return res.status(503).json({ error: "Authentication service unavailable", request_id: req.id });
   }
 });
 
@@ -194,31 +128,50 @@ router.post("/refresh", async (req, res) => {
   }
 
   try {
-    const row = await tokenService.findValidRefreshToken(refreshToken);
-    if (!row || row.status !== "active") {
+    const row = await tokenService.findRefreshToken(refreshToken);
+    if (!row) {
       return res.status(401).json({ error: "Invalid refresh token" });
     }
+    if (row.revoked_at) {
+      await tokenService.revokeUserRefreshTokens(row.user_id);
+      await logAudit({ companyId: row.company_id, userId: row.user_id, entityType: "erp_refresh_tokens",
+        entityId: row.token_id, action: "refresh_token_reuse_detected", ipAddress: getClientIp(req) });
+      return res.status(401).json({ error: "Invalid refresh token" });
+    }
+    if (row.expires_at <= new Date() || row.status !== "active") return res.status(401).json({ error: "Invalid refresh token" });
 
-    const user = await userService.findUserById(row.id);
+    const user = await userService.findUserById(row.user_id);
     if (!user) return res.status(401).json({ error: "User not found" });
+    if (user.status !== "active") return res.status(401).json({ error: "User is inactive" });
+    const ip = getClientIp(req);
+    if (!(await userService.checkIpWhitelist(user, ip))) return res.status(403).json({ error: "Access denied from this IP address" });
+    if (row.session_type === "pos" && user.role_name !== "POS Operator") {
+      return res.status(401).json({ error: "POS session is no longer valid" });
+    }
+    if (row.session_type === "pos") user.permissions = tokenService.permissionsForSession(user, "pos");
 
     const newRefresh = tokenService.generateRefreshToken();
     const stored = await tokenService.storeRefreshToken({
       user,
       token: newRefresh,
-      ipAddress: getClientIp(req),
+      ipAddress: ip,
       deviceInfo: req.headers["user-agent"] || null,
+      sessionType: row.session_type,
     });
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken), stored.id);
 
     return res.json({
-      access_token: tokenService.generateAccessToken(user),
+      access_token: tokenService.generateAccessToken(user, { sessionType: row.session_type }),
       refresh_token: newRefresh,
       token_type: "Bearer",
     });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Unable to refresh token" });
+    const unavailable = ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "57P01"].includes(err.code) || err.code?.startsWith("08");
+    console.error(JSON.stringify({ request_id: req.id, event: "refresh_error", error: err.message, code: err.code }));
+    return res.status(unavailable ? 503 : 500).json({
+      error: unavailable ? "Authentication service unavailable" : "Unable to refresh token",
+      request_id: req.id,
+    });
   }
 });
 
@@ -244,6 +197,18 @@ router.get("/me", authenticateErp, async (req, res) => {
 });
 
 router.post("/mfa/setup", authenticateErp, async (req, res) => {
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const user = await userService.findUserByEmail(req.user.email);
+  if (!password || !user?.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
+    return res.status(401).json({ error: "Current password is required" });
+  }
+  if (user.mfa_enabled) {
+    const currentTotp = typeof req.body?.current_totp === "string" ? req.body.current_totp.trim() : "";
+    const activeSecret = await mfaService.getDecryptedSecret(req.user.id);
+    if (!activeSecret || !mfaService.verifyTotpStep(activeSecret, currentTotp)) {
+      return res.status(401).json({ error: "Current MFA token is required" });
+    }
+  }
   const secret = mfaService.generateMfaSecret();
   await mfaService.enableMfaPending(req.user.id, req.user.company_id, secret);
   const otpauthUrl = mfaService.getOtpAuthUrl({ secret, email: req.user.email });
@@ -254,12 +219,13 @@ router.post("/mfa/verify", authenticateErp, async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
   if (!token) return res.status(400).json({ error: "token is required" });
 
-  const secret = await mfaService.getDecryptedSecret(req.user.id);
-  if (!secret || !mfaService.verifyTotp(secret, token)) {
+  const secret = await mfaService.getPendingSecret(req.user.id);
+  if (!secret || !mfaService.verifyTotpStep(secret, token)) {
     return res.status(400).json({ error: "Invalid MFA token" });
   }
 
-  await mfaService.confirmMfa(req.user.id, req.user.company_id);
+  const recoveryCodes = await mfaService.confirmMfa(req.user.id, req.user.company_id);
+  await userService.invalidateUserCache(req.user.id);
   await logAudit({
     companyId: req.user.company_id,
     userId: req.user.id,
@@ -269,7 +235,7 @@ router.post("/mfa/verify", authenticateErp, async (req, res) => {
     ipAddress: getClientIp(req),
     userAgent: req.headers["user-agent"],
   });
-  return res.json({ ok: true, mfa_enabled: true });
+  return res.json({ ok: true, mfa_enabled: true, recovery_codes: recoveryCodes });
 });
 
 router.patch("/profile", authenticateErp, async (req, res) => {
@@ -309,6 +275,7 @@ router.patch("/profile", authenticateErp, async (req, res) => {
       );
     }
     await client.query("COMMIT");
+    await userService.invalidateUserCache(req.user.id);
     const user = await userService.findUserById(req.user.id);
     return res.json(userService.sanitizeUser(user));
   } catch (err) {

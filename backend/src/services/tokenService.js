@@ -2,9 +2,15 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
 
-const JWT_SECRET = process.env.JWT_SECRET || "ayawin-enterprise-secret";
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || "15m";
 const JWT_REFRESH_EXPIRES_DAYS = Number(process.env.JWT_REFRESH_EXPIRES_DAYS) || 7;
+const POS_ALLOWED_PERMISSIONS = Object.freeze(["sales.view", "sales.create", "master_data.view"]);
+
+function permissionsForSession(user, sessionType) {
+  if (sessionType !== "pos") return user.permissions || [];
+  return POS_ALLOWED_PERMISSIONS.filter((permission) => (user.permissions || []).includes(permission));
+}
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -18,7 +24,7 @@ function generateAccessToken(user, options = {}) {
       branchId: user.default_branch_id,
       roleId: user.role_id,
       email: user.email,
-      permissions: user.permissions || [],
+      permissions: permissionsForSession(user, options.sessionType || "user"),
       session_type: options.sessionType || "user",
       type: "access",
     },
@@ -31,17 +37,17 @@ function generateRefreshToken() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
-async function storeRefreshToken({ user, token, ipAddress, deviceInfo, client = pool }) {
+async function storeRefreshToken({ user, token, ipAddress, deviceInfo, sessionType = "user", client = pool }) {
   const tokenHash = hashToken(token);
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + JWT_REFRESH_EXPIRES_DAYS);
 
   const result = await client.query(
     `INSERT INTO erp_refresh_tokens (
-       company_id, user_id, token_hash, expires_at, ip_address, device_info, created_by
-     ) VALUES ($1, $2, $3, $4, $5, $6, $2)
+       company_id, user_id, token_hash, expires_at, ip_address, device_info, session_type, created_by
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $2)
      RETURNING id, expires_at`,
-    [user.company_id, user.id, tokenHash, expiresAt, ipAddress, deviceInfo],
+    [user.company_id, user.id, tokenHash, expiresAt, ipAddress, deviceInfo, sessionType],
   );
 
   return result.rows[0];
@@ -59,7 +65,7 @@ async function revokeRefreshToken(tokenHash, replacedBy = null) {
 async function findValidRefreshToken(token) {
   const tokenHash = hashToken(token);
   const result = await pool.query(
-    `SELECT rt.id AS token_id, rt.expires_at, rt.revoked_at,
+    `SELECT rt.id AS token_id, rt.expires_at, rt.revoked_at, rt.session_type,
             u.id, u.company_id, u.default_branch_id, u.role_id, u.email, u.full_name, u.username, u.status
      FROM erp_refresh_tokens rt
      JOIN erp_users u ON u.id = rt.user_id AND u.is_deleted = FALSE
@@ -70,6 +76,27 @@ async function findValidRefreshToken(token) {
     [tokenHash],
   );
   return result.rows[0] || null;
+}
+
+async function findRefreshToken(token) {
+  const result = await pool.query(
+    `SELECT rt.id AS token_id, rt.user_id, rt.company_id, rt.session_type,
+            rt.expires_at, rt.revoked_at, rt.token_hash, u.status
+     FROM erp_refresh_tokens rt
+     JOIN erp_users u ON u.id = rt.user_id AND u.is_deleted = FALSE
+     WHERE rt.token_hash = $1
+     LIMIT 1`,
+    [hashToken(token)],
+  );
+  return result.rows[0] || null;
+}
+
+async function revokeUserRefreshTokens(userId) {
+  await pool.query(
+    `UPDATE erp_refresh_tokens SET revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
+     WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId],
+  );
 }
 
 function verifyAccessToken(token) {
@@ -83,6 +110,10 @@ module.exports = {
   storeRefreshToken,
   revokeRefreshToken,
   findValidRefreshToken,
+  findRefreshToken,
+  revokeUserRefreshTokens,
   verifyAccessToken,
   JWT_SECRET,
+  POS_ALLOWED_PERMISSIONS,
+  permissionsForSession,
 };
