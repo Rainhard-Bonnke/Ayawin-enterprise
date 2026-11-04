@@ -100,6 +100,7 @@ async function createCustomerReceipt({
   try {
     await client.query("BEGIN");
     if (idempotencyKey) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [companyId, `receipt-idempotency:${idempotencyKey}`]);
       const previous = await client.query(
         `SELECT id,receipt_no,amount,status,journal_id,request_hash FROM erp_customer_receipts
          WHERE company_id=$1 AND idempotency_key=$2 AND is_deleted=FALSE FOR UPDATE`, [companyId, idempotencyKey],
