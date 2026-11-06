@@ -15,9 +15,20 @@ test("manual journals enforce maker checker; reversals preserve the historical l
     const journal=await gl.createJournalInTransaction(client,{companyId:context.companyId,userId:context.userId,
       entryDate:"2026-11-15",description:"E2E maker-checker reversal",source:"manual",
       lines:[{account_id:byCode["1100"],debit:1000},{account_id:byCode["4000"],credit:1000}]});
-    await assert.rejects(gl.postJournalInTransaction(client,{journalId:journal.id,companyId:context.companyId,userId:context.userId}),/cannot post their own/);
+    await assert.rejects(gl.postJournalInTransaction(client,{journalId:journal.id,companyId:context.companyId,userId:context.userId}),/creator cannot approve their own document/);
     const approverId="9a62cc7a-fdc2-426a-9899-0b825d98c321";
     await gl.postJournalInTransaction(client,{journalId:journal.id,companyId:context.companyId,userId:approverId});
+    await client.query("SAVEPOINT posted_line_guard");
+    await assert.rejects(
+      client.query(
+        `INSERT INTO erp_journal_lines (company_id,journal_id,line_no,account_id,description,debit,credit,currency_code)
+         VALUES ($1,$2,3,$3,'Attempted posted journal mutation',0,0,'KES')`,
+        [context.companyId,journal.id,byCode["1100"]],
+      ),
+      /immutable/,
+    );
+    await client.query("ROLLBACK TO SAVEPOINT posted_line_guard");
+    await client.query("RELEASE SAVEPOINT posted_line_guard");
     const originalLines=await client.query("SELECT account_id,debit,credit FROM erp_journal_lines WHERE journal_id=$1 ORDER BY line_no",[journal.id]);
     const reversal=await gl.createJournalInTransaction(client,{companyId:context.companyId,userId:approverId,
       entryDate:"2026-11-16",description:"E2E reversal",source:"reversal",reversalOfId:journal.id,
