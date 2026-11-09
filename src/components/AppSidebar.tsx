@@ -13,6 +13,7 @@ import {
   ChevronDown,
   BriefcaseBusiness,
   Truck,
+  ClipboardCheck,
 } from "lucide-react";
 import {
   Sidebar,
@@ -98,7 +99,10 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
   },
   {
     label: "FLEET",
-    items: [{ title: "Driver stock & counts", url: "/driver-stock", icon: Truck }],
+    items: [
+      { title: "Driver stock & counts", url: "/driver-stock", icon: Truck },
+      { title: "Route closures", url: "/route-closures", icon: ClipboardCheck },
+    ],
   },
   {
     label: "FINANCE",

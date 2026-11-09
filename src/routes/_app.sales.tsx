@@ -40,6 +40,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { useAuth } from "@/lib/auth";
+import { canPerformSalesAction } from "@/lib/rbac";
 import {
   createInvoiceFromSalesOrder,
   createSalesOrder,
@@ -65,7 +66,11 @@ export const Route = createFileRoute("/_app/sales")({
 });
 
 function SalesPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const canCreateOrder = canPerformSalesAction(user, "sales.order.create");
+  const canApproveOrder = canPerformSalesAction(user, "sales.order.approve");
+  const canPostDelivery = canPerformSalesAction(user, "sales.delivery.post");
+  const canCreateInvoice = canPerformSalesAction(user, "sales.invoice.create");
   const [rows, setRows] = useState<BackendSalesOrder[]>([]);
   const [warehouseIds, setWarehouseIds] = useState<string[]>([]);
   const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
@@ -241,7 +246,7 @@ function SalesPage() {
               <FileDown className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button
+            {canApproveOrder && canPostDelivery && canCreateInvoice && <Button
               variant="outline"
               disabled={processingAll}
               onClick={() => {
@@ -249,8 +254,8 @@ function SalesPage() {
               }}
             >
               {processingAll ? "Processing orders..." : "Process All Ready"}
-            </Button>
-            <NewOrderDialog onCompleted={reloadSalesOrders} />
+            </Button>}
+            {canCreateOrder && <NewOrderDialog onCompleted={reloadSalesOrders} />}
           </>
         }
       />
@@ -463,7 +468,7 @@ function SalesPage() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
-                              {o.status === "Draft" && o.internal_id && (
+                              {canApproveOrder && o.status === "Draft" && o.internal_id && (
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -487,7 +492,7 @@ function SalesPage() {
                                   Confirm
                                 </Button>
                               )}
-                              {(o.status === "Draft" ||
+                              {canApproveOrder && canPostDelivery && canCreateInvoice && (o.status === "Draft" ||
                                 o.status === "Confirmed" ||
                                 o.status === "Partial" ||
                                 o.status === "Delivered") &&
@@ -501,7 +506,7 @@ function SalesPage() {
                                     {processingOrderId === o.id ? "Processing..." : "Process Order"}
                                   </Button>
                                 )}
-                              {(o.status === "Confirmed" || o.status === "Partial") && o.internal_id && (
+                              {canPostDelivery && (o.status === "Confirmed" || o.status === "Partial") && o.internal_id && (
                                 <Button
                                   size="sm"
                                   onClick={async () => {
@@ -538,7 +543,7 @@ function SalesPage() {
                                   }}
                                 >Cancel</Button>
                               )}
-                              {o.status === "Delivered" && o.internal_id && (
+                              {canCreateInvoice && o.status === "Delivered" && o.internal_id && (
                                 <Button
                                   size="sm"
                                   onClick={async () => {
@@ -594,8 +599,8 @@ function SalesPage() {
               <DialogHeader>
                 <DialogTitle>Sales Order {detail.order_no}</DialogTitle>
                 <DialogDescription>
-                  {detail.customer_name || "Customer"} · {detail.order_date || ""} ·{" "}
-                  {detail.status || ""}
+                  {detail.customer_name || "Customer"} · Ordered {detail.order_date || "—"} ·
+                  {" "}Required by {detail.required_date || "—"} · {detail.status || ""}
                 </DialogDescription>
               </DialogHeader>
               <Table>
@@ -656,6 +661,11 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
   const [qty, setQty] = useState(10);
   const [unitPrice, setUnitPrice] = useState("");
   const [orderDate, setOrderDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [requiredDate, setRequiredDate] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() + 2);
+    return date.toISOString().slice(0, 10);
+  });
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
@@ -698,6 +708,7 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         customer_id: customerId,
         warehouse_id: warehouseId,
         order_date: orderDate,
+        required_date: requiredDate,
         notes: notes.trim() || undefined,
         lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
       });
@@ -706,12 +717,12 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         action: "sales_order_created",
         entityType: "sales_order",
         entityId: created.id,
-        details: { customerId, itemId, qty, orderDate },
+        details: { customerId, itemId, qty, orderDate, requiredDate },
         scenario: "sales",
         context: { customerId, itemId, qty, total: created.total },
       });
       if (selectedCustomer?.email) {
-        void triggerEmailNotification({
+        if (token) void triggerEmailNotification(token, {
           recipient: selectedCustomer.email,
           subject: `Order ${created.id}`,
           message: `Sales order ${created.id} has been created for ${selectedCustomer.name}.`,
@@ -794,6 +805,17 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
               type="date"
               value={orderDate}
               onChange={(e) => setOrderDate(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="required-date">Required delivery date</Label>
+            <Input
+              id="required-date"
+              type="date"
+              min={orderDate}
+              value={requiredDate}
+              onChange={(event) => setRequiredDate(event.target.value)}
               required
             />
           </div>

@@ -2,30 +2,30 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const express = require("express");
+require("./middleware/asyncErrors");
+const { installRouterParamValidation } = require("./middleware/asyncErrors");
+installRouterParamValidation(express);
 const cors = require("cors");
 const swaggerUi = require("swagger-ui-express");
 const pool = require("./db");
 const auth = require("./auth");
+const { validateSecrets } = require("./config/secrets");
 const { ensureBootstrap, getSchemaStatus } = require("./bootstrap");
 const { ensureErpFoundation, getErpStatus } = require("./erpBootstrap");
 const { getMigrationStatus } = require("./migrate");
 const { generateInsight } = require("./intelligence");
 const { applySecurity } = require("./middleware/security");
+const { apiLimiter } = require("./middleware/security");
+const { requestId, errorHandler } = require("./middleware/errorHandler");
 const { authenticateErp } = require("./middleware/erpAuth");
 const v1Routes = require("./routes/v1");
+const mpesa = require("./services/mpesaService");
 const openapi = require("./openapi");
 
-if (
-  process.env.NODE_ENV === "production" &&
-  (!process.env.JWT_SECRET ||
-    process.env.JWT_SECRET === "your_jwt_secret_here_min_32_chars" ||
-    process.env.JWT_SECRET === "ayawin-enterprise-secret")
-) {
-  throw new Error("JWT_SECRET must be set to a strong non-default value in production");
-}
+validateSecrets();
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS) || 0);
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -50,8 +50,30 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "2mb" }));
+app.use(requestId);
 applySecurity(app);
 app.use("/api/v1", v1Routes);
+app.post("/api/v1/callbacks/mpesa/:companyId/:token/*", async (req, res) => {
+  const { companyId, token } = req.params;
+  const callbackKind = String(req.params[0] || "stk").replace(/^\/+|\/+$/g, "");
+  try {
+    if (!(await mpesa.validateCompanyCallbackToken({ companyId, token }))) {
+      return res.status(401).json({ ResultCode: 1, ResultDesc: "Invalid M-Pesa callback token" });
+    }
+    if (callbackKind === "c2b/validation") {
+      return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+    }
+    if (callbackKind === "c2b/confirmation") {
+      const result = await mpesa.receiveC2bConfirmation({ companyId, token, payload: req.body });
+      return res.status(200).json({ ResultCode: 0, ResultDesc: "C2B confirmation received", request_id: result.transaction_id });
+    }
+    const result = await mpesa.receiveMpesaCallback({ companyId, token, payload: req.body });
+    return res.status(200).json({ ResultCode: 0, ResultDesc: "Callback received", request_id: result.request_id });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    return res.status(status).json({ ResultCode: 1, ResultDesc: error.message });
+  }
+});
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openapi));
 app.get("/api/docs.json", (req, res) => res.json(openapi));
 app.get("/health", (req, res) => res.json({ status: "ok" }));
@@ -66,18 +88,12 @@ app.get("/health/db", async (req, res) => {
   }
 });
 
-app.post("/api/notifications/email", (req, res) => {
-  const recipient = typeof req.body?.recipient === "string" ? req.body.recipient.trim() : "";
-  const subject = typeof req.body?.subject === "string" ? req.body.subject.trim() : "";
-  const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+app.use("/api", apiLimiter);
+app.use("/api", authenticateErp);
 
-  if (!recipient || !subject || !message) {
-    return res.status(400).json({ error: "recipient, subject and message are required" });
-  }
-
-  console.log(`[email-trigger] to=${recipient} subject=${subject}`);
-  return res.json({ ok: true });
-});
+app.post("/api/notifications/email", (_req, res) =>
+  res.status(410).json({ error: "This endpoint is retired. Use the authenticated ERP notification outbox." }),
+);
 
 app.get(
   "/api/system/bootstrap",
@@ -202,136 +218,6 @@ app.get(
     }
   },
 );
-
-function canUseDemoAuth(email, password) {
-  if (!IS_DEMO_MODE) return false;
-  const normalized = email.trim().toLowerCase();
-  const allowed = password === "Bonnke@123" || password === "demo";
-
-  return (
-    allowed &&
-    [
-      "bonnkereinhard654@gmail.com",
-      "bonnkereinhard654@gmail.com",
-      "admin@company.local",
-      "admin",
-      "manager@martin.co.ke",
-      "accountant@martin.co.ke",
-      "hr@martin.co.ke",
-      "store@martin.co.ke",
-      "sales@martin.co.ke",
-      "warehouse@martin.co.ke",
-      "driver@martin.co.ke",
-    ].includes(normalized)
-  );
-}
-
-app.post("/api/auth/login", async (req, res) => {
-  const rawEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
-  const password = typeof req.body?.password === "string" ? req.body.password : "";
-  const normalizedEmail = rawEmail.toLowerCase();
-
-  if (!rawEmail || !password) {
-    return res.status(400).json({ error: "Email and password are required" });
-  }
-
-  try {
-    const lookupValues =
-      normalizedEmail === "admin@company.local"
-        ? [rawEmail, "bonnkereinhard654@gmail.com", "admin"]
-        : [rawEmail, normalizedEmail];
-
-    const result = await pool.query(
-      "SELECT id, username, full_name, email, role, status, password_hash FROM users WHERE email = ANY($1::text[]) OR username = ANY($1::text[]) LIMIT 1",
-      [lookupValues],
-    );
-
-    if (result.rowCount === 0) {
-      if (canUseDemoAuth(rawEmail, password)) {
-        const user = auth.createDemoUser(
-          normalizedEmail === "admin" ? "bonnkereinhard654@gmail.com" : rawEmail,
-        );
-        const token = auth.generateToken(user);
-        return res.json({
-          token,
-          user: {
-            id: user.id,
-            username: user.username,
-            full_name: user.full_name,
-            email: user.email,
-            role: user.role,
-          },
-          demo: true,
-        });
-      }
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    const user = result.rows[0];
-    if (!user.password_hash) {
-      if (canUseDemoAuth(rawEmail, password)) {
-        const demoUser = auth.createDemoUser(
-          user.email || normalizedEmail || "bonnkereinhard654@gmail.com",
-        );
-        const token = auth.generateToken(demoUser);
-        return res.json({
-          token,
-          user: {
-            id: demoUser.id,
-            username: demoUser.username,
-            full_name: demoUser.full_name,
-            email: demoUser.email,
-            role: demoUser.role,
-          },
-          demo: true,
-        });
-      }
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    const verified = await auth.comparePassword(password, user.password_hash);
-    if (!verified) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    if (user.status && user.status !== "active") {
-      return res.status(403).json({ error: "Account is not active" });
-    }
-
-    const token = auth.generateToken(user);
-    return res.json({
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        full_name: user.full_name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    if (canUseDemoAuth(rawEmail, password)) {
-      const user = auth.createDemoUser(
-        normalizedEmail === "admin" ? "bonnkereinhard654@gmail.com" : rawEmail,
-      );
-      const token = auth.generateToken(user);
-      return res.json({
-        token,
-        user: {
-          id: user.id,
-          username: user.username,
-          full_name: user.full_name,
-          email: user.email,
-          role: user.role,
-        },
-        demo: true,
-      });
-    }
-
-    return res.status(503).json({ error: "Authentication service temporarily unavailable" });
-  }
-});
 
 app.get("/api/auth/me", auth.authenticateToken, (req, res) => {
   return res.json(req.user);
@@ -1592,7 +1478,36 @@ app.patch(
   },
 );
 
+app.use((req, res) => res.status(404).json({ error: "Not found", request_id: req.id }));
+app.use(errorHandler);
+
 const port = process.env.PORT || 4000;
+let server;
+let shuttingDown = false;
+
+async function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (server) await new Promise((resolve) => server.close(resolve));
+  try {
+    await pool.end();
+  } catch (error) {
+    console.error(JSON.stringify({ event: "pool_shutdown_error", error: error.message }));
+    exitCode = 1;
+  }
+  process.exit(exitCode);
+}
+
+process.on("SIGTERM", () => void shutdown(0));
+process.on("SIGINT", () => void shutdown(0));
+process.on("unhandledRejection", (reason) => {
+  console.error(JSON.stringify({ event: "unhandled_rejection", error: reason?.message || String(reason) }));
+  void shutdown(1);
+});
+process.on("uncaughtException", (error) => {
+  console.error(JSON.stringify({ event: "uncaught_exception", error: error.message, stack: error.stack }));
+  void shutdown(1);
+});
 
 async function start() {
   try {
@@ -1601,13 +1516,15 @@ async function start() {
       await auth.ensureDefaultAdmin();
       await ensureErpFoundation();
     } catch (seedErr) {
-      console.warn("Running without database seed. Demo sign-in will still work.", seedErr.message);
+      console.warn("Running without database seed; database-backed features are unavailable.", seedErr.message);
     }
-    app.listen(port, "0.0.0.0", () => console.log(`Server listening on ${port}`));
+    server = app.listen(port, "0.0.0.0", () => console.log(`Server listening on ${port}`));
   } catch (err) {
     console.error("Failed to start server", err);
     process.exit(1);
   }
 }
 
-start();
+if (require.main === module) start();
+
+module.exports = { app, start, shutdown };

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 180" role="img" aria-labelledby="title desc">
+  <title id="title">Ayawin Stock Solutions</title>
+  <desc id="desc">Ayawin Stock Solutions blue and teal wordmark</desc>
+  <g transform="translate(12 18)">
+    <path d="M22 112h25V72H22z" fill="#55b8d5"/>
+    <path d="M53 112h25V50H53z" fill="#19a99d"/>
+    <path d="M84 112h25V30H84z" fill="#25b7b2"/>
+    <path d="M115 112h25V8h-25z" fill="#174d67"/>
+    <path d="M121 8h19l-15 17-11-9z" fill="#174d67"/>
+    <path d="M22 112l18-29 12-15v44z" fill="#55b8d5" opacity=".85"/>
+  </g>
+  <text x="174" y="91" fill="#0e2e4d" font-family="Arial, sans-serif" font-size="68" font-weight="700" letter-spacing="-2">Ayawin</text>
+  <path d="M174 108h304" stroke="#18a8bd" stroke-width="4"/>
+  <text x="174" y="143" fill="#8b8f94" font-family="Arial, sans-serif" font-size="25" font-weight="500" letter-spacing="3">STOCK SOLUTIONS</text>
+</svg>

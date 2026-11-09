@@ -2,6 +2,7 @@ const express = require("express");
 const pool = require("../../db");
 const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
 const payroll = require("../../services/payrollService");
+const remittances = require("../../services/payrollRemittanceService");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -85,6 +86,43 @@ router.get("/runs/:id/statutory-report", requirePermission("hr.view"), async (re
     [req.params.id, req.user.company_id],
   );
   return res.json(result.rows[0]);
+});
+
+router.get("/statutory-remittances", requirePermission("hr.view"), async (req, res) => {
+  try {
+    return res.json(await remittances.listRemittances(req.user.company_id, req.query.payroll_run_id || null));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/statutory-remittances/:id/payments", requirePermission("hr.create"), async (req, res) => {
+  try {
+    const payment = await remittances.createPayment({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      remittanceId: req.params.id,
+      amount: req.body?.amount,
+      paymentDate: req.body?.payment_date,
+      bankAccountId: req.body?.bank_account_id,
+      referenceNo: req.body?.reference_no,
+    });
+    return res.status(201).json(payment);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/statutory-remittance-payments/:id/post", requirePermission("hr.approve"), async (req, res) => {
+  try {
+    return res.json(await remittances.postPayment({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      paymentId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 });
 
 router.post("/preview", requirePermission("hr.view"), async (req, res) => {

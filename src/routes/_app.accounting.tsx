@@ -24,13 +24,22 @@ import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { exportWorkbook } from "@/lib/excel";
 import { useEffect, useMemo, useState } from "react";
-import { Printer, FileDown, ArrowUpDown } from "lucide-react";
+import {
+  Printer,
+  FileDown,
+  ArrowUpDown,
+  CircleAlert,
+  CircleCheck,
+  ShieldCheck,
+} from "lucide-react";
 import { exportElementAsPdf } from "@/lib/pdf";
 import { useAuth } from "@/lib/auth";
 import {
   closeFinancePeriod,
   fetchAccountingSnapshot,
+  fetchFinancePeriodCloseChecklist,
   fetchFinanceWorkspace,
+  type FinancePeriodCloseChecklist,
   type AccountingJournalRow,
   type FinanceWorkspace,
 } from "@/lib/api";
@@ -60,6 +69,9 @@ function Accounting() {
   const [finance, setFinance] = useState<FinanceWorkspace | null>(null);
   const [periodId, setPeriodId] = useState("");
   const [closing, setClosing] = useState(false);
+  const [closeReason, setCloseReason] = useState("");
+  const [closeChecklist, setCloseChecklist] = useState<FinancePeriodCloseChecklist | null>(null);
+  const [loadingCloseChecklist, setLoadingCloseChecklist] = useState(false);
   const pageSize = 5;
 
   useEffect(() => {
@@ -101,6 +113,37 @@ function Accounting() {
         toast.error(err instanceof Error ? err.message : "Unable to load finance reports"),
       );
   }, [token, periodId]);
+
+  useEffect(() => {
+    if (
+      !token ||
+      !periodId ||
+      finance?.periods.find((period) => period.id === periodId)?.status !== "open"
+    ) {
+      setCloseChecklist(null);
+      return;
+    }
+    let active = true;
+    setLoadingCloseChecklist(true);
+    void fetchFinancePeriodCloseChecklist(token, periodId)
+      .then((checklist) => {
+        if (active) setCloseChecklist(checklist);
+      })
+      .catch((error) => {
+        if (active) {
+          setCloseChecklist(null);
+          toast.error(
+            error instanceof Error ? error.message : "Unable to load period close checklist",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingCloseChecklist(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, periodId, finance?.periods]);
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
@@ -195,7 +238,6 @@ function Accounting() {
                 try {
                   await exportElementAsPdf("accounting-report.pdf", el as HTMLElement);
                 } catch (e) {
-                  // eslint-disable-next-line no-console
                   console.error(e);
                 }
               }}
@@ -239,17 +281,23 @@ function Accounting() {
           <CardTitle>Next 30 Days Cash Flow</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-4">
-          {forecast.length ? forecast.map((item) => (
-            <div
-              key={item.label}
-              className="rounded-xl border border-border/70 bg-background/60 p-3"
-            >
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                {item.label}
+          {forecast.length ? (
+            forecast.map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl border border-border/70 bg-background/60 p-3"
+              >
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {item.label}
+                </div>
+                <div className="mt-1 text-xl font-bold">{KES(item.value)}</div>
               </div>
-              <div className="mt-1 text-xl font-bold">{KES(item.value)}</div>
+            ))
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              Cash flow forecast is unavailable until bank balances and due movements are connected.
             </div>
-          )) : <div className="text-sm text-muted-foreground">Cash flow forecast is unavailable until bank balances and due movements are connected.</div>}
+          )}
         </CardContent>
       </Card>
 
@@ -268,14 +316,18 @@ function Accounting() {
           </SelectContent>
         </Select>
         {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
+          <input aria-label="Period close reason" value={closeReason} onChange={(event) => setCloseReason(event.target.value)}
+            placeholder="Reason for closing" className="h-9 w-56 rounded-md border border-input bg-background px-3 text-sm" />
+        )}
+        {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
           <Button
             variant="outline"
-            disabled={closing}
+            disabled={closing || loadingCloseChecklist || !closeChecklist?.ready_to_close || !closeReason.trim()}
             onClick={async () => {
               if (!token || !periodId) return;
               setClosing(true);
               try {
-                await closeFinancePeriod(token, periodId);
+                await closeFinancePeriod(token, periodId, closeReason.trim());
                 toast.success("Fiscal period closed");
                 setFinance(await fetchFinanceWorkspace(token, periodId));
               } catch (err) {
@@ -289,6 +341,55 @@ function Accounting() {
           </Button>
         )}
       </div>
+
+      {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              {closeChecklist?.ready_to_close ? (
+                <ShieldCheck className="h-4 w-4 text-emerald-700" />
+              ) : (
+                <CircleAlert className="h-4 w-4 text-amber-700" />
+              )}
+              Period close checklist
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loadingCloseChecklist ? (
+              <p className="text-sm text-muted-foreground">Checking period controls…</p>
+            ) : closeChecklist ? (
+              <>
+                <p className="mb-3 text-sm text-muted-foreground">
+                  {closeChecklist.ready_to_close
+                    ? "All required finance checks are clear. A finance approver can close this period."
+                    : "Resolve the listed exceptions before closing this period."}
+                </p>
+                <ul className="grid gap-2 sm:grid-cols-2">
+                  {closeChecklist.checks.map((check) => (
+                    <li key={check.code} className="flex items-start gap-2 text-sm">
+                      {check.blocked ? (
+                        <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                      ) : (
+                        <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+                      )}
+                      <span className={check.blocked ? "text-amber-800" : "text-muted-foreground"}>
+                        {check.label}:{" "}
+                        {check.code === "trial_balance_difference"
+                          ? KES(check.amount || 0)
+                          : check.count.toLocaleString()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Close readiness is unavailable; refresh the period before attempting to close it.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs
         value={activeTab}
@@ -345,7 +446,13 @@ function Accounting() {
                       <TableCell className="text-right">{KES(a.ap)}</TableCell>
                     </TableRow>
                   ))}
-                  {aging.length === 0 && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No live receivables and payables aging data is available yet.</TableCell></TableRow>}
+                  {aging.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                        No live receivables and payables aging data is available yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -446,7 +553,10 @@ function Accounting() {
                 <CardTitle>VAT Return</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="text-muted-foreground">VAT return reporting is not connected to a live tax period yet. No filing amounts are shown.</div>
+                <div className="text-muted-foreground">
+                  VAT return reporting is not connected to a live tax period yet. No filing amounts
+                  are shown.
+                </div>
               </CardContent>
             </Card>
             <Card>
@@ -454,7 +564,10 @@ function Accounting() {
                 <CardTitle>Excise Duty Return</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="text-muted-foreground">Excise classifications and rates must be configured against current tax rules before a return can be calculated.</div>
+                <div className="text-muted-foreground">
+                  Excise classifications and rates must be configured against current tax rules
+                  before a return can be calculated.
+                </div>
               </CardContent>
             </Card>
           </div>

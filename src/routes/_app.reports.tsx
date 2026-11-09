@@ -135,9 +135,12 @@ function ReportsPage() {
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {kpis.slice(0, 4).map((kpi, index) => {
+        {kpis.slice(0, 6).map((kpi, index) => {
           const label = String(kpi.label || kpi.name || kpi.code || `KPI ${index + 1}`);
-          const value = kpi.value ?? kpi.amount ?? kpi.total ?? "—";
+          const value = kpi.value ?? kpi.actual ?? kpi.amount ?? kpi.total ?? "—";
+          const coverage = kpi.coverage as
+            | { dated_order_count?: number; eligible_order_count?: number; coverage_percent?: number }
+            | undefined;
           return (
             <Card key={label}>
               <CardContent className="p-4">
@@ -147,6 +150,11 @@ function ReportsPage() {
                 <div className="mt-1 text-2xl font-bold">
                   {typeof value === "number" ? value.toLocaleString() : String(value)}
                 </div>
+                {coverage && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Required date coverage: {coverage.dated_order_count || 0} of {coverage.eligible_order_count || 0} orders ({coverage.coverage_percent || 0}%)
+                  </div>
+                )}
               </CardContent>
             </Card>
           );

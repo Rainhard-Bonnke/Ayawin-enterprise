@@ -34,11 +34,13 @@ import {
   fetchPayrollPayslips,
   fetchPayrollRuns,
   fetchPayrollStatutory,
+  fetchPayrollRemittances,
   postPayroll,
   runPayroll,
   type BackendEmployee,
   type PayrollRun,
   type PayslipRow,
+  type PayrollRemittance,
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -65,6 +67,7 @@ function HRPage() {
     total_employer_cost: number;
     employees: number;
   } | null>(null);
+  const [remittances, setRemittances] = useState<PayrollRemittance[]>([]);
   const [payrollMonth, setPayrollMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "employees");
@@ -108,6 +111,7 @@ function HRPage() {
         ]);
         setPayslips(slips);
         setStatutory(report);
+        setRemittances(await fetchPayrollRemittances(token, active.id));
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to load payroll runs");
@@ -481,6 +485,42 @@ function HRPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+              <div className="mb-4 rounded-xl border border-border p-3">
+                <div className="mb-3 text-sm font-semibold">Statutory remittance register</div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Agency</TableHead>
+                      <TableHead className="text-right">Due</TableHead>
+                      <TableHead className="text-right">Paid</TableHead>
+                      <TableHead className="text-right">Outstanding</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Payment evidence</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {remittances.map((remittance) => (
+                      <TableRow key={remittance.id}>
+                        <TableCell className="font-medium">{remittance.agency_name}</TableCell>
+                        <TableCell className="text-right">{KES(remittance.amount_due)}</TableCell>
+                        <TableCell className="text-right">{KES(remittance.amount_paid)}</TableCell>
+                        <TableCell className="text-right">{KES(remittance.outstanding_amount)}</TableCell>
+                        <TableCell><StatusBadge status={remittance.status} /></TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {remittance.posted_payment_count} posted payment{remittance.posted_payment_count === 1 ? "" : "s"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!remittances.length && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                          No statutory remittance obligations are attached to this payroll run yet.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
               <Table>
                 <TableHeader>

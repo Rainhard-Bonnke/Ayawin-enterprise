@@ -1,14 +1,108 @@
 const express = require("express");
 const pool = require("../../db");
-const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
-const { emitEvent, EVENTS } = require("../../services/webhookService");
+const { authenticateErp, requirePermission, requireAnyPermission } = require("../../middleware/erpAuth");
+const { emitEvent, EVENTS, validateWebhookUrl } = require("../../services/webhookService");
 const { processImport } = require("../../services/importService");
 const integration = require("../../services/integrationService");
+const integrationSettings = require("../../services/integrationSettingsService");
+const etimsIntegration = require("../../services/etimsIntegrationService");
+const mpesa = require("../../services/mpesaService");
+const notificationOutbox = require("../../services/notificationOutboxService");
 
 const router = express.Router();
+router.post("/integrations/mpesa/callback", async (req, res) => {
+  try {
+    const result = await mpesa.receiveMpesaCallback({
+      token: req.get("x-mpesa-callback-token"),
+      payload: req.body,
+    });
+    return res.status(200).json({ ResultCode: 0, ResultDesc: "Callback received", request_id: result.request_id });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    return res.status(status).json({ ResultCode: 1, ResultDesc: error.message });
+  }
+});
+
 router.use(authenticateErp);
 
 router.get("/webhooks/events", (req, res) => res.json(EVENTS));
+
+router.get("/integrations/:provider/settings", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    const settings = await integrationSettings.getIntegrationSettings({
+      companyId: req.user.company_id,
+      provider: req.params.provider,
+      branchId: req.query.branch_id || null,
+    });
+    return res.json(settings || {
+      provider: req.params.provider,
+      provider_mode: "disabled",
+      environment: "sandbox",
+      public_config: {},
+      policy: req.params.provider === "etims" ? { submit_on_post: "required" } : { b2c_enabled: false },
+      has_secrets: false,
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.put("/integrations/:provider/settings", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const settings = await integrationSettings.saveIntegrationSettings({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      branchId: body.branch_id || null,
+      provider: req.params.provider,
+      providerMode: body.provider_mode,
+      environment: body.environment,
+      publicConfig: body.public_config,
+      secrets: body.secrets,
+      policy: body.policy,
+    });
+    return res.json(settings);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/mpesa/rotate-callback-token", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    const result = await integrationSettings.rotateMpesaCallbackToken({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      branchId: req.body?.branch_id || null,
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/etims/initialize", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    const result = await etimsIntegration.initializeEtimsDevice({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      branchId: req.body?.branch_id || null,
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/etims/test-connection", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    return res.json(await etimsIntegration.testEtimsConnection({
+      companyId: req.user.company_id,
+      branchId: req.body?.branch_id || null,
+    }));
+  } catch (error) {
+    return res.status(502).json({ error: error.message });
+  }
+});
 
 router.get("/webhooks", requirePermission("foundation.view"), async (req, res) => {
   const result = await pool.query(
@@ -22,6 +116,8 @@ router.post("/webhooks", requirePermission("foundation.edit"), async (req, res) 
   const { name, url, secret, events } = req.body || {};
   if (!name || !url || !events?.length)
     return res.status(400).json({ error: "name, url, events required" });
+  try { await validateWebhookUrl(url); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
   const result = await pool.query(
     `INSERT INTO erp_webhook_subscriptions (company_id, name, url, secret, events, created_by)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, url, events, is_active`,
@@ -66,37 +162,77 @@ router.get("/import/:id", requirePermission("master_data.view"), async (req, res
   return res.json(result.rows[0]);
 });
 
-router.post("/integrations/etims/submit", requirePermission("sales.create"), async (req, res) => {
-  const result = await integration.submitEtimsInvoice({
-    companyId: req.user.company_id,
-    invoice: req.body,
-  });
-  return res.json(result);
+router.post("/integrations/etims/invoices/:invoiceId/submit", requirePermission("sales.create"), async (req, res) => {
+  try {
+    const result = await integration.queueEtimsInvoice({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      invoiceId: req.params.invoiceId,
+    });
+    return res.status(result.queued ? 202 : 200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 });
 
-router.post("/integrations/mpesa/stk-push", requirePermission("sales.create"), async (req, res) => {
-  const { phone, amount, reference } = req.body || {};
-  if (!phone || !amount) return res.status(400).json({ error: "phone and amount required" });
-  const result = await integration.initiateMpesaPayment({
+router.get("/integrations/etims/invoices/:invoiceId", requirePermission("sales.view"), async (req, res) => {
+  const submission = await integration.getEtimsSubmission({
     companyId: req.user.company_id,
-    phone,
-    amount,
-    reference,
+    invoiceId: req.params.invoiceId,
   });
-  return res.json(result);
+  if (!submission) return res.status(404).json({ error: "eTIMS submission not found for this invoice" });
+  return res.json(submission);
 });
 
-router.post("/notifications/send", requirePermission("foundation.edit"), async (req, res) => {
-  const { channel, to, subject, body } = req.body || {};
-  if (!to || !body) return res.status(400).json({ error: "to and body required" });
-  const result = await integration.sendNotification({
+router.post("/integrations/mpesa/invoices/:invoiceId/stk-push", requirePermission("sales.create"), async (req, res) => {
+  try {
+    const result = await mpesa.createStkRequest({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      invoiceId: req.params.invoiceId,
+      phone: req.body?.phone,
+      amount: req.body?.amount,
+      idempotencyKey: req.get("idempotency-key") || req.body?.idempotency_key,
+    });
+    return res.status(result.status === "pending" ? 202 : 200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/integrations/mpesa/requests/:id", requirePermission("sales.view"), async (req, res) => {
+  const request = await mpesa.getMpesaPaymentRequest({
     companyId: req.user.company_id,
-    channel: channel || "email",
-    to,
-    subject,
-    body,
+    requestId: req.params.id,
   });
-  return res.json(result);
+  if (!request) return res.status(404).json({ error: "M-Pesa payment request not found" });
+  return res.json(request);
+});
+
+router.post("/notifications/send", requireAnyPermission("foundation.edit", "sales.create"), async (req, res) => {
+  try {
+    const result = await notificationOutbox.enqueueNotification({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      channel: req.body?.channel || "email",
+      destination: req.body?.to,
+      subject: req.body?.subject,
+      body: req.body?.body,
+      idempotencyKey: req.get("idempotency-key") || req.body?.idempotency_key,
+    });
+    return res.status(result.queued ? 202 : 200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/notifications/:id", requireAnyPermission("foundation.view", "sales.view"), async (req, res) => {
+  const notification = await notificationOutbox.getNotification({
+    companyId: req.user.company_id,
+    notificationId: req.params.id,
+  });
+  if (!notification) return res.status(404).json({ error: "Notification not found" });
+  return res.json(notification);
 });
 
 router.get("/jobs", requirePermission("foundation.view"), async (req, res) => {

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 768 768" role="img" aria-labelledby="title desc">
+  <title id="title">Ayawin Stock Solution</title>
+  <desc id="desc">Ayawin Stock Solution navy and gold circular logo</desc>
+  <rect width="768" height="768" rx="44" fill="#102747"/>
+  <circle cx="384" cy="384" r="277" fill="none" stroke="#d7a63d" stroke-width="12"/>
+  <circle cx="384" cy="384" r="257" fill="none" stroke="#d7a63d" stroke-width="2" opacity=".8"/>
+  <circle cx="168" cy="384" r="11" fill="#d7a63d"/>
+  <circle cx="600" cy="384" r="11" fill="#d7a63d"/>
+  <path d="M296 478c-31-34-42-78-25-119 12-29 34-48 59-59-5 34 8 64 29 82-8-29 5-59 31-83l34-66h43l30 77 80-26-22 60-69 21-26 76-35-79-35 48c-13 18-29 41-38 68z" fill="#d7a63d"/>
+  <path d="M295 477l62-72 38 34 96-105-20 1 77-24-17 79-6-27-115 127-47-48-28 35z" fill="#d7a63d"/>
+  <path d="M374 382l28-29 34 52 41-76 25 25-65 108z" fill="#102747"/>
+  <g fill="#d7a63d" font-family="Arial, sans-serif" font-size="61" font-weight="700" letter-spacing="10">
+    <text x="184" y="267" transform="rotate(-47 184 267)">A</text>
+    <text x="245" y="190" transform="rotate(-30 245 190)">Y</text>
+    <text x="321" y="157" transform="rotate(-12 321 157)">A</text>
+    <text x="405" y="157" transform="rotate(12 405 157)">W</text>
+    <text x="506" y="190" transform="rotate(31 506 190)">I</text>
+    <text x="557" y="237" transform="rotate(46 557 237)">N</text>
+  </g>
+  <text x="384" y="560" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="7">STOCK SOLUTION</text>
+</svg>

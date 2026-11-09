@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { User } from "./api";
-import { loginRequest, logoutRequest, posLoginRequest } from "./api";
+import { loginRequest, logoutRequest } from "./api";
 import {
   parseAccessToken,
   getStoredTokens,
@@ -14,8 +14,7 @@ import {
 type AuthContextValue = {
   user: User | null;
   token: string | null;
-  login: (email: string, password: string) => Promise<void>;
-  loginPos: (password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
   logout: () => void;
   loading: boolean;
 };
@@ -25,8 +24,6 @@ const STORAGE_KEY = "ayawin-stock-solution-erp-token";
 
 function parseJwt(token: string): User | null {
   try {
-    if (token.startsWith("demo:")) return null;
-
     const v1User = parseAccessToken(token);
     if (v1User) return v1User;
 
@@ -68,13 +65,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async function restoreSession() {
       const storedToken = getStoredTokens().access || localStorage.getItem(STORAGE_KEY);
       if (!storedToken) {
-        setLoading(false);
-        return;
-      }
-
-      if (storedToken.startsWith("demo:")) {
-        clearTokens();
-        localStorage.removeItem(STORAGE_KEY);
         setLoading(false);
         return;
       }
@@ -135,13 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem(STORAGE_KEY, newToken);
     setToken(newToken);
     setUser(currentUser);
-  };
-
-  const loginPos = async (password: string) => {
-    const { token: newToken, user: currentUser } = await posLoginRequest(password);
-    localStorage.setItem(STORAGE_KEY, newToken);
-    setToken(newToken);
-    setUser(currentUser);
+    return currentUser;
   };
 
   const logout = async () => {
@@ -160,7 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const value = useMemo(
-    () => ({ user, token, login, loginPos, logout, loading }),
+    () => ({ user, token, login, logout, loading }),
     [user, token, loading],
   );
 

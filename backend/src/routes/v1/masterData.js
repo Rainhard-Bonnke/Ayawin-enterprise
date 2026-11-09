@@ -401,6 +401,38 @@ router.use(
     searchFields: ["code", "name"],
   }),
 );
+router.get("/items/etims-unmapped.csv", requirePermission("master_data.view"), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT item_code, name, tax_group_id, etims_item_classification_code,
+              etims_item_code, etims_item_type_code, etims_origin_country_code,
+              etims_packaging_unit_code, etims_package_quantity,
+              etims_quantity_unit_code, etims_tax_type_code
+       FROM erp_items
+       WHERE company_id = $1 AND is_active = TRUE AND is_deleted = FALSE
+         AND (etims_item_classification_code IS NULL OR etims_item_code IS NULL
+           OR etims_item_type_code IS NULL OR etims_origin_country_code IS NULL
+           OR etims_packaging_unit_code IS NULL OR etims_package_quantity IS NULL
+           OR etims_quantity_unit_code IS NULL OR etims_tax_type_code IS NULL
+           OR etims_sync_status <> 'synced')
+       ORDER BY item_code`,
+      [req.user.company_id],
+    );
+    const columns = [
+      "item_code", "name", "tax_group_id", "etims_item_classification_code", "etims_item_code",
+      "etims_item_type_code", "etims_origin_country_code", "etims_packaging_unit_code",
+      "etims_package_quantity", "etims_quantity_unit_code", "etims_tax_type_code",
+    ];
+    const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const csv = [columns.map(quote).join(","), ...result.rows.map((row) => columns.map((column) => quote(row[column])).join(","))].join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="etims-unmapped-items.csv"');
+    return res.send(csv);
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to export unmapped eTIMS items" });
+  }
+});
+
 router.use(
   "/items",
   createCrud({
@@ -410,6 +442,7 @@ router.use(
     maxLimit: 2000,
   }),
 );
+
 router.use(
   "/customers",
   createCrud({

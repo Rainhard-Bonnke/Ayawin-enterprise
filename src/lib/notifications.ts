@@ -1,23 +1,26 @@
 import { toast } from "sonner";
-
-const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+import { v1Api } from "@/lib/api-v1";
 
 export function notify(message: string, description?: string) {
   toast.success(message, description ? { description } : undefined);
 }
 
-export async function triggerEmailNotification(payload: {
-  recipient: string;
-  subject: string;
-  message: string;
-}) {
+export async function triggerEmailNotification(
+  token: string,
+  payload: { recipient: string; subject: string; message: string },
+) {
   try {
-    await fetch(`${apiBase}/api/notifications/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const result = await v1Api.integrations.sendNotification(token, {
+      channel: "email",
+      to: payload.recipient,
+      subject: payload.subject,
+      body: payload.message,
+      idempotency_key: crypto.randomUUID(),
     });
-  } catch {
-    // Ignore transport failures in local demo mode.
+    toast.info(result.delivered ? "Email delivered" : "Email queued", {
+      description: result.message,
+    });
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : "Unable to queue email notification");
   }
 }

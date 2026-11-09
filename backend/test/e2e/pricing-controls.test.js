@@ -17,6 +17,34 @@ test("a tampered client price is rejected unless the creator has price override 
   }), /price override/i);
 });
 
+test("zero-price sales require a flagged free-issue item and a reason", async () => {
+  const ctx = await getTestContext();
+  const customerId = await getCustomerId(ctx.companyId);
+  const itemId = await getItemId(ctx.companyId, "COKE-500");
+  const priceRow = await pool.query(
+    `SELECT entry.id,entry.unit_price FROM erp_price_list_items entry
+     JOIN erp_price_lists list ON list.id=entry.price_list_id
+     WHERE list.company_id=$1 AND list.is_default=TRUE AND list.is_active=TRUE AND entry.item_id=$2 AND entry.min_qty<=1
+       AND list.effective_from<=CURRENT_DATE AND (list.effective_to IS NULL OR list.effective_to>=CURRENT_DATE)
+     ORDER BY entry.min_qty DESC LIMIT 1`, [ctx.companyId,itemId]);
+  const item = await pool.query("SELECT is_free_issue FROM erp_items WHERE id=$1", [itemId]);
+  try {
+    await pool.query("UPDATE erp_price_list_items SET unit_price=0 WHERE id=$1", [priceRow.rows[0].id]);
+    await pool.query("UPDATE erp_items SET is_free_issue=FALSE WHERE id=$1", [itemId]);
+    await assert.rejects(() => sales.createSalesOrder({ companyId:ctx.companyId,userId:ctx.userId,customerId,
+      warehouseId:ctx.warehouseId,requiredDate:new Date().toISOString().slice(0,10),
+      lines:[{item_id:itemId,quantity:1}] }), /zero price/i);
+    await pool.query("UPDATE erp_items SET is_free_issue=TRUE WHERE id=$1", [itemId]);
+    const order = await sales.createSalesOrder({ companyId:ctx.companyId,userId:ctx.userId,customerId,
+      warehouseId:ctx.warehouseId,requiredDate:new Date().toISOString().slice(0,10),
+      lines:[{item_id:itemId,quantity:1,reason_code:"SAMPLE"}] });
+    assert.equal(Number(order.total_amount), 0);
+  } finally {
+    await pool.query("UPDATE erp_items SET is_free_issue=$2 WHERE id=$1", [itemId,item.rows[0].is_free_issue]);
+    await pool.query("UPDATE erp_price_list_items SET unit_price=$2 WHERE id=$1", [priceRow.rows[0].id,priceRow.rows[0].unit_price]);
+  }
+});
+
 test("authorized price overrides retain the list price in the audit trail", async () => {
   const ctx = await getTestContext();
   const customerId = await getCustomerId(ctx.companyId);

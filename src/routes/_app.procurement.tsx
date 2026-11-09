@@ -183,7 +183,7 @@ function Procurement() {
   const totalPages = Math.max(1, Math.ceil(orderRows.length / pageSize));
   const pagedOrders = orderRows.slice((page - 1) * pageSize, page * pageSize);
 
-  const setOrderStatus = async (row: any, nextStatus: BackendPurchaseOrder["status"]) => {
+  const setOrderStatus = async (row: BackendPurchaseOrder, nextStatus: BackendPurchaseOrder["status"]) => {
     if (!token) return;
     const internalId = row.internal_id;
     if (!internalId) {
@@ -201,7 +201,7 @@ function Procurement() {
     }
   };
 
-  const receiveOrder = async (row: any) => {
+  const receiveOrder = async (row: BackendPurchaseOrder) => {
     if (!token) return;
     const internalId = row.internal_id;
     if (!internalId) {
@@ -537,7 +537,7 @@ function Procurement() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    pagedOrders.map((p: any) => (
+                    pagedOrders.map((p) => (
                       <TableRow key={p.id}>
                         <TableCell className="font-mono text-xs">{p.id}</TableCell>
                         <TableCell>{fmtDate(p.date)}</TableCell>

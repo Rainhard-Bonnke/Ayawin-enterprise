@@ -32,7 +32,7 @@ router.post("/", requirePermission("users.create"), async (req, res) => {
     return res.status(400).json({ error: "username, email, full_name, password required" });
   }
 
-  const hash = await bcrypt.hash(password, 10);
+  const hash = await bcrypt.hash(password, 12);
   try {
     const result = await pool.query(
       `INSERT INTO erp_users (
@@ -120,6 +120,7 @@ router.patch("/:id", requirePermission("users.edit"), async (req, res) => {
       ipAddress: getClientIp(req),
       userAgent: req.headers["user-agent"],
     });
+    await userService.invalidateUserCache(req.params.id);
     return res.json(result.rows[0]);
   } catch (err) {
     console.error(err);

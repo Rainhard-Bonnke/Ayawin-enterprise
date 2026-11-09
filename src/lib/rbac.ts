@@ -1,5 +1,25 @@
 import type { User } from "./api";
 
+export type SalesPermission =
+  | "sales.order.create"
+  | "sales.order.approve"
+  | "sales.delivery.post"
+  | "sales.invoice.create"
+  | "sales.invoice.post"
+  | "sales.receipt.create"
+  | "sales.receipt.approve"
+  | "sales.credit_note.create"
+  | "sales.credit_note.approve"
+  | "sales.price_override"
+  | "sales.discount_approve"
+  | "sales.credit_override";
+
+export function canPerformSalesAction(user: Pick<User, "role" | "permissions"> | null | undefined, permission: SalesPermission) {
+  if (!user) return false;
+  if (normalizeRole(user.role) === "Admin") return true;
+  return user.permissions?.includes(permission) ?? false;
+}
+
 export type RoleName =
   | "Admin"
   | "Manager"
@@ -37,6 +57,7 @@ const pathAccess: Record<string, RoleName[]> = {
   "/driver-stock": ["Admin", "Manager", "Store Manager", "Warehouse", "Driver"],
   "/procurement": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/delivery": ["Admin", "Manager", "Driver", "Warehouse"],
+  "/route-closures": ["Admin", "Manager", "Driver", "Warehouse", "Sales Rep", "Accountant"],
   "/goods-received": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/suppliers": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/stock-movements": ["Admin", "Manager", "Store Manager", "Warehouse"],
@@ -68,17 +89,6 @@ export const roleLabels: Record<RoleName, string> = {
   Warehouse: "Stock, warehouse and delivery support",
   Driver: "Delivery execution and proof of delivery",
   "POS Operator": "Point-of-sale checkout and receipts",
-};
-
-export const demoRoleAccounts: Record<string, RoleName> = {
-  "admin@martin.co.ke": "Admin",
-  "manager@martin.co.ke": "Manager",
-  "accountant@martin.co.ke": "Accountant",
-  "hr@martin.co.ke": "HR Officer",
-  "store@martin.co.ke": "Store Manager",
-  "sales@martin.co.ke": "Sales Rep",
-  "warehouse@martin.co.ke": "Warehouse",
-  "driver@martin.co.ke": "Driver",
 };
 
 export function normalizeRole(role?: string | null): RoleName {

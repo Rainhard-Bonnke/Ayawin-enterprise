@@ -239,10 +239,11 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
   const config = await getPayrollConfig(companyId, monthDate);
 
   const employees = await pool.query(
-    `SELECT e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance
+    `SELECT DISTINCT ON (e.id) e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance
      FROM erp_employees e
      LEFT JOIN erp_employee_contracts ec ON ec.employee_id = e.id AND ec.status = 'active'
-     WHERE e.company_id = $1 AND e.is_active = TRUE AND e.is_deleted = FALSE`,
+     WHERE e.company_id = $1 AND e.is_active = TRUE AND e.is_deleted = FALSE
+     ORDER BY e.id, ec.start_date DESC NULLS LAST, ec.created_at DESC NULLS LAST`,
     [companyId],
   );
 
@@ -350,6 +351,7 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
     return {
       run_id: run.id,
       run_no: run.run_no,
+      payroll_month: run.payroll_month,
       employees: employees.rowCount,
       total_gross: totalGross,
       total_net: totalNet,
@@ -420,6 +422,24 @@ async function postPayrollToGl({ companyId, userId, runId }) {
       referenceNo: run.run_no, description: `Payroll ${run.run_no}`, lines,
     });
     await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId });
+    const statutoryObligations = [
+      { agencyCode: "KRA_PAYE", accountCode: "2110", amount: paye },
+      { agencyCode: "NSSF", accountCode: "2120", amount: nssfEmployee + Number(totals.nssf_employer || 0) },
+      { agencyCode: "SHA_SHIF", accountCode: "2130", amount: health },
+      { agencyCode: "AHL", accountCode: "2140", amount: housingEmployee + Number(totals.housing_employer || 0) },
+    ];
+    for (const obligation of statutoryObligations) {
+      const amountDue = Math.round(obligation.amount * 100) / 100;
+      if (amountDue <= 0) continue;
+      await client.query(
+        `INSERT INTO erp_payroll_statutory_remittances (
+           company_id, payroll_run_id, agency_code, liability_account_code,
+           amount_due, created_by
+         ) VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (company_id, payroll_run_id, agency_code) DO NOTHING`,
+        [companyId, runId, obligation.agencyCode, obligation.accountCode, amountDue, userId],
+      );
+    }
     await client.query(
       `UPDATE erp_payroll_runs SET status = 'posted', posted_at = NOW(), journal_id = $3, updated_at = NOW()
        WHERE id = $1 AND company_id = $2`,

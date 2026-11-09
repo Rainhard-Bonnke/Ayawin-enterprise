@@ -35,8 +35,9 @@ async function metricArOutstanding(companyId) {
 
 async function metricApOutstanding(companyId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(total_amount),0) AS v FROM erp_purchase_orders
-     WHERE company_id = $1 AND status IN ('approved','sent','partial','received')`,
+    `SELECT COALESCE(SUM(GREATEST(total_amount - amount_paid, 0)), 0) AS v
+     FROM erp_supplier_bills
+     WHERE company_id = $1 AND status IN ('posted','partial','overdue') AND is_deleted = FALSE`,
     [companyId],
   );
   return Number(r.rows[0].v);
@@ -84,6 +85,58 @@ async function metricOpenPos(companyId) {
   return Number(r.rows[0].v);
 }
 
+async function metricOtifStats(companyId) {
+  const result = await pool.query(
+    `WITH eligible_orders AS (
+       SELECT so.id, so.required_date,
+              line_totals.ordered_quantity, line_totals.delivered_quantity,
+              delivery_dates.last_delivery_date
+       FROM erp_sales_orders so
+       JOIN LATERAL (
+         SELECT COALESCE(SUM(sol.quantity), 0) AS ordered_quantity,
+                COALESCE(SUM(sol.qty_delivered), 0) AS delivered_quantity
+         FROM erp_sales_order_lines sol
+         WHERE sol.sales_order_id = so.id AND sol.company_id = so.company_id AND sol.is_deleted = FALSE
+       ) line_totals ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT MAX(dn.delivery_date) AS last_delivery_date
+         FROM erp_delivery_notes dn
+         WHERE dn.sales_order_id = so.id AND dn.company_id = so.company_id
+           AND dn.status = 'posted' AND dn.is_deleted = FALSE
+       ) delivery_dates ON TRUE
+       WHERE so.company_id = $1 AND so.is_deleted = FALSE
+         AND so.status NOT IN ('draft','cancelled') AND so.order_date <= CURRENT_DATE
+     )
+     SELECT COUNT(*)::int AS eligible_order_count,
+            COUNT(*) FILTER (WHERE required_date IS NOT NULL)::int AS dated_order_count,
+            COUNT(*) FILTER (WHERE required_date <= CURRENT_DATE)::int AS due_order_count,
+            COUNT(*) FILTER (
+              WHERE required_date <= CURRENT_DATE
+                AND ordered_quantity > 0
+                AND delivered_quantity >= ordered_quantity
+                AND last_delivery_date IS NOT NULL
+                AND last_delivery_date <= required_date
+            )::int AS on_time_in_full_count
+     FROM eligible_orders`,
+    [companyId],
+  );
+  const row = result.rows[0];
+  const eligibleOrderCount = Number(row.eligible_order_count || 0);
+  const datedOrderCount = Number(row.dated_order_count || 0);
+  const dueOrderCount = Number(row.due_order_count || 0);
+  const onTimeInFullCount = Number(row.on_time_in_full_count || 0);
+  return {
+    eligible_order_count: eligibleOrderCount,
+    dated_order_count: datedOrderCount,
+    due_order_count: dueOrderCount,
+    on_time_in_full_count: onTimeInFullCount,
+    coverage_percent: eligibleOrderCount
+      ? Math.round((datedOrderCount / eligibleOrderCount) * 100)
+      : 100,
+    otif_percent: dueOrderCount ? Math.round((onTimeInFullCount / dueOrderCount) * 100) : 100,
+  };
+}
+
 const METRICS = {
   revenue_mtd: metricRevenueMtd,
   ar_outstanding: metricArOutstanding,
@@ -105,16 +158,8 @@ const METRICS = {
     if (stock <= 0) return 0;
     return Math.round((rev / stock) * 10) / 10;
   },
-  otif: async (companyId) => {
-    const r = await pool.query(
-      `SELECT COUNT(*) FILTER (WHERE status IN ('posted','delivered'))::float AS ok,
-              NULLIF(COUNT(*),0)::float AS total
-       FROM erp_delivery_notes WHERE company_id = $1`,
-      [companyId],
-    );
-    const row = r.rows[0];
-    return row.total ? Math.round((row.ok / row.total) * 100) : 100;
-  },
+  otif: async (companyId) => (await metricOtifStats(companyId)).otif_percent,
+  otif_coverage: async (companyId) => (await metricOtifStats(companyId)).coverage_percent,
 };
 
 async function getWidgetData(companyId, widgetId) {
@@ -174,6 +219,7 @@ async function computeKpis(companyId) {
       target: Number(kpi.target_value),
       status,
       drill_down: kpi.module,
+      ...(metric === "otif" ? { coverage: await metricOtifStats(companyId) } : {}),
     });
   }
 
@@ -245,11 +291,22 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
     }
     case "ap_aging": {
       const r = await pool.query(
-        `SELECT po.po_number, v.name AS vendor, po.order_date, po.total_amount, po.status
-         FROM erp_purchase_orders po
-         JOIN erp_vendors v ON v.id = po.vendor_id
-         WHERE po.company_id = $1 AND po.status IN ('approved','sent','partial','received')
-         ORDER BY po.order_date`,
+        `SELECT b.bill_no, b.supplier_invoice_no, v.name AS vendor,
+                b.bill_date, b.due_date, b.total_amount, b.amount_paid,
+                GREATEST(b.total_amount - b.amount_paid, 0) AS outstanding,
+                GREATEST(CURRENT_DATE - b.due_date, 0)::int AS days_overdue,
+                CASE
+                  WHEN b.due_date >= CURRENT_DATE THEN 'current'
+                  WHEN b.due_date >= CURRENT_DATE - 30 THEN '1-30'
+                  WHEN b.due_date >= CURRENT_DATE - 60 THEN '31-60'
+                  WHEN b.due_date >= CURRENT_DATE - 90 THEN '61-90'
+                  ELSE '91+'
+                END AS bucket
+         FROM erp_supplier_bills b
+         JOIN erp_vendors v ON v.id = b.vendor_id AND v.company_id = b.company_id
+         WHERE b.company_id = $1 AND b.status IN ('posted','partial','overdue')
+           AND b.is_deleted = FALSE AND b.total_amount > b.amount_paid
+         ORDER BY b.due_date, v.name, b.bill_no`,
         [companyId],
       );
       return { report: reportKey, rows: r.rows };

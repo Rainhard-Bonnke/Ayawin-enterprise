@@ -21,6 +21,7 @@ import { Route as AppStockAnalysisRouteImport } from './routes/_app.stock-analys
 import { Route as AppStockAdjustmentsRouteImport } from './routes/_app.stock-adjustments'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSalesRouteImport } from './routes/_app.sales'
+import { Route as AppRouteClosuresRouteImport } from './routes/_app.route-closures'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
 import { Route as AppReorderAlertsRouteImport } from './routes/_app.reorder-alerts'
 import { Route as AppQuarantineRouteImport } from './routes/_app.quarantine'
@@ -107,6 +108,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
 const AppSalesRoute = AppSalesRouteImport.update({
   id: '/sales',
   path: '/sales',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRouteClosuresRoute = AppRouteClosuresRouteImport.update({
+  id: '/route-closures',
+  path: '/route-closures',
   getParentRoute: () => AppRoute,
 } as any)
 const AppReportsRoute = AppReportsRouteImport.update({
@@ -281,6 +287,7 @@ export interface FileRoutesByFullPath {
   '/quarantine': typeof AppQuarantineRoute
   '/reorder-alerts': typeof AppReorderAlertsRoute
   '/reports': typeof AppReportsRoute
+  '/route-closures': typeof AppRouteClosuresRoute
   '/sales': typeof AppSalesRoute
   '/settings': typeof AppSettingsRoute
   '/stock-adjustments': typeof AppStockAdjustmentsRoute
@@ -321,6 +328,7 @@ export interface FileRoutesByTo {
   '/quarantine': typeof AppQuarantineRoute
   '/reorder-alerts': typeof AppReorderAlertsRoute
   '/reports': typeof AppReportsRoute
+  '/route-closures': typeof AppRouteClosuresRoute
   '/sales': typeof AppSalesRoute
   '/settings': typeof AppSettingsRoute
   '/stock-adjustments': typeof AppStockAdjustmentsRoute
@@ -364,6 +372,7 @@ export interface FileRoutesById {
   '/_app/quarantine': typeof AppQuarantineRoute
   '/_app/reorder-alerts': typeof AppReorderAlertsRoute
   '/_app/reports': typeof AppReportsRoute
+  '/_app/route-closures': typeof AppRouteClosuresRoute
   '/_app/sales': typeof AppSalesRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/stock-adjustments': typeof AppStockAdjustmentsRoute
@@ -408,6 +417,7 @@ export interface FileRouteTypes {
     | '/quarantine'
     | '/reorder-alerts'
     | '/reports'
+    | '/route-closures'
     | '/sales'
     | '/settings'
     | '/stock-adjustments'
@@ -448,6 +458,7 @@ export interface FileRouteTypes {
     | '/quarantine'
     | '/reorder-alerts'
     | '/reports'
+    | '/route-closures'
     | '/sales'
     | '/settings'
     | '/stock-adjustments'
@@ -490,6 +501,7 @@ export interface FileRouteTypes {
     | '/_app/quarantine'
     | '/_app/reorder-alerts'
     | '/_app/reports'
+    | '/_app/route-closures'
     | '/_app/sales'
     | '/_app/settings'
     | '/_app/stock-adjustments'
@@ -591,6 +603,13 @@ declare module '@tanstack/react-router' {
       path: '/sales'
       fullPath: '/sales'
       preLoaderRoute: typeof AppSalesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/route-closures': {
+      id: '/_app/route-closures'
+      path: '/route-closures'
+      fullPath: '/route-closures'
+      preLoaderRoute: typeof AppRouteClosuresRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/reports': {
@@ -821,6 +840,7 @@ interface AppRouteChildren {
   AppQuarantineRoute: typeof AppQuarantineRoute
   AppReorderAlertsRoute: typeof AppReorderAlertsRoute
   AppReportsRoute: typeof AppReportsRoute
+  AppRouteClosuresRoute: typeof AppRouteClosuresRoute
   AppSalesRoute: typeof AppSalesRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppStockAdjustmentsRoute: typeof AppStockAdjustmentsRoute
@@ -862,6 +882,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppQuarantineRoute: AppQuarantineRoute,
   AppReorderAlertsRoute: AppReorderAlertsRoute,
   AppReportsRoute: AppReportsRoute,
+  AppRouteClosuresRoute: AppRouteClosuresRoute,
   AppSalesRoute: AppSalesRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppStockAdjustmentsRoute: AppStockAdjustmentsRoute,

@@ -1,16 +1,32 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const pool = require("../../db");
-const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
+const { authenticateErp, requirePermission, requireAnyPermission } = require("../../middleware/erpAuth");
 const sales = require("../../services/salesService");
 const arCollections = require("../../services/arCollectionService");
 const customerCredits = require("../../services/customerCreditNoteService");
+const customerReceipts = require("../../services/customerReceiptService");
 const { parsePagination } = require("../../lib/queryHelper");
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
-const { buildInvoiceVerificationHash } = require("../../services/documentVerificationService");
+const { buildInvoiceVerificationHash, isFinalEtimsInvoice } = require("../../services/documentVerificationService");
 
 const router = express.Router();
+const AYAWIN_PDF_LOGO = path.resolve(__dirname, "../../../../public/ayawin-wordmark.png");
 router.use(authenticateErp);
+
+async function requireSalesApprovalOrOwnPosOrder(req, res, next) {
+  if (req.user?.permissions?.includes("sales.order.approve") || req.user?.role === "Admin") return next();
+  if (req.user?.session_type === "pos" && req.user?.permissions?.includes("sales.create")) {
+    const owned = await pool.query(
+      "SELECT 1 FROM erp_sales_orders WHERE id=$1 AND company_id=$2 AND created_by=$3 AND is_deleted=FALSE",
+      [req.params.id, req.user.company_id, req.user.id],
+    );
+    if (owned.rowCount) return next();
+  }
+  return res.status(403).json({ error: "Forbidden", required: ["sales.order.approve"] });
+}
 
 router.post("/atp-check", requirePermission("sales.view"), async (req, res) => {
   const { warehouse_id, lines } = req.body || {};
@@ -67,16 +83,17 @@ router.get("/orders/:id", requirePermission("sales.view"), async (req, res) => {
   return res.json({ ...so.rows[0], lines: lines.rows });
 });
 
-router.post("/orders", requirePermission("sales.create"), async (req, res) => {
+router.post("/orders", requirePermission("sales.order.create"), async (req, res) => {
   if (
     !req.body?.customer_id ||
     !req.body?.warehouse_id ||
+    !req.body?.required_date ||
     !Array.isArray(req.body?.lines) ||
     !req.body.lines.length
   ) {
     return res
       .status(400)
-      .json({ error: "customer_id, warehouse_id, and at least one line are required" });
+      .json({ error: "customer_id, warehouse_id, required_date, and at least one line are required" });
   }
   if (
     req.body.lines.some(
@@ -96,7 +113,9 @@ router.post("/orders", requirePermission("sales.create"), async (req, res) => {
       quotationId: req.body.quotation_id,
       lines: req.body.lines,
       orderDate: req.body.order_date,
+      requiredDate: req.body.required_date,
       notes: req.body.notes,
+      permissions: req.user.permissions,
     });
     return res.status(201).json(order);
   } catch (err) {
@@ -104,7 +123,25 @@ router.post("/orders", requirePermission("sales.create"), async (req, res) => {
   }
 });
 
-router.post("/orders/:id/confirm", requirePermission("sales.approve"), async (req, res) => {
+router.post("/orders/:id/discount-approve", requirePermission("sales.discount_approve"), async (req, res) => {
+  try {
+    return res.json(await sales.approveSalesOrderDiscount({ companyId: req.user.company_id,
+      userId: req.user.id, orderId: req.params.id, reason: req.body?.reason }));
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/orders/:id/credit-override", requirePermission("sales.credit_override"), async (req, res) => {
+  try {
+    return res.json(await sales.approveSalesOrderCreditOverride({ companyId: req.user.company_id,
+      userId: req.user.id, orderId: req.params.id, reason: req.body?.reason }));
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/orders/:id/confirm", requireSalesApprovalOrOwnPosOrder, async (req, res) => {
   try {
     const result = await sales.confirmSalesOrder({
       companyId: req.user.company_id,
@@ -117,7 +154,7 @@ router.post("/orders/:id/confirm", requirePermission("sales.approve"), async (re
   }
 });
 
-router.post("/orders/:id/cancel", requirePermission("sales.approve"), async (req, res) => {
+router.post("/orders/:id/cancel", requireSalesApprovalOrOwnPosOrder, async (req, res) => {
   try {
     const result = await sales.cancelSalesOrder({
       companyId: req.user.company_id,
@@ -130,17 +167,105 @@ router.post("/orders/:id/cancel", requirePermission("sales.approve"), async (req
   }
 });
 
-router.post("/deliveries", requirePermission("sales.create"), async (req, res) => {
+router.post("/deliveries", requirePermission("sales.delivery.post"), async (req, res) => {
   try {
     const result = await sales.createAndPostDelivery({
       companyId: req.user.company_id,
       userId: req.user.id,
       salesOrderId: req.body.sales_order_id,
       warehouseId: req.body.warehouse_id,
-      lines: req.body.lines,
+      lines: Array.isArray(req.body.lines) ? req.body.lines.map(({ so_line_id, item_id, quantity }) => ({
+        so_line_id, item_id, quantity,
+      })) : req.body.lines,
       deliveryDate: req.body.delivery_date,
     });
     return res.status(201).json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/deliveries/:id/proof", requireAnyPermission("sales.create", "fleet.count"), async (req, res) => {
+  try {
+    const result = await sales.recordDeliveryProof({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      user: req.user,
+      deliveryId: req.params.id,
+      routeCode: req.body.route_code,
+      driverUserId: req.body.driver_user_id,
+      vehicleWarehouseId: req.body.vehicle_warehouse_id,
+      customerConfirmed: req.body.customer_confirmed,
+      deliveredAt: req.body.delivered_at,
+      proofNote: req.body.proof_note,
+      signatureUrl: req.body.signature_url,
+      lines: req.body.lines,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/routes/reconciliation", requireAnyPermission("sales.view", "fleet.view"), async (req, res) => {
+  try {
+    const routeCode = req.query.route_code || req.query.routeCode;
+    if (!routeCode) return res.status(400).json({ error: "route_code is required" });
+    const result = await sales.getRouteCollections({
+      companyId: req.user.company_id,
+      routeCode,
+      fromDate: req.query.from_date || null,
+      toDate: req.query.to_date || null,
+      driverUserId: String(req.user.role_name || req.user.role || "").toLowerCase().includes("driver")
+        ? req.user.id
+        : null,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/routes/closures", requireAnyPermission("sales.view", "fleet.view"), async (req, res) => {
+  try {
+    const closures = await sales.listRouteClosures(req.user.company_id, {
+      status: req.query.status || null,
+      routeDate: req.query.route_date || null,
+      user: req.user,
+    });
+    return res.json(closures);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/routes/closures", requireAnyPermission("sales.create", "fleet.count"), async (req, res) => {
+  try {
+    const closure = await sales.submitRouteClosure({
+      companyId: req.user.company_id,
+      user: req.user,
+      routeCode: req.body?.route_code,
+      routeDate: req.body?.route_date,
+      driverUserId: req.body?.driver_user_id,
+      declaredCollection: req.body?.declared_collection,
+      note: req.body?.note,
+    });
+    return res.status(201).json(closure);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/routes/closures/:id/review", requireAnyPermission("sales.approve", "fleet.approve"), async (req, res) => {
+  try {
+    const closure = await sales.reviewRouteClosure({
+      companyId: req.user.company_id,
+      closureId: req.params.id,
+      decision: req.body?.decision,
+      note: req.body?.note,
+      user: req.user,
+    });
+    return res.json(closure);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -156,7 +281,7 @@ router.get("/deliveries", requirePermission("sales.view"), async (req, res) => {
   return res.json(result.rows);
 });
 
-router.post("/invoices", requirePermission("sales.create"), async (req, res) => {
+router.post("/invoices", requirePermission("sales.invoice.create"), async (req, res) => {
   if (!req.body?.customer_id || !Array.isArray(req.body?.lines) || !req.body.lines.length) {
     return res.status(400).json({ error: "customer_id and at least one line are required" });
   }
@@ -179,6 +304,7 @@ router.post("/invoices", requirePermission("sales.create"), async (req, res) => 
       lines: req.body.lines,
       invoiceDate: req.body.invoice_date,
       dueDate: req.body.due_date,
+      permissions: req.user.permissions,
     });
     return res.status(201).json(result);
   } catch (err) {
@@ -209,7 +335,7 @@ router.get("/invoices/:id/return-options", requirePermission("sales.view"), asyn
   catch (error) { return res.status(400).json({ error: error.message || "Unable to load invoice return options" }); }
 });
 
-router.post("/customer-credit-notes", requirePermission("sales.create"), async (req, res) => {
+router.post("/customer-credit-notes", requirePermission("sales.credit_note.create"), async (req, res) => {
   try {
     const note = await customerCredits.createDraft({
       companyId: req.user.company_id, user: req.user, invoiceId: req.body?.invoice_id,
@@ -223,7 +349,7 @@ router.post("/customer-credit-notes", requirePermission("sales.create"), async (
   } catch (error) { return res.status(400).json({ error: error.message || "Unable to prepare customer credit note" }); }
 });
 
-router.post("/customer-credit-notes/:id/post", requirePermission("sales.approve"), async (req, res) => {
+router.post("/customer-credit-notes/:id/post", requirePermission("sales.credit_note.approve"), async (req, res) => {
   try { return res.json(await customerCredits.postCreditNote({ companyId: req.user.company_id, noteId: req.params.id, user: req.user })); }
   catch (error) { return res.status(400).json({ error: error.message || "Unable to post customer credit note" }); }
 });
@@ -233,7 +359,7 @@ router.post("/customer-credit-notes/:id/cancel", requirePermission("sales.create
   catch (error) { return res.status(400).json({ error: error.message || "Unable to cancel customer credit note" }); }
 });
 
-router.post("/invoices/:invoiceNo/post", requirePermission("sales.create"), async (req, res) => {
+router.post("/invoices/:invoiceNo/post", requirePermission("sales.invoice.post"), async (req, res) => {
   const invoice = await pool.query(
     `SELECT id FROM erp_customer_invoices
      WHERE company_id = $1 AND invoice_no = $2 AND is_deleted = FALSE AND status = 'draft'`,
@@ -244,6 +370,20 @@ router.post("/invoices/:invoiceNo/post", requirePermission("sales.create"), asyn
     return res.json(await sales.postCustomerInvoice({
       companyId: req.user.company_id, userId: req.user.id, invoiceId: invoice.rows[0].id,
     }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/invoices/:id/void", requirePermission("sales.invoice.post"), async (req, res) => {
+  try {
+    return res.json(await sales.voidCustomerInvoice({ companyId: req.user.company_id, userId: req.user.id,
+      invoiceId: req.params.id, reason: req.body?.reason }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/customer-credit-notes/:id/void", requirePermission("sales.credit_note.approve"), async (req, res) => {
+  try {
+    return res.json(await customerCredits.voidDraft({ companyId: req.user.company_id, noteId: req.params.id,
+      user: req.user, reason: req.body?.reason }));
   } catch (error) { return res.status(400).json({ error: error.message }); }
 });
 
@@ -307,25 +447,98 @@ router.post("/receivables/collection-activities/:id/complete", requirePermission
   } catch (error) { return res.status(400).json({ error: error.message || "Unable to complete collection follow-up" }); }
 });
 
-router.post("/invoices/:id/pay", requirePermission("sales.create"), async (req, res) => {
+router.post("/invoices/:id/pay", requirePermission("sales.receipt.create"), async (req, res) => {
   const amount = Number(req.body?.amount || 0);
   if (!amount || amount <= 0) {
     return res.status(400).json({ error: "amount must be greater than zero" });
   }
   try {
-    const result = await sales.recordCustomerPayment({
+    const result = await customerReceipts.createCustomerReceipt({
       companyId: req.user.company_id,
       userId: req.user.id,
       invoiceId: req.params.id,
+      customerId: req.body?.customer_id,
+      allocations: req.body?.allocations,
       paymentDate: req.body?.payment_date,
       amount,
       referenceNo: req.body?.reference_no,
       notes: req.body?.notes,
+      paymentMethod: req.body?.payment_method || "bank_transfer",
+      idempotencyKey: req.get("Idempotency-Key") || req.body?.idempotency_key || null,
+      tillSessionId: req.body?.till_session_id || null,
     });
-    return res.status(201).json(result);
+    return res.status(result.status === "pending_approval" ? 202 : 201).json(result);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
+});
+
+router.post("/receipts/:id/approve", requirePermission("sales.receipt.approve"), async (req, res) => {
+  try {
+    return res.json(await customerReceipts.approveCustomerReceipt({ companyId: req.user.company_id,
+      userId: req.user.id, receiptId: req.params.id }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/receipts/:id/allocate", requirePermission("sales.receipt.create"), async (req, res) => {
+  try {
+    return res.json(await customerReceipts.allocateCustomerReceipt({ companyId: req.user.company_id,
+      userId: req.user.id, receiptId: req.params.id, allocations: req.body.allocations || [] }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/receipts/:id/clear-cheque", requirePermission("sales.receipt.approve"), async (req, res) => {
+  try {
+    return res.json(await customerReceipts.clearCheque({ companyId: req.user.company_id,
+      userId: req.user.id, receiptId: req.params.id }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/pos/till-sessions/open", requirePermission("sales.receipt.create"), async (req, res) => {
+  try {
+    return res.status(201).json(await customerReceipts.openTillSession({ companyId: req.user.company_id,
+      userId: req.user.id, openingFloat: req.body?.opening_float || 0 }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.post("/pos/till-sessions/:id/close", requirePermission("sales.receipt.create"), async (req, res) => {
+  try {
+    return res.json(await customerReceipts.closeTillSession({ companyId: req.user.company_id,
+      userId: req.user.id, sessionId: req.params.id, countedCash: req.body?.counted_cash }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.get("/customers/:id/statement", requirePermission("sales.view"), async (req, res) => {
+  try {
+    return res.json(await customerReceipts.getCustomerStatement({ companyId: req.user.company_id,
+      customerId: req.params.id, fromDate: req.query.from || null, toDate: req.query.to || null }));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+router.get("/customers/:id/statement.pdf", requirePermission("sales.view"), async (req, res) => {
+  try {
+    const statement = await customerReceipts.getCustomerStatement({ companyId: req.user.company_id,
+      customerId: req.params.id, fromDate: req.query.from || null, toDate: req.query.to || null });
+    const chunks = [];
+    const doc = new PDFDocument({ margin: 42, size: "A4" });
+    doc.on("data", (chunk) => chunks.push(chunk));
+    const completed = new Promise((resolve, reject) => { doc.on("end", resolve); doc.on("error", reject); });
+    doc.fontSize(18).text("Customer Statement");
+    doc.moveDown(0.5).fontSize(10).text(`${statement.customer.customer_code} · ${statement.customer.name}`);
+    doc.text(`Period: ${statement.from} to ${statement.to}`);
+    doc.text(`Opening balance: KES ${Number(statement.opening_balance).toFixed(2)}`);
+    doc.moveDown().font("Helvetica-Bold").text("Date      Reference      Type      Debit      Credit      Balance");
+    doc.font("Helvetica");
+    for (const row of statement.transactions) {
+      doc.text(`${String(row.event_date).slice(0,10)}   ${row.reference}   ${row.event_type}   ${Number(row.debit).toFixed(2)}   ${Number(row.credit).toFixed(2)}   ${Number(row.balance).toFixed(2)}`);
+    }
+    doc.moveDown().font("Helvetica-Bold").text(`Closing balance: KES ${Number(statement.closing_balance).toFixed(2)}`);
+    doc.end();
+    await completed;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename=customer-statement-${req.params.id}.pdf`);
+    return res.send(Buffer.concat(chunks));
+  } catch (error) { return res.status(400).json({ error: error.message }); }
 });
 
 async function renderInvoicePdfBuffer({
@@ -342,17 +555,24 @@ async function renderInvoicePdfBuffer({
 
     (async () => {
       const title = receipt ? "PAYMENT RECEIPT" : "TAX INVOICE";
-      const verifyHash = buildInvoiceVerificationHash(invoice);
+      const legacyVerifyHash = receipt ? buildInvoiceVerificationHash(invoice) : null;
       const verifyBase = (process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
-      const verifyUrl = `${verifyBase}/api/v1/sales/invoices/${encodeURIComponent(invoice.invoice_no)}/verify?hash=${verifyHash}`;
-      const qrDataUrl = await QRCode.toDataURL(verifyUrl, { margin: 1, width: 128 });
+      const verifyUrl = receipt
+        ? `${verifyBase}/api/v1/sales/invoices/${encodeURIComponent(invoice.invoice_no)}/verify?hash=${legacyVerifyHash}`
+        : null;
+      const qrPayload = receipt ? verifyUrl : invoice.etims_verification_data;
+      const qrDataUrl = await QRCode.toDataURL(qrPayload, { margin: 1, width: 128 });
 
+      if (fs.existsSync(AYAWIN_PDF_LOGO)) {
+        doc.image(AYAWIN_PDF_LOGO, 40, 34, { width: 190, height: 54, fit: [190, 54] });
+        doc.y = 96;
+      }
       doc.fontSize(18).font("Helvetica-Bold").text(companyName);
       doc.fontSize(10).font("Helvetica").text("Nairobi, Kenya");
       doc.moveDown(0.5);
       doc.fontSize(14).font("Helvetica-Bold").text(title, { align: "right" });
       doc.fontSize(10).font("Helvetica").text(`${invoice.invoice_no}`, { align: "right" });
-      doc.text(`ETR/TIMS: ${invoice.etims_ref || "-"}`, { align: "right" });
+      doc.text(`eTIMS CU invoice: ${invoice.etims_cu_invoice_no || invoice.etims_ref || "-"}`, { align: "right" });
       doc.moveDown();
       doc.moveTo(40, doc.y).lineTo(555, doc.y).strokeColor("#dddddd").stroke();
       doc.moveDown();
@@ -411,9 +631,15 @@ async function renderInvoicePdfBuffer({
 
       doc.image(qrDataUrl, 40, doc.y, { width: 72, height: 72 });
       doc.fontSize(8).font("Helvetica").fillColor("#555555");
-      doc.text(`Verification hash: ${verifyHash}`, 124, doc.y + 6);
-      doc.text(`Verify URL: ${verifyUrl}`, 124, doc.y + 22, { width: 410 });
-      doc.text("System generated document for audit and reconciliation.", 124, doc.y + 46);
+      if (receipt) {
+        doc.text(`Verification hash: ${legacyVerifyHash}`, 124, doc.y + 6);
+        doc.text(`Verify URL: ${verifyUrl}`, 124, doc.y + 22, { width: 410 });
+      } else {
+        doc.text(`SCU ID: ${invoice.etims_cu_id}  Receipt: ${invoice.etims_receipt_counter || "-"}`, 124, doc.y + 6);
+        doc.text(`SCU time: ${invoice.etims_cu_timestamp || "-"}`, 124, doc.y + 22, { width: 410 });
+        doc.text(`Receipt signature: ${invoice.etims_receipt_signature}`, 124, doc.y + 38, { width: 410 });
+        doc.text(`Internal data: ${invoice.etims_internal_data}`, 124, doc.y + 54, { width: 410 });
+      }
       doc.end();
     })().catch(reject);
   });
@@ -429,6 +655,9 @@ router.get("/invoices/:invoiceNo/pdf", requirePermission("sales.view"), async (r
     [req.user.company_id, invoiceNo],
   );
   if (!result.rowCount) return res.status(404).json({ error: "Invoice not found" });
+  if (!isFinalEtimsInvoice(result.rows[0])) {
+    return res.status(409).json({ error: "Invoice is pending KRA eTIMS acceptance and cannot be issued as a final tax invoice" });
+  }
   const lines = await pool.query(
     `SELECT il.*, i.item_code, i.name AS item_name
      FROM erp_customer_invoice_lines il JOIN erp_items i ON i.id = il.item_id

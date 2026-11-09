@@ -15,14 +15,29 @@ export const Route = createFileRoute("/_app")({
 
 function workspaceForPath(path: string) {
   if (
-    ["/sales", "/pos", "/customers", "/invoices", "/delivery"].some((route) =>
+    ["/sales", "/pos", "/customers", "/invoices", "/delivery", "/route-closures"].some((route) =>
       path.startsWith(route),
     )
   )
     return "sales";
   if (["/procurement", "/goods-received", "/suppliers"].some((route) => path.startsWith(route)))
     return "supply";
-  if (["/inventory", "/inventory-master", "/material-requisitions", "/material-issues", "/material-returns", "/stock-analysis", "/stock-adjustments", "/stock-movements", "/transfers", "/quarantine", "/reorder-alerts", "/driver-stock"].some((route) => path.startsWith(route)))
+  if (
+    [
+      "/inventory",
+      "/inventory-master",
+      "/material-requisitions",
+      "/material-issues",
+      "/material-returns",
+      "/stock-analysis",
+      "/stock-adjustments",
+      "/stock-movements",
+      "/transfers",
+      "/quarantine",
+      "/reorder-alerts",
+      "/driver-stock",
+    ].some((route) => path.startsWith(route))
+  )
     return "inventory";
   if (
     [
@@ -100,14 +115,16 @@ function AppLayout() {
     <SidebarProvider>
       {!isPos && <AppSidebar />}
       <SidebarInset className="min-h-svh">
-        <header className="erp-topbar sticky top-0 z-20 flex h-[68px] shrink-0 items-center gap-3 px-4 sm:px-6">
+        <header className="erp-topbar sticky top-0 z-20 flex h-17 shrink-0 items-center gap-3 px-4 sm:px-6">
           {!isPos && (
             <SidebarTrigger className="rounded-md border border-border bg-background hover:bg-muted" />
           )}
           <div className="flex min-w-0 items-center gap-3">
-            <div className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#a0183c] text-sm font-bold text-white shadow-sm sm:flex">
-              A
-            </div>
+            <img
+              src="/ayawin-wordmark.svg"
+              alt="Ayawin Stock Solutions"
+              className="hidden h-10 w-auto max-w-44 shrink-0 object-contain sm:block"
+            />
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#a0183c]">
                 <span>Ayawin Stock Solution</span>
@@ -134,7 +151,7 @@ function AppLayout() {
               className="hidden rounded-md border border-border/70 bg-background/70 hover:bg-muted sm:inline-flex"
               asChild
             >
-              <a href="mailto:support@netrixbiz.com">
+              <a href="mailto:ayawin.ke@gmail.com">
                 <CircleHelp className="h-4 w-4" />
               </a>
             </Button>
@@ -161,7 +178,7 @@ function AppLayout() {
             </Button>
             <ThemeToggle />
             <div className="hidden h-9 items-center gap-2 border-l border-border pl-3 sm:flex">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-[#a0183c] to-[#28598d] text-[11px] font-bold text-white shadow-md shadow-blue-950/20">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-linear-to-br from-[#a0183c] to-[#28598d] text-[11px] font-bold text-white shadow-md shadow-blue-950/20">
                 {initials}
               </div>
               <div className="max-w-32 leading-tight">

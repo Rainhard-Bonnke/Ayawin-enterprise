@@ -160,6 +160,8 @@ function PosPage() {
       const order = await createSalesOrder(token, {
         customer_id: customerId,
         warehouse_id: String(warehouses[0].id),
+        order_date: new Date().toISOString().slice(0, 10),
+        required_date: new Date().toISOString().slice(0, 10),
         notes: `POS sale by ${user?.username || "operator"}`,
         lines: cart.map((line) => ({
           item_id: line.id,

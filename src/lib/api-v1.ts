@@ -45,7 +45,7 @@ function notifyTokenRefreshed(access: string) {
 }
 
 export function isApiSessionToken(token: string | null | undefined) {
-  return Boolean(token && !token.startsWith("demo:"));
+  return Boolean(token);
 }
 
 function buildUrl(path: string) {
@@ -86,16 +86,16 @@ export class ApiAuthError extends Error {
 /** Prefer the latest access token from storage (e.g. after refresh) over a stale React state token. */
 export function resolveApiToken(token?: string | null): string | null {
   if (token === null) return null;
-  if (typeof token === "string" && token && !token.startsWith("demo:")) return token;
+  if (typeof token === "string" && token) return token;
 
   if (typeof token === "undefined") {
     const stored = getStoredTokens().access;
-    if (stored && !stored.startsWith("demo:")) return stored;
+    if (stored) return stored;
     return null;
   }
 
   const stored = getStoredTokens().access;
-  if (stored && !stored.startsWith("demo:")) return stored;
+  if (stored) return stored;
   return null;
 }
 
@@ -105,12 +105,6 @@ export async function apiV1Fetch<T>(
   token?: string | null,
 ): Promise<T> {
   let access = resolveApiToken(token);
-
-  if (access?.startsWith("demo:")) {
-    throw new ApiAuthError(
-      "Sign in with your email and password to use the live API (offline demo cannot call the server).",
-    );
-  }
 
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
@@ -146,12 +140,7 @@ export async function apiV1FetchBlob(
   init: RequestInit = {},
   token?: string | null,
 ): Promise<Blob> {
-  let access = resolveApiToken(token);
-  if (access?.startsWith("demo:")) {
-    throw new ApiAuthError(
-      "Sign in with your email and password to use the live API (offline demo cannot call the server).",
-    );
-  }
+  const access = resolveApiToken(token);
   const headers = new Headers(init.headers);
   const request = (bearer: string | null) => {
     const h = new Headers(headers);
@@ -173,7 +162,6 @@ export async function apiV1FetchBlob(
 
 export function parseAccessToken(token: string): ErpUser | null {
   try {
-    if (token.startsWith("demo:")) return null;
     const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))) as {
       sub?: string;
       email?: string;
@@ -226,35 +214,6 @@ export async function v1Login(email: string, password: string, mfaToken?: string
     permissions: data.user.permissions,
   };
   return { token: data.access_token, user };
-}
-
-export async function v1PosLogin(password: string) {
-  const response = await fetch(buildUrl("/auth/pos-login"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
-  });
-
-  if (!response.ok) await parseError(response);
-
-  const data = (await response.json()) as {
-    access_token: string;
-    refresh_token: string;
-    user: ErpUser & { role_name?: string };
-  };
-
-  storeTokens(data.access_token, data.refresh_token);
-  return {
-    token: data.access_token,
-    user: {
-      id: data.user.id,
-      username: data.user.username,
-      full_name: data.user.full_name,
-      email: data.user.email,
-      role: data.user.role_name || "POS Operator",
-      permissions: data.user.permissions,
-    } satisfies ErpUser,
-  };
 }
 
 export async function v1Me(token: string) {
@@ -569,6 +528,48 @@ export const v1Api = {
       apiV1Fetch<Record<string, unknown>>(`/procurement/supplier-return-credits/${id}/cancel`, { method: "POST" }, token),
   },
   sales: {
+    routeDrivers: (token: string) =>
+      apiV1Fetch<Array<{ id: string; full_name: string; email: string }>>(
+        "/inventory/fleet/drivers",
+        {},
+        token,
+      ),
+    routeClosures: (token: string, filters: { status?: string; route_date?: string } = {}) => {
+      const params = new URLSearchParams();
+      if (filters.status) params.set("status", filters.status);
+      if (filters.route_date) params.set("route_date", filters.route_date);
+      const query = params.size ? `?${params.toString()}` : "";
+      return apiV1Fetch<RouteClosureRecord[]>(`/sales/routes/closures${query}`, {}, token);
+    },
+    submitRouteClosure: (
+      token: string,
+      body: {
+        route_code: string;
+        route_date: string;
+        driver_user_id: string;
+        declared_collection: number;
+        note?: string;
+      },
+    ) =>
+      apiV1Fetch<RouteClosureRecord>(
+        "/sales/routes/closures",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    reviewRouteClosure: (token: string, id: string, decision: "approve" | "reject", note = "") =>
+      apiV1Fetch<RouteClosureRecord>(
+        `/sales/routes/closures/${id}/review`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ decision, note }),
+        },
+        token,
+      ),
     customerCreditNoteSetup: (token: string) =>
       apiV1Fetch<{ invoices: Record<string, unknown>[]; notes: Record<string, unknown>[]; refundAccounts: Record<string, unknown>[] }>("/sales/customer-credit-notes/setup", {}, token),
     customerReturnOptions: (token: string, invoiceId: string) =>
@@ -603,6 +604,7 @@ export const v1Api = {
         customer_id: string;
         warehouse_id: string;
         order_date?: string;
+        required_date: string;
         notes?: string;
         lines: Array<{ item_id: string; quantity: number; unit_price: number }>;
       },
@@ -718,6 +720,14 @@ export const v1Api = {
       apiV1Fetch<Record<string, unknown>[]>("/payroll/runs", {}, token),
     payslips: (token: string, runId: string) =>
       apiV1Fetch<Record<string, unknown>[]>(`/payroll/runs/${runId}/payslips`, {}, token),
+    statutoryRemittances: (token: string, runId?: string) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/payroll/statutory-remittances${runId ? `?payroll_run_id=${encodeURIComponent(runId)}` : ""}`,
+        {},
+        token,
+      ),
+    postStatutoryPayment: (token: string, paymentId: string) =>
+      apiV1Fetch<Record<string, unknown>>(`/payroll/statutory-remittance-payments/${paymentId}/post`, { method: "POST" }, token),
   },
   reports: {
     dashboard: (token: string, code: string) =>
@@ -732,7 +742,50 @@ export const v1Api = {
     run: (token: string, code: string) =>
       apiV1Fetch<{ rows: Record<string, unknown>[] }>(`/reports/run/${code}`, {}, token),
   },
+  integrations: {
+    createMpesaStkRequest: (
+      token: string,
+      invoiceId: string,
+      body: { phone: string; amount: number; idempotency_key: string },
+    ) =>
+      apiV1Fetch<MpesaPaymentRequest>(
+        `/platform/integrations/mpesa/invoices/${invoiceId}/stk-push`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    mpesaPaymentRequest: (token: string, requestId: string) =>
+      apiV1Fetch<MpesaPaymentRequest>(`/platform/integrations/mpesa/requests/${requestId}`, {}, token),
+    sendNotification: (
+      token: string,
+      body: { channel: "email" | "sms"; to: string; subject?: string; body: string; idempotency_key: string },
+    ) =>
+      apiV1Fetch<OutboundNotification>(
+        "/platform/notifications/send",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    notification: (token: string, id: string) =>
+      apiV1Fetch<OutboundNotification>(`/platform/notifications/${id}`, {}, token),
+  },
   finance: {
+    createFiscalYear: (token: string, body: { year_label: string; start_date: string; end_date: string }) =>
+      apiV1Fetch<Record<string, unknown> & { periods: Record<string, unknown>[] }>(
+        "/finance/fiscal-years",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    fiscalPeriodCloseChecklist: (token: string, periodId: string) =>
+      apiV1Fetch<FinancePeriodCloseChecklist>(
+        `/finance/fiscal-periods/${periodId}/close-checklist`,
+        {},
+        token,
+      ),
+    closeFiscalPeriod: (token: string, periodId: string, reason: string) =>
+      apiV1Fetch<{ period: Record<string, unknown>; checklist: FinancePeriodCloseChecklist }>(
+        `/finance/fiscal-periods/${periodId}/close`,
+        { method: "POST", body: JSON.stringify({ reason }) },
+        token,
+      ),
     trialBalance: (token: string, periodId: string) =>
       apiV1Fetch<{ lines: Record<string, unknown>[] }>(
         `/finance/reports/trial-balance?fiscal_period_id=${periodId}`,
@@ -758,6 +811,65 @@ export const v1Api = {
         token,
       ),
   },
+};
+
+export type MpesaPaymentRequest = {
+  id: string;
+  invoice_id: string;
+  invoice_no?: string;
+  idempotency_key?: string;
+  phone_number: string;
+  amount: number | string;
+  status: string;
+  checkout_request_id?: string | null;
+  provider_receipt_no?: string | null;
+  receipt_id?: string | null;
+  configured?: boolean;
+  message?: string;
+  attempt_count?: number;
+  last_error?: string | null;
+};
+
+export type OutboundNotification = {
+  id: string;
+  channel: "email" | "sms";
+  status: "pending" | "processing" | "sent" | "retry" | "failed";
+  queued?: boolean;
+  delivered?: boolean;
+  configured?: boolean;
+  message?: string;
+  provider_message_id?: string | null;
+  attempt_count?: number;
+  last_error?: string | null;
+};
+
+export type FinancePeriodCloseChecklist = {
+  period_id: string;
+  period_name: string;
+  start_date: string;
+  end_date: string;
+  status: string;
+  ready_to_close: boolean;
+  blockers: Array<{ code: string; label: string; count: number; amount?: number }>;
+  checks: Array<{ code: string; label: string; count: number; amount?: number; blocked: boolean }>;
+};
+
+export type RouteClosureRecord = {
+  id: string;
+  route_code: string;
+  route_date: string;
+  driver_user_id: string;
+  driver_name?: string | null;
+  status: "submitted" | "approved" | "rejected";
+  delivery_count: number;
+  proof_pending_count: number;
+  discrepancy_count: number;
+  invoice_value: string | number;
+  matched_collection: string | number;
+  declared_collection: string | number;
+  collection_variance: string | number;
+  close_note?: string | null;
+  review_note?: string | null;
 };
 
 export type FleetLocation = {

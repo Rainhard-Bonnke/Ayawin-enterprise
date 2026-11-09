@@ -14,4 +14,13 @@ function buildInvoiceVerificationHash(invoice) {
   return crypto.createHmac("sha256", secret).update(payload).digest("hex");
 }
 
-module.exports = { buildInvoiceVerificationHash };
+function isFinalEtimsInvoice(invoice) {
+  return invoice?.etims_status === "accepted"
+    && Boolean(invoice.etims_cu_invoice_no)
+    && Boolean(invoice.etims_receipt_signature)
+    && Boolean(invoice.etims_internal_data)
+    && Boolean(invoice.etims_cu_id)
+    && Boolean(invoice.etims_verification_data);
+}
+
+module.exports = { buildInvoiceVerificationHash, isFinalEtimsInvoice };

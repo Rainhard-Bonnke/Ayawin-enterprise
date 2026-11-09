@@ -196,6 +196,7 @@ async function postDisposition({ companyId, id, user }) {
       if (account.rows[0].account_type !== expectedType) throw new Error(`Disposition must use an active ${expectedType} offset account`);
       const journal = await gl.createJournalInTransaction(client, {
         companyId, userId: user.id, journalType: header.disposition_type === "write_off" ? "general" : "purchase",
+        source: "module",
         referenceNo: header.disposition_no, description: `${header.disposition_type === "write_off" ? "Quarantined stock write-off" : "Supplier return recovery"} ${header.disposition_no}`,
         lines: [
           { account_id: account.rows[0].id, debit: value, credit: 0, description: header.disposition_type === "write_off" ? "Inventory write-off expense" : "Supplier return claim" },

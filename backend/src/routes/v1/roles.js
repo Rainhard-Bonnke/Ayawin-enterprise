@@ -3,6 +3,7 @@ const pool = require("../../db");
 const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
 const { logAudit } = require("../../services/auditService");
 const { getClientIp } = require("../../middleware/erpAuth");
+const userService = require("../../services/userService");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -90,6 +91,7 @@ router.put("/:id/permissions", requirePermission("roles.edit"), async (req, res)
       );
     }
     await client.query("COMMIT");
+    await userService.invalidateRoleUserCaches(roleId, req.user.company_id);
     return res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK");

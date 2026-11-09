@@ -11,7 +11,6 @@ import {
   isV1Enabled,
   v1Api,
   v1Login,
-  v1PosLogin,
   v1Logout,
   v1Me,
   apiV1Fetch,
@@ -22,6 +21,7 @@ import {
   masterDelete,
   fetchRoles as v1FetchRoles,
   importRows,
+  type FinancePeriodCloseChecklist,
 } from "./api-v1";
 
 export type User = {
@@ -154,28 +154,8 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export async function loginRequest(email: string, password: string) {
-  if (isV1Enabled()) {
-    clearTokens();
-    return v1Login(email, password);
-  }
-
-  try {
-    const response = await fetch(buildUrl("/api/auth/login"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-
-    return handleResponse<{ token: string; user: User }>(response);
-  } catch {
-    throw new Error("Authentication service is unavailable. Start the backend and try again.");
-  }
-}
-
-export async function posLoginRequest(password: string) {
-  if (!isV1Enabled()) throw new Error("POS requires the live API");
   clearTokens();
-  return v1PosLogin(password);
+  return v1Login(email, password);
 }
 
 export async function fetchCurrentUser(token: string) {
@@ -794,6 +774,15 @@ export type BackendMasterItem = {
   lot_tracking_enabled: boolean;
   is_stock_item: boolean;
   is_active: boolean;
+  etims_item_classification_code?: string | null;
+  etims_item_code?: string | null;
+  etims_item_type_code?: string | null;
+  etims_origin_country_code?: string | null;
+  etims_packaging_unit_code?: string | null;
+  etims_package_quantity?: number | null;
+  etims_quantity_unit_code?: string | null;
+  etims_tax_type_code?: string | null;
+  etims_sync_status?: "unmapped" | "pending" | "synced" | "failed";
 };
 
 export type BackendTaxGroup = {
@@ -827,7 +816,31 @@ function mapV1Item(row: Record<string, unknown>): BackendMasterItem {
     lot_tracking_enabled: row.lot_tracking_enabled === true,
     is_stock_item: row.is_stock_item !== false,
     is_active: row.is_active !== false,
+    etims_item_classification_code: (row.etims_item_classification_code as string) || null,
+    etims_item_code: (row.etims_item_code as string) || null,
+    etims_item_type_code: (row.etims_item_type_code as string) || null,
+    etims_origin_country_code: (row.etims_origin_country_code as string) || null,
+    etims_packaging_unit_code: (row.etims_packaging_unit_code as string) || null,
+    etims_package_quantity:
+      row.etims_package_quantity == null ? null : Number(row.etims_package_quantity),
+    etims_quantity_unit_code: (row.etims_quantity_unit_code as string) || null,
+    etims_tax_type_code: (row.etims_tax_type_code as string) || null,
+    etims_sync_status: String(
+      row.etims_sync_status || "unmapped",
+    ) as BackendMasterItem["etims_sync_status"],
   };
+}
+
+export async function downloadUnmappedEtimsItems(token: string): Promise<Blob> {
+  if (isDemoToken(token)) throw new Error("eTIMS item mapping requires the live ERP API");
+  const response = await fetch(buildUrl("/api/v1/master/items/etims-unmapped.csv"), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || response.statusText || "Unable to export unmapped items");
+  }
+  return response.blob();
 }
 
 export async function fetchTaxGroups(token: string): Promise<BackendTaxGroup[]> {
@@ -877,6 +890,14 @@ export async function createMasterItem(
     reorder_point?: number;
     tax_group_id: string;
     lot_tracking_enabled?: boolean;
+    etims_item_classification_code?: string | null;
+    etims_item_code?: string | null;
+    etims_item_type_code?: string | null;
+    etims_origin_country_code?: string | null;
+    etims_packaging_unit_code?: string | null;
+    etims_package_quantity?: number | null;
+    etims_quantity_unit_code?: string | null;
+    etims_tax_type_code?: string | null;
   },
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for items");
@@ -895,6 +916,14 @@ export async function updateMasterItem(
     tax_group_id: string;
     lot_tracking_enabled?: boolean;
     is_active: boolean;
+    etims_item_classification_code: string | null;
+    etims_item_code: string | null;
+    etims_item_type_code: string | null;
+    etims_origin_country_code: string | null;
+    etims_packaging_unit_code: string | null;
+    etims_package_quantity: number | null;
+    etims_quantity_unit_code: string | null;
+    etims_tax_type_code: string | null;
   }>,
 ) {
   if (isDemoToken(token)) throw new Error("Use live API for items");
@@ -1235,6 +1264,7 @@ export async function createSalesOrder(
     customer_id: string;
     warehouse_id: string;
     order_date?: string;
+    required_date: string;
     notes?: string;
     lines: Array<{ item_id: string; quantity: number; unit_price: number }>;
   },
@@ -1293,6 +1323,7 @@ export type SalesOrderDetail = {
   order_no: string;
   customer_name?: string;
   order_date?: string;
+  required_date?: string;
   status?: string;
   total_amount?: number;
   notes?: string | null;
@@ -1320,6 +1351,7 @@ export async function fetchSalesOrderDetail(
     order_no: String(row.order_no || row.id),
     customer_name: row.customer_name ? String(row.customer_name) : undefined,
     order_date: row.order_date ? String(row.order_date).slice(0, 10) : undefined,
+    required_date: row.required_date ? String(row.required_date).slice(0, 10) : undefined,
     status: row.status ? String(row.status) : undefined,
     total_amount: Number(row.total_amount || 0),
     notes: row.notes ? String(row.notes) : null,
@@ -1901,6 +1933,36 @@ export async function fetchPayrollStatutory(token: string, runId: string) {
   }>(`/payroll/runs/${runId}/statutory-report`, {}, token);
 }
 
+  export type PayrollRemittance = {
+    id: string;
+    agency_code: string;
+    agency_name: string;
+    amount_due: number;
+    amount_paid: number;
+    outstanding_amount: number;
+    due_date?: string | null;
+    status: string;
+    payroll_month: string;
+    posted_payment_count: number;
+  };
+
+  export async function fetchPayrollRemittances(token: string, runId?: string): Promise<PayrollRemittance[]> {
+    if (isDemoToken(token)) throw new Error("Real-time mode requires API authentication.");
+    const rows = await v1Api.hr.statutoryRemittances(token, runId);
+    return rows.map((row) => ({
+      id: String(row.id),
+      agency_code: String(row.agency_code),
+      agency_name: String(row.agency_name || row.agency_code),
+      amount_due: Number(row.amount_due || 0),
+      amount_paid: Number(row.amount_paid || 0),
+      outstanding_amount: Number(row.outstanding_amount || 0),
+      due_date: row.due_date ? String(row.due_date).slice(0, 10) : null,
+      status: String(row.status || "due"),
+      payroll_month: String(row.payroll_month || "").slice(0, 10),
+      posted_payment_count: Number(row.posted_payment_count || 0),
+    }));
+  }
+
 export type ReportLibraryEntry = { code: string; name: string; category: string };
 
 export async function fetchReportLibrary(token: string) {
@@ -1932,11 +1994,13 @@ export async function fetchReportKpis(token: string) {
 
 export type BackendInvoice = {
   id: string;
+  internalId?: string;
   date: string;
   due: string;
   customer: string;
   kraPin: string;
   etr: string;
+  etimsStatus: string;
   subtotal: number;
   excise: number;
   vat: number;
@@ -1957,11 +2021,13 @@ function mapV1Invoice(row: Record<string, unknown>): BackendInvoice {
   const tax = Number(row.tax_amount || 0);
   return {
     id: String(row.invoice_no),
+    internalId: String(row.id),
     date: String(row.invoice_date || "").slice(0, 10),
     due: String(row.due_date || row.invoice_date || "").slice(0, 10),
     customer: String(row.customer_name || ""),
     kraPin: String(row.customer_tax_id || row.tax_id || ""),
     etr: String(row.etims_ref || "—"),
+    etimsStatus: String(row.etims_status || "not_submitted"),
     subtotal: Number(row.subtotal || 0),
     excise: 0,
     vat: tax,
@@ -2045,6 +2111,17 @@ export async function paySalesInvoice(
   if (!payload.amount || payload.amount <= 0)
     throw new Error("Payment amount must be greater than zero");
   return v1Api.sales.payInvoice(token, invoiceId, payload);
+}
+
+export async function requestMpesaInvoicePayment(
+  token: string,
+  invoiceId: string,
+  payload: { phone: string; amount: number; idempotency_key: string },
+) {
+  if (isDemoToken(token) || !isV1Enabled()) {
+    throw new Error("M-Pesa payment requests require a live ERP account.");
+  }
+  return v1Api.integrations.createMpesaStkRequest(token, invoiceId, payload);
 }
 
 export async function postSalesInvoice(token: string, invoiceNo: string) {
@@ -2278,13 +2355,17 @@ export async function fetchFinanceWorkspace(
   return { periods, trialBalance, balanceSheet, profitLoss };
 }
 
-export async function closeFinancePeriod(token: string, periodId: string) {
+export async function closeFinancePeriod(token: string, periodId: string, reason: string) {
   if (isDemoToken(token)) throw new Error("Sign in with the API to close fiscal periods.");
-  return apiV1Fetch<FinancePeriod>(
-    `/finance/fiscal-periods/${periodId}/close`,
-    { method: "POST" },
+  return v1Api.finance.closeFiscalPeriod(token, periodId, reason);
+}
+
+export async function fetchFinancePeriodCloseChecklist(token: string, periodId: string) {
+  if (isDemoToken(token)) throw new Error("Fiscal period close checks require a live ERP account.");
+  return v1Api.finance.fiscalPeriodCloseChecklist(
     token,
-  );
+    periodId,
+  ) as Promise<FinancePeriodCloseChecklist>;
 }
 
 export type BankStatementLine = {

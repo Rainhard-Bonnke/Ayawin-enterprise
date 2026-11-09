@@ -1,6 +1,6 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ import {
   fetchTaxGroups,
   fetchTaxRates,
   createTaxRateVersion,
+  downloadUnmappedEtimsItems,
   fetchWarehouses,
   fetchSuppliers,
   importMasterData,
@@ -128,14 +129,6 @@ function MasterDataPage() {
     if (["items", "tax", "customers", "suppliers", "warehouses", "import"].includes(nextTab))
       setTab(nextTab);
   }, [hash]);
-
-  useEffect(() => {
-    if (token?.startsWith("demo:")) {
-      toast.message(
-        "Sign in with the API (admin@martin.co.ke / demo) to load and save master data.",
-      );
-    }
-  }, [token]);
 
   const filteredItems = useMemo(() => {
     const needle = q.toLowerCase();
@@ -428,12 +421,20 @@ function ItemsPanel({
     reorder_point: "0",
     tax_group_id: "",
     lot_tracking_enabled: false,
+    etims_item_classification_code: "",
+    etims_item_code: "",
+    etims_item_type_code: "",
+    etims_origin_country_code: "",
+    etims_packaging_unit_code: "",
+    etims_package_quantity: "",
+    etims_quantity_unit_code: "",
+    etims_tax_type_code: "",
   });
   const [saving, setSaving] = useState(false);
 
   const openNew = () => {
     setEditing(null);
-    setForm({ item_code: "", name: "", barcode: "", standard_cost: "0", reorder_point: "0", tax_group_id: taxGroups.find((group) => group.code === "STD-VAT")?.id || "", lot_tracking_enabled: false });
+    setForm({ item_code: "", name: "", barcode: "", standard_cost: "0", reorder_point: "0", tax_group_id: taxGroups.find((group) => group.code === "STD-VAT")?.id || "", lot_tracking_enabled: false, etims_item_classification_code: "", etims_item_code: "", etims_item_type_code: "", etims_origin_country_code: "", etims_packaging_unit_code: "", etims_package_quantity: "", etims_quantity_unit_code: "", etims_tax_type_code: "" });
     setOpen(true);
   };
 
@@ -447,6 +448,14 @@ function ItemsPanel({
       reorder_point: String(row.reorder_point),
       tax_group_id: row.tax_group_id || taxGroups.find((group) => group.code === "STD-VAT")?.id || "",
       lot_tracking_enabled: row.lot_tracking_enabled,
+      etims_item_classification_code: row.etims_item_classification_code || "",
+      etims_item_code: row.etims_item_code || "",
+      etims_item_type_code: row.etims_item_type_code || "",
+      etims_origin_country_code: row.etims_origin_country_code || "",
+      etims_packaging_unit_code: row.etims_packaging_unit_code || "",
+      etims_package_quantity: row.etims_package_quantity == null ? "" : String(row.etims_package_quantity),
+      etims_quantity_unit_code: row.etims_quantity_unit_code || "",
+      etims_tax_type_code: row.etims_tax_type_code || "",
     });
     setOpen(true);
   };
@@ -466,6 +475,14 @@ function ItemsPanel({
         reorder_point: Number(form.reorder_point) || 0,
         tax_group_id: form.tax_group_id,
         lot_tracking_enabled: form.lot_tracking_enabled,
+        etims_item_classification_code: form.etims_item_classification_code || null,
+        etims_item_code: form.etims_item_code || null,
+        etims_item_type_code: form.etims_item_type_code || null,
+        etims_origin_country_code: form.etims_origin_country_code || null,
+        etims_packaging_unit_code: form.etims_packaging_unit_code || null,
+        etims_package_quantity: form.etims_package_quantity ? Number(form.etims_package_quantity) : null,
+        etims_quantity_unit_code: form.etims_quantity_unit_code || null,
+        etims_tax_type_code: form.etims_tax_type_code || null,
       };
       if (editing) {
         const updated = await updateMasterItem(token, editing.id, body);
@@ -497,6 +514,23 @@ function ItemsPanel({
     <Card>
       <CardContent className="p-4">
         <div className="mb-4 flex justify-end">
+          <Button variant="outline" className="mr-2" disabled={!token} onClick={async () => {
+            if (!token) return;
+            try {
+              const blob = await downloadUnmappedEtimsItems(token);
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement("a");
+              anchor.href = url;
+              anchor.download = "etims-unmapped-items.csv";
+              anchor.click();
+              URL.revokeObjectURL(url);
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "Unable to export unmapped items");
+            }
+          }}>
+            <Download className="mr-2 h-4 w-4" />
+            Unmapped eTIMS items
+          </Button>
           <Button
             onClick={() => {
               openNew();
@@ -548,6 +582,20 @@ function ItemsPanel({
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">Use the product’s approved classification. Exempt and zero-rated supplies have different tax treatment. Excise-rated items need an excise workflow before sale.</p>
+                </div>
+                <div className="border-t pt-3">
+                  <p className="mb-3 text-sm font-medium">KRA eTIMS mapping</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Item classification code" value={form.etims_item_classification_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_classification_code: v }))} />
+                    <Field label="eTIMS item code" value={form.etims_item_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_code: v }))} />
+                    <Field label="Item type code" value={form.etims_item_type_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_type_code: v }))} />
+                    <Field label="Origin country code" value={form.etims_origin_country_code} onChange={(v) => setForm((p) => ({ ...p, etims_origin_country_code: v }))} />
+                    <Field label="Packaging unit code" value={form.etims_packaging_unit_code} onChange={(v) => setForm((p) => ({ ...p, etims_packaging_unit_code: v }))} />
+                    <Field label="Package quantity" value={form.etims_package_quantity} onChange={(v) => setForm((p) => ({ ...p, etims_package_quantity: v }))} />
+                    <Field label="Quantity unit code" value={form.etims_quantity_unit_code} onChange={(v) => setForm((p) => ({ ...p, etims_quantity_unit_code: v }))} />
+                    <Field label="eTIMS tax type code" value={form.etims_tax_type_code} onChange={(v) => setForm((p) => ({ ...p, etims_tax_type_code: v }))} />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">Enter codes from the company’s current KRA eTIMS code list. The system does not infer a KRA classification from the ERP tax group.</p>
                 </div>
                 <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
                   <input type="checkbox" className="mt-1" checked={form.lot_tracking_enabled} onChange={(event) => setForm((p) => ({ ...p, lot_tracking_enabled: event.target.checked }))} />

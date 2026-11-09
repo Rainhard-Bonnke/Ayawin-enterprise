@@ -617,6 +617,13 @@
     font-size: 17px;
     font-weight: 700;
   }
+  .ayawin-wordmark img {
+    display: block;
+    height: 40px;
+    width: auto;
+    max-width: 240px;
+    object-fit: contain;
+  }
   .ayawin-topbar-links {
     display: flex;
     align-items: center;
@@ -790,6 +797,13 @@
     color: #a0183c;
     font-family: Georgia, serif;
     font-size: 25px;
+  }
+  .ayawin-company-emblem-logo {
+    display: block;
+    width: min(230px, calc(100% - 32px));
+    height: 86px;
+    margin: 12px auto 8px;
+    object-fit: contain;
   }
   .ayawin-login-fields {
     display: grid;

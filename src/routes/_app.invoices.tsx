@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
+import { canPerformSalesAction } from "@/lib/rbac";
 import {
   createSalesInvoice,
   downloadInvoicePdf,
@@ -14,6 +15,7 @@ import {
   paySalesInvoice,
   postSalesInvoice,
   verifyInvoiceDocument,
+  requestMpesaInvoicePayment,
   type BackendCustomer,
   type BackendInvoice,
   type BackendMasterItem,
@@ -44,7 +46,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Mail, Printer, FileDown, ArrowUpDown, Trash2 } from "lucide-react";
+import { Plus, Mail, Printer, FileDown, ArrowUpDown, Trash2, Smartphone } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -75,6 +77,9 @@ const emptyLine = (): InvoiceLineForm => ({ item_id: "", quantity: "1", unit_pri
 
 function InvoicesPage() {
   const { token, user } = useAuth();
+  const canCreateInvoice = canPerformSalesAction(user, "sales.invoice.create");
+  const canPostInvoice = canPerformSalesAction(user, "sales.invoice.post");
+  const canCreateReceipt = canPerformSalesAction(user, "sales.receipt.create");
   const [rows, setRows] = useState<BackendInvoice[]>([]);
   const rowsRef = useRef<BackendInvoice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,6 +88,10 @@ function InvoicesPage() {
   const [page, setPage] = useState(1);
   const pageSize = 5;
   const [preview, setPreview] = useState<BackendInvoice | null>(null);
+  const [mpesaPhone, setMpesaPhone] = useState("");
+  const [mpesaAmount, setMpesaAmount] = useState("");
+  const [mpesaSubmitting, setMpesaSubmitting] = useState(false);
+  const [mpesaRequest, setMpesaRequest] = useState<Awaited<ReturnType<typeof requestMpesaInvoicePayment>> | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifyHashInput, setVerifyHashInput] = useState("");
@@ -102,6 +111,34 @@ function InvoicesPage() {
     due_date: dueInDays(30),
     lines: [emptyLine()] as InvoiceLineForm[],
   });
+
+  useEffect(() => {
+    setMpesaRequest(null);
+    setMpesaAmount(preview ? String(preview.total) : "");
+  }, [preview?.id]);
+
+  const requestMpesaPayment = async () => {
+    if (!token || !preview) return;
+    const amount = Number(mpesaAmount);
+    if (!mpesaPhone.trim() || !Number.isFinite(amount) || amount <= 0) {
+      toast.error("Enter a Kenyan mobile number and a positive payment amount");
+      return;
+    }
+    setMpesaSubmitting(true);
+    try {
+      const request = await requestMpesaInvoicePayment(token, preview.internalId || preview.id, {
+        phone: mpesaPhone,
+        amount,
+        idempotency_key: crypto.randomUUID(),
+      });
+      setMpesaRequest(request);
+      toast.success(request.configured ? "M-Pesa STK request queued" : "M-Pesa payment request saved; provider is not configured");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to create M-Pesa request");
+    } finally {
+      setMpesaSubmitting(false);
+    }
+  };
 
   const loadInvoices = useCallback(async () => {
     if (!token) return;
@@ -292,17 +329,17 @@ function InvoicesPage() {
     <div>
       <PageHeader
         title="Invoicing & Billing"
-        description="Invoices use each item’s configured tax treatment and post receivables and applicable output VAT to the ledger. eTIMS submission is not configured."
+        description="Posted invoices enter the eTIMS submission queue. They are not KRA-accepted until a certified provider confirms acceptance."
         actions={
           <>
             <Button variant="outline" onClick={exportInvoices}>
               <FileDown className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            <Button onClick={() => void openCreate()}>
+            {canCreateInvoice && canPostInvoice && <Button onClick={() => void openCreate()}>
               <Plus className="mr-2 h-4 w-4" />
               New Invoice
-            </Button>
+            </Button>}
           </>
         }
       />
@@ -399,6 +436,9 @@ function InvoicesPage() {
                       <TableCell className="font-mono text-xs font-medium">{i.id}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
                         {i.etr}
+                        <div className="mt-1 font-sans text-[10px] capitalize text-muted-foreground">
+                          eTIMS: {i.etimsStatus.replaceAll("_", " ")}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="font-medium">{i.customer}</div>
@@ -773,12 +813,62 @@ function InvoicesPage() {
                   </div>
                 )}
               </div>
+              {preview.status !== "Draft" && preview.status !== "Paid" && preview.status !== "Cancelled" && (
+                <section className="mb-4 border-t border-border pt-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                    <Smartphone className="h-4 w-4" /> Request M-Pesa payment
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-[1fr_180px_auto] sm:items-end">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="mpesa-phone">Customer mobile number</Label>
+                      <Input
+                        id="mpesa-phone"
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        placeholder="0712345678"
+                        value={mpesaPhone}
+                        onChange={(event) => setMpesaPhone(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="mpesa-amount">Amount (KES)</Label>
+                      <Input
+                        id="mpesa-amount"
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        value={mpesaAmount}
+                        onChange={(event) => setMpesaAmount(event.target.value)}
+                      />
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => void requestMpesaPayment()}
+                      disabled={mpesaSubmitting || Boolean(mpesaRequest && ["pending", "processing", "awaiting_callback", "callback_received"].includes(mpesaRequest.status))}
+                    >
+                      <Smartphone className="mr-2 h-4 w-4" />
+                      {mpesaSubmitting ? "Saving…" : "Send STK request"}
+                    </Button>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    An invoice is paid only after the provider verifies the M-Pesa transaction and a receipt is posted.
+                  </p>
+                  {mpesaRequest && (
+                    <div className="mt-2 text-xs text-muted-foreground" role="status">
+                      Request {mpesaRequest.id}: {mpesaRequest.status.replaceAll("_", " ")}.
+                      {mpesaRequest.message ? ` ${mpesaRequest.message}` : ""}
+                    </div>
+                  )}
+                </section>
+              )}
               <DialogFooter>
                 <Button variant="outline" onClick={() => window.print()}>
                   <Printer className="mr-2 h-4 w-4" />
                   Print
                 </Button>
-                {preview.status === "Draft" && (
+                {canPostInvoice && preview.status === "Draft" && (
                   <Button
                     onClick={async () => {
                       if (!token) return;
@@ -829,7 +919,7 @@ function InvoicesPage() {
                         total: preview.total,
                       },
                     });
-                    await triggerEmailNotification({
+                    if (token) await triggerEmailNotification(token, {
                       recipient: preview.customer,
                       subject: `Invoice ${preview.id}`,
                       message: `Please find attached invoice ${preview.id}.`,
@@ -839,7 +929,7 @@ function InvoicesPage() {
                   <Mail className="mr-2 h-4 w-4" />
                   Email to customer
                 </Button>
-                {preview.status !== "Draft" &&
+                {canCreateReceipt && preview.status !== "Draft" &&
                   preview.status !== "Paid" &&
                   preview.status !== "Cancelled" && (
                     <Button
