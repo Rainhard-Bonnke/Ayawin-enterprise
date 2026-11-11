@@ -114,6 +114,7 @@ module.exports = {
   revokeUserRefreshTokens,
   verifyAccessToken,
   JWT_SECRET,
+  JWT_REFRESH_EXPIRES_DAYS,
   POS_ALLOWED_PERMISSIONS,
   permissionsForSession,
 };

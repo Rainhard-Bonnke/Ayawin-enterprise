@@ -10,8 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { fetchMasterItems, fetchWarehouses, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
-import { v1Api } from "@/lib/api-v1";
+import { type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
@@ -47,8 +47,11 @@ function MaterialRequisitionsPage() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!token) return;
-    void Promise.all([fetchMasterItems(token, "", 2000), fetchWarehouses(token)])
-      .then(([catalog, locations]) => { setItems(catalog); setWarehouses(locations); })
+    void Promise.all([v1Api.master.items(token, 2000), v1Api.master.warehouses(token)])
+      .then(([catalog, locations]) => {
+        setItems(catalog.map(normalizeMasterItem));
+        setWarehouses(locations.map(normalizeMasterWarehouse));
+      })
       .catch(() => { setItems([]); setWarehouses([]); });
   }, [token]);
 

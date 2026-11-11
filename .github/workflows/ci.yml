@@ -33,6 +33,8 @@ jobs:
       JWT_SECRET: ci-jwt-secret-for-automated-tests-32-chars-minimum
       DOC_VERIFY_SECRET: ci-document-verification-secret-32-chars-minimum
       MFA_ENCRYPTION_KEY: ci-mfa-key-is-independent-and-long-enough-32
+      INTEGRATION_ENCRYPTION_KEY: ci-integration-encryption-key-is-independent-32
+      PII_ENCRYPTION_KEY: ci-pii-encryption-key-is-independent-and-long-enough-32
       ADMIN_EMAIL: admin@example.test
       ADMIN_PASSWORD: ci-test-admin-password
       VERIFY_CLEAN_MIGRATIONS: "true"
@@ -56,8 +58,38 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run frontend schema tests
+        run: npm run test:frontend
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run frontend browser journeys
+        run: npm run test:e2e:frontend
+
+      - name: Apply database migrations (advisory-locked job)
+        run: npm run db:migrate
+        working-directory: backend
+
       - name: Run backend unit tests
         run: npm test
+        working-directory: backend
+
+      - name: Smoke-test backup and restore flow
+        env:
+          BACKUP_DIR: ${{ runner.temp }}/ayawin-backups
+        run: |
+          set -euo pipefail
+          npm run db:backup
+          backup_file="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.sql' -print -quit)"
+          test -n "$backup_file"
+          dropdb --if-exists --host localhost --port 5432 --username postgres ayawin_restore_smoke
+          createdb --host localhost --port 5432 --username postgres ayawin_restore_smoke
+          DATABASE_DB=ayawin_restore_smoke npm run db:restore -- "$backup_file"
+          psql --host localhost --port 5432 --username postgres --dbname ayawin_restore_smoke -v ON_ERROR_STOP=1 -c "SELECT 1 FROM erp_schema_migrations LIMIT 1"
         working-directory: backend
 
       - name: Run all backend e2e tests

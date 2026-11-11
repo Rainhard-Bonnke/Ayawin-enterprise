@@ -6,9 +6,17 @@ const MPESA_BASE_URLS = Object.freeze({
   production: "https://api.safaricom.co.ke",
 });
 
+function normalizePhone(value) {
+  const digits = String(value || "").replace(/[\s()-]/g, "").replace(/^\+/, "");
+  const normalized = digits.startsWith("0") ? `254${digits.slice(1)}` : digits;
+  if (!/^254[17]\d{8}$/.test(normalized)) throw new Error("B2C recipient must be a valid Kenyan mobile number");
+  return normalized;
+}
+
 class MpesaProvider {
   async initiateStkPush() { throw new Error("MpesaProvider.initiateStkPush must be implemented"); }
   async verifyPayment() { throw new Error("MpesaProvider.verifyPayment must be implemented"); }
+  async queryTransactionStatus() { throw new Error("MpesaProvider.queryTransactionStatus must be implemented"); }
   async registerC2bUrls() { throw new Error("MpesaProvider.registerC2bUrls must be implemented"); }
   async sendB2c() { throw new Error("MpesaProvider.sendB2c must be implemented"); }
 }
@@ -16,6 +24,7 @@ class MpesaProvider {
 class DisabledMpesaProvider extends MpesaProvider {
   async initiateStkPush() { throw new Error("M-Pesa integration is disabled"); }
   async verifyPayment() { throw new Error("M-Pesa integration is disabled"); }
+  async queryTransactionStatus() { return { accepted: false, message: "M-Pesa integration is disabled" }; }
   async registerC2bUrls() { throw new Error("M-Pesa integration is disabled"); }
   async sendB2c() { throw new Error("M-Pesa integration is disabled"); }
 }
@@ -52,8 +61,18 @@ class MockMpesaProvider extends MpesaProvider {
     };
   }
 
+  async queryTransactionStatus({ idempotencyKey }) {
+    return this.fixture.statusQuery || {
+      accepted: true,
+      originator_conversation_id: `MOCK-STATUS-${crypto.createHash("sha256").update(String(idempotencyKey)).digest("hex").slice(0,12)}`,
+      conversation_id: `MOCK-CONVERSATION-${String(idempotencyKey).slice(-8)}`,
+    };
+  }
+
   async registerC2bUrls() { return this.fixture.registration || { accepted: true }; }
   async sendB2c({ idempotencyKey }) { return this.fixture.b2c || { accepted: true, originator_conversation_id: idempotencyKey }; }
+
+  buildCallbackUrl(kind) { return `https://mock-mpesa.invalid/callback/${String(kind || "result")}`; }
 }
 
 function buildMpesaCallbackUrl({ baseUrl, companyId, token, kind = "stk" }) {
@@ -186,32 +205,59 @@ class SandboxMpesaProvider extends MpesaProvider {
     return { merchant_request_id: response.MerchantRequestID, checkout_request_id: response.CheckoutRequestID, provider_response: response };
   }
 
-  async verifyPayment({ checkoutRequestId, callbackPayload }) {
-    const shortcode = String(this.config.public_config.shortcode || "");
-    const passkey = String(this.config.secrets.passkey || "");
-    if (!shortcode || !passkey) throw new Error("Daraja shortcode and STK passkey are required for status verification");
-    const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-    const response = await this.request({
-      method: "POST",
-      path: "/mpesa/stkpushquery/v1/query",
-      body: { BusinessShortCode: shortcode, Password: this.stkPassword(timestamp), Timestamp: timestamp, CheckoutRequestID: checkoutRequestId },
-      action: "stk_query",
-    });
-    const resultCode = Number(response.ResultCode);
-    if (resultCode !== 0) {
-      const resultDesc = String(response.ResultDesc || "M-Pesa status is not successful");
-      return { confirmed: false, message: resultCode === 1032 ? "Customer cancelled the M-Pesa prompt" : resultDesc };
-    }
+  async verifyPayment({ checkoutRequestId, callbackPayload, idempotencyKey }) {
     const items = callbackPayload?.Body?.stkCallback?.CallbackMetadata?.Item || [];
     const value = (name) => items.find((item) => item.Name === name)?.Value;
+    const receiptNumber = String(value("MpesaReceiptNumber") || "").trim();
+    if (!receiptNumber) return { confirmed: false, message: "STK callback has no receipt ID for independent transaction-status verification" };
+    const query = await this.queryTransactionStatus({
+      transactionId: receiptNumber,
+      idempotencyKey,
+    });
+    if (!query.accepted) return { confirmed: false, retryable: true, message: query.message || "Transaction status query was not accepted" };
     return {
-      confirmed: true,
+      awaiting_status_callback: true,
+      status_query_originator_id: query.originator_conversation_id,
+      status_query_conversation_id: query.conversation_id,
       amount: Number(value("Amount")),
-      receipt_number: String(value("MpesaReceiptNumber") || ""),
+      receipt_number: receiptNumber,
       transaction_date: String(value("TransactionDate") || ""),
       phone: String(value("PhoneNumber") || ""),
-      provider_response: response,
+      provider_response: query.provider_response || {},
     };
+  }
+
+  async queryTransactionStatus({ transactionId, idempotencyKey }) {
+    const { initiatorName, securityCredential } = this.config.secrets;
+    const shortcode = String(this.config.public_config.shortcode || "");
+    if (!shortcode || !initiatorName || !securityCredential || !transactionId) {
+      throw new Error("Configure the shortcode, Transaction Status API credentials, and receipt number");
+    }
+    const originatorId = crypto.createHash("sha256").update(String(idempotencyKey || `${transactionId}:${Date.now()}`)).digest("hex").slice(0,20);
+    const resultUrl = this.buildCallbackUrl("stk/status-result");
+    const timeoutUrl = this.buildCallbackUrl("stk/status-timeout");
+    const response = await this.request({
+      method: "POST",
+      path: "/mpesa/transactionstatus/v1/query",
+      body: {
+        Initiator: initiatorName,
+        SecurityCredential: securityCredential,
+        CommandID: "TransactionStatusQuery",
+        TransactionID: transactionId,
+        PartyA: shortcode,
+        IdentifierType: "4",
+        ResultURL: resultUrl,
+        QueueTimeOutURL: timeoutUrl,
+        Remarks: "Verify ERP STK payment",
+        Occasion: originatorId,
+      },
+      action: "transaction_status_query",
+    });
+    if (String(response.ResponseCode) !== "0" || !response.OriginatorConversationID || !response.ConversationID) {
+      return { accepted: false, message: String(response.ResponseDescription || "Daraja did not accept the status query"), provider_response: response };
+    }
+    return { accepted: true, originator_conversation_id: response.OriginatorConversationID,
+      conversation_id: response.ConversationID, provider_response: response };
   }
 
   async registerC2bUrls() {
@@ -248,17 +294,24 @@ class SandboxMpesaProvider extends MpesaProvider {
     if (!shortcode || !initiatorName || !securityCredential || !callbackUrl || !timeoutUrl) {
       throw new Error("B2C credentials, shortcode, result URL, and timeout URL are required");
     }
+    const normalizedAmount = Number(amount);
+    if (!Number.isSafeInteger(normalizedAmount) || normalizedAmount < 1) {
+      throw new Error("Daraja B2C amount must be a positive whole KES shilling amount");
+    }
+    const normalizedPhone = normalizePhone(phone);
+    const originatorConversationId = crypto.createHash("sha256").update(String(idempotencyKey || "")).digest("hex").slice(0, 20);
+    if (!idempotencyKey) throw new Error("A stable B2C idempotency key is required");
     const response = await this.request({
       method: "POST",
       path: "/mpesa/b2c/v3/paymentrequest",
       body: {
-        OriginatorConversationID: String(idempotencyKey).slice(0, 20),
+        OriginatorConversationID: originatorConversationId,
         InitiatorName: initiatorName,
         SecurityCredential: securityCredential,
         CommandID: "BusinessPayment",
-        Amount: Math.round(Number(amount)),
+        Amount: normalizedAmount,
         PartyA: shortcode,
-        PartyB: phone,
+        PartyB: normalizedPhone,
         Remarks: "Approved customer refund",
         QueueTimeOutURL: timeoutUrl,
         ResultURL: callbackUrl,
@@ -278,7 +331,7 @@ async function getMpesaProvider({ companyId, branchId = null, fetchImpl, onCall 
     if (config.environment !== "sandbox") throw new Error("Mock M-Pesa provider is permitted only in sandbox environment");
     return new MockMpesaProvider();
   }
-  if (config.provider_mode === "sandbox") {
+  if (["sandbox", "production"].includes(config.provider_mode)) {
     const logCall = onCall || (async ({ action, request, response, status, durationMs }) => {
       const { logIntegration } = require("./integrationService");
       await logIntegration({

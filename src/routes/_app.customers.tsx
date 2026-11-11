@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUpDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -39,14 +40,10 @@ import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { customerHealth } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
-import {
-  createCustomer,
-  deleteCustomer,
-  fetchCustomers,
-  type BackendCustomer,
-  updateCustomer,
-} from "@/lib/api";
+import { type BackendCustomer } from "@/lib/api";
+import { normalizeMasterCustomer, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
+import { queryKeys } from "@/lib/queryKeys";
 import { trackEvent } from "@/lib/event-tracker";
 import { toast } from "sonner";
 
@@ -79,6 +76,7 @@ const emptyForm = (): CustomerFormState => ({
 });
 
 const segmentOptions = ["Bar/Restaurant", "Wholesaler", "Retailer", "Distributor", "Supermarket"];
+const EMPTY_CUSTOMERS: BackendCustomer[] = [];
 
 export const Route = createFileRoute("/_app/customers")({
   component: CustomersPage,
@@ -86,9 +84,7 @@ export const Route = createFileRoute("/_app/customers")({
 });
 
 function CustomersPage() {
-  const { token } = useAuth();
-  const [rows, setRows] = useState<BackendCustomer[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { token, user } = useAuth();
   const [q, setQ] = useState("");
   const [segment, setSegment] = useState("all");
   const [sort, setSort] = useState("name");
@@ -98,24 +94,18 @@ function CustomersPage() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<CustomerFormState>(emptyForm());
   const pageSize = 5;
+  const customersQuery = useQuery({
+    queryKey: [...queryKeys.customers.list(), user?.id],
+    queryFn: async ({ signal }) =>
+      (await v1Api.master.customers(token!, "", signal)).map(normalizeMasterCustomer),
+    enabled: Boolean(token),
+  });
+  const rows: BackendCustomer[] = customersQuery.data ?? EMPTY_CUSTOMERS;
+  const loading = customersQuery.isPending;
 
   const loadCustomers = async () => {
-    if (!token) return;
-    setLoading(true);
-    try {
-      const data = await fetchCustomers(token);
-      setRows(data);
-    } catch {
-      setRows([]);
-      toast.error("Unable to load customers");
-    } finally {
-      setLoading(false);
-    }
+    if (token) await customersQuery.refetch();
   };
-
-  useEffect(() => {
-    void loadCustomers();
-  }, [token]);
 
   const filtered = useMemo(
     () =>
@@ -205,7 +195,7 @@ function CustomersPage() {
     setSaving(true);
     try {
       if (editing) {
-        const updated = await updateCustomer(token, editing.id, payload);
+        const updated = await v1Api.master.updateCustomer(token, editing.id, payload);
         void trackEvent({
           action: "customer_updated",
           entityType: "customer",
@@ -216,7 +206,7 @@ function CustomersPage() {
         });
         toast.success(`Customer ${updated.name} updated`);
       } else {
-        const created = await createCustomer(token, payload);
+        const created = await v1Api.master.createCustomer(token, payload);
         void trackEvent({
           action: "customer_created",
           entityType: "customer",
@@ -241,7 +231,7 @@ function CustomersPage() {
   const removeCustomer = async (customer: BackendCustomer) => {
     if (!token) return;
     try {
-      await deleteCustomer(token, customer.id);
+      await v1Api.master.deleteCustomer(token, customer.id);
       void trackEvent({
         action: "customer_deleted",
         entityType: "customer",
@@ -373,7 +363,14 @@ function CustomersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
+              {customersQuery.isError ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-10 text-center text-sm text-destructive">
+                    {customersQuery.error instanceof Error ? customersQuery.error.message : "Unable to load customers"}
+                    <Button variant="ghost" size="sm" onClick={() => void customersQuery.refetch()}>Retry</Button>
+                  </TableCell>
+                </TableRow>
+              ) : loading ? (
                 <TableRow>
                   <TableCell
                     colSpan={8}
@@ -465,7 +462,7 @@ function CustomersPage() {
                   );
                 })
               )}
-              {!loading && paged.length === 0 && (
+              {!loading && !customersQuery.isError && paged.length === 0 && (
                 <TableRow>
                   <TableCell
                     colSpan={8}

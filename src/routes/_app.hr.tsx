@@ -29,19 +29,12 @@ import { trackEvent } from "@/lib/event-tracker";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import {
-  fetchHrEmployees,
-  fetchAttendance,
-  fetchPayrollPayslips,
-  fetchPayrollRuns,
-  fetchPayrollStatutory,
-  fetchPayrollRemittances,
-  postPayroll,
-  runPayroll,
   type BackendEmployee,
   type PayrollRun,
   type PayslipRow,
   type PayrollRemittance,
 } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/hr")({
@@ -79,8 +72,15 @@ function HRPage() {
 
   useEffect(() => {
     if (!token) return;
-    fetchHrEmployees(token)
-      .then((rows) => setApiEmployees(rows))
+    v1Api.hr.employees(token)
+      .then((rows) => setApiEmployees(rows.map((row) => ({
+        id: String(row.id),
+        name: String(row.full_name || `${row.first_name || ""} ${row.last_name || ""}`.trim()),
+        department: String(row.department_name || row.department || "—"),
+        role: String(row.job_title || row.position || "—"),
+        salary: Number(row.basic_salary || row.gross_salary || 0),
+        status: String(row.status || "active").toLowerCase() === "active" ? "Active" : "Inactive",
+      }))))
       .catch((err) => {
         toast.error(err instanceof Error ? err.message : "Unable to load HR employees");
         setApiEmployees([]);
@@ -89,7 +89,7 @@ function HRPage() {
 
   useEffect(() => {
     if (!token || tab !== "attendance") return;
-    fetchAttendance(token)
+    v1Api.hr.attendance(token)
       .then(setAttendance)
       .catch((err) => {
         setAttendance([]);
@@ -100,18 +100,57 @@ function HRPage() {
   const loadPayroll = async (run?: PayrollRun) => {
     if (!token) return;
     try {
-      const runs = await fetchPayrollRuns(token);
+      const runs = (await v1Api.hr.payrollRuns(token)).map((row) => ({
+        id: String(row.id),
+        payroll_month: String(row.payroll_month || ""),
+        status: String(row.status || "draft"),
+        employee_count: Number(row.employee_count || 0),
+        total_gross: Number(row.total_gross || 0),
+        total_net: Number(row.total_net || 0),
+      })) as PayrollRun[];
       setPayrollRuns(runs);
       const active = run || runs[0];
       setSelectedRun(active || null);
       if (active) {
-        const [slips, report] = await Promise.all([
-          fetchPayrollPayslips(token, active.id),
-          fetchPayrollStatutory(token, active.id),
+        const [slipRows, report, remittanceRows] = await Promise.all([
+          v1Api.hr.payslips(token, active.id),
+          v1Api.hr.statutoryReport(token, active.id),
+          v1Api.hr.statutoryRemittances(token, active.id),
         ]);
-        setPayslips(slips);
-        setStatutory(report);
-        setRemittances(await fetchPayrollRemittances(token, active.id));
+        setPayslips(slipRows.map((row) => ({
+          id: String(row.id),
+          employee_code: row.employee_code ? String(row.employee_code) : undefined,
+          first_name: row.first_name ? String(row.first_name) : undefined,
+          last_name: row.last_name ? String(row.last_name) : undefined,
+          gross_pay: Number(row.gross_pay || 0),
+          paye: Number(row.paye || 0),
+          shif: Number(row.shif || 0),
+          nhif: Number(row.nhif || 0),
+          nssf: Number(row.nssf || 0),
+          nssf_tier1: Number(row.nssf_tier1 || 0),
+          nssf_tier2: Number(row.nssf_tier2 || 0),
+          nssf_employer: Number(row.nssf_employer || 0),
+          housing_levy: Number(row.housing_levy || 0),
+          housing_levy_employer: Number(row.housing_levy_employer || 0),
+          taxable_income: Number(row.taxable_income || 0),
+          personal_relief: Number(row.personal_relief || 0),
+          insurance_relief: Number(row.insurance_relief || 0),
+          employer_cost: Number(row.employer_cost || 0),
+          net_pay: Number(row.net_pay || 0),
+        })) as PayslipRow[]);
+        setStatutory(report as typeof statutory);
+        setRemittances(remittanceRows.map((row) => ({
+          id: String(row.id),
+          agency_code: String(row.agency_code || ""),
+          agency_name: String(row.agency_name || row.agency_code || ""),
+          amount_due: Number(row.amount_due || 0),
+          amount_paid: Number(row.amount_paid || 0),
+          outstanding_amount: Number(row.outstanding_amount || 0),
+          due_date: row.due_date ? String(row.due_date).slice(0, 10) : null,
+          status: String(row.status || "due"),
+          payroll_month: String(row.payroll_month || "").slice(0, 10),
+          posted_payment_count: Number(row.posted_payment_count || 0),
+        })) as PayrollRemittance[]);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to load payroll runs");
@@ -397,7 +436,15 @@ function HRPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        const created = await runPayroll(token, payrollMonth);
+                        const raw = await v1Api.hr.createPayrollRun(token, payrollMonth);
+                        const created = {
+                          id: String(raw.id),
+                          payroll_month: String(raw.payroll_month || payrollMonth),
+                          status: String(raw.status || "draft"),
+                          employee_count: Number(raw.employee_count || 0),
+                          total_gross: Number(raw.total_gross || 0),
+                          total_net: Number(raw.total_net || 0),
+                        } satisfies PayrollRun;
                         toast.success("Payroll run created");
                         await loadPayroll(created);
                       } catch (err) {
@@ -446,21 +493,95 @@ function HRPage() {
                   <FileDown className="mr-2 h-3.5 w-3.5" />
                   Generate Payslips (XLSX)
                 </Button>
-                {selectedRun?.status !== "posted" && selectedRun && (
+                {selectedRun?.status === "calculated" && selectedRun && (
                   <Button
                     size="sm"
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        await postPayroll(token, selectedRun.id);
+                        await v1Api.hr.approvePayrollRun(token, selectedRun.id);
+                        toast.success("Payroll approved by a separate reviewer");
+                        await loadPayroll(selectedRun);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to approve payroll");
+                      }
+                    }}
+                  >
+                    Approve run
+                  </Button>
+                )}
+                {selectedRun?.status === "approved" && selectedRun && (
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await v1Api.hr.lockPayrollRun(token, selectedRun.id);
+                        toast.success("Payroll run locked");
+                        await loadPayroll(selectedRun);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to lock payroll");
+                      }
+                    }}
+                  >
+                    Lock run
+                  </Button>
+                )}
+                {selectedRun?.status === "locked" && selectedRun && (
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await v1Api.hr.postPayrollRun(token, selectedRun.id);
                         toast.success("Payroll posted to General Ledger");
-                        await loadPayroll();
+                        await loadPayroll(selectedRun);
                       } catch (err) {
                         toast.error(err instanceof Error ? err.message : "Unable to post payroll");
                       }
                     }}
                   >
                     Post to GL
+                  </Button>
+                )}
+                {selectedRun?.status === "posted" && selectedRun && (
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await v1Api.hr.releasePayrollRun(token, selectedRun.id);
+                        toast.success("Payroll released for payment");
+                        await loadPayroll(selectedRun);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to release payroll");
+                      }
+                    }}
+                  >
+                    Release pay
+                  </Button>
+                )}
+                {selectedRun?.status === "released" && selectedRun && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        const blob = await v1Api.hr.payrollPaymentFile(token, selectedRun.id);
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement("a");
+                        link.href = url;
+                        link.download = `${selectedRun.payroll_month}-bank-payments.csv`;
+                        link.click();
+                        URL.revokeObjectURL(url);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : "Unable to export bank payment file");
+                      }
+                    }}
+                  >
+                    <FileDown className="mr-2 h-3.5 w-3.5" />
+                    Bank payment file
                   </Button>
                 )}
               </div>

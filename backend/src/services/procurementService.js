@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { recordReceipt } = require("./inventoryService");
 const gl = require("./glPostingService");
+const etimsEvents = require("./etimsEventService");
 
 async function nextDocNo(client, companyId, table, column, prefix) {
   const result = await client.query(
@@ -265,6 +266,15 @@ async function postGoodsReceipt({ companyId, userId, grnId, postGl = true }) {
          journal_id = $4, updated_at = NOW() WHERE id = $1 AND company_id = $2`,
       [grnId, companyId, userId, journalId],
     );
+    await etimsEvents.queueEtimsStockMovementInTransaction(client, {
+      companyId,
+      userId,
+      sourceType: "goods_receipt",
+      sourceId: grnId,
+      eventType: "goods_receipt",
+      occurredDate: grn.received_date,
+      lines: lines.rows.map((line) => ({ item_id: line.item_id, quantity: Number(line.quantity), unit_cost: Number(line.unit_cost) })),
+    });
     await client.query("COMMIT");
 
     return { ok: true, grn_id: grnId, journal_id: journalId, total_value: totalValue };

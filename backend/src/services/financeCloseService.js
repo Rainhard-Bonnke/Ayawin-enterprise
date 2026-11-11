@@ -30,8 +30,18 @@ function buildChecklist(period, counts) {
     },
     {
       code: "unfinalized_payroll_runs",
-      label: "Unfinalized payroll runs in period",
+      label: "Payroll runs not posted in period",
       count: Number(counts.unfinalized_payroll_runs || 0),
+    },
+    {
+      code: "unmatched_bank_items",
+      label: "Unmatched bank statement lines in period",
+      count: Number(counts.unmatched_bank_items || 0),
+    },
+    {
+      code: "vat_return_not_locked",
+      label: "VAT working paper not locked for period",
+      count: Number(counts.vat_return_not_locked || 0),
     },
     {
       code: "trial_balance_difference",
@@ -85,9 +95,27 @@ async function getPeriodCloseChecklist(companyId, periodId) {
        (SELECT COUNT(*) FROM erp_bank_reconciliations r
         WHERE r.company_id = $1 AND r.statement_end BETWEEN $2 AND $3
           AND r.status = 'draft') AS open_bank_reconciliations,
+       (SELECT COUNT(*) FROM erp_bank_reconciliation_lines l
+        JOIN erp_bank_reconciliations r ON r.id = l.reconciliation_id AND r.company_id = l.company_id
+        WHERE l.company_id = $1 AND r.statement_end BETWEEN $2 AND $3 AND l.journal_line_id IS NULL) AS unmatched_bank_items,
        (SELECT COUNT(*) FROM erp_payroll_runs pr
         WHERE pr.company_id = $1 AND pr.payroll_month BETWEEN $2 AND $3
-          AND pr.status IN ('draft','calculated','approved','posting')) AS unfinalized_payroll_runs,
+          AND pr.status <> 'posted') AS unfinalized_payroll_runs,
+       (SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM erp_customer_invoices i WHERE i.company_id = $1 AND i.invoice_date BETWEEN $2 AND $3
+             AND i.status IN ('posted','paid','partial','overdue') AND i.tax_amount > 0 AND i.is_deleted = FALSE
+           UNION ALL
+           SELECT 1 FROM erp_customer_credit_notes n WHERE n.company_id = $1 AND n.credit_date BETWEEN $2 AND $3
+             AND n.status = 'posted' AND n.tax_amount > 0
+           UNION ALL
+           SELECT 1 FROM erp_supplier_bills b WHERE b.company_id = $1 AND b.bill_date BETWEEN $2 AND $3
+             AND b.status IN ('posted','partial','paid','overdue') AND b.tax_amount > 0 AND b.is_deleted = FALSE
+           UNION ALL
+           SELECT 1 FROM erp_supplier_return_credit_notes c WHERE c.company_id = $1 AND c.received_date BETWEEN $2 AND $3
+             AND c.status = 'posted' AND c.vat_amount > 0 AND c.is_deleted = FALSE
+         ) AND NOT EXISTS (
+           SELECT 1 FROM erp_vat_returns vr WHERE vr.company_id = $1 AND vr.period_id = $4 AND vr.status = 'locked'
+         ) THEN 1 ELSE 0 END) AS vat_return_not_locked,
        ABS(COALESCE((
          SELECT SUM(g.opening_debit + g.period_debit - g.opening_credit - g.period_credit)
          FROM erp_gl_balances g
@@ -132,9 +160,27 @@ async function closeFiscalPeriod({ companyId, periodId, userId, reason }) {
          (SELECT COUNT(*) FROM erp_bank_reconciliations r
           WHERE r.company_id = $1 AND r.statement_end BETWEEN $2 AND $3
             AND r.status = 'draft') AS open_bank_reconciliations,
+         (SELECT COUNT(*) FROM erp_bank_reconciliation_lines l
+          JOIN erp_bank_reconciliations r ON r.id = l.reconciliation_id AND r.company_id = l.company_id
+          WHERE l.company_id = $1 AND r.statement_end BETWEEN $2 AND $3 AND l.journal_line_id IS NULL) AS unmatched_bank_items,
          (SELECT COUNT(*) FROM erp_payroll_runs pr
           WHERE pr.company_id = $1 AND pr.payroll_month BETWEEN $2 AND $3
-            AND pr.status IN ('draft','calculated','approved','posting')) AS unfinalized_payroll_runs,
+            AND pr.status <> 'posted') AS unfinalized_payroll_runs,
+         (SELECT CASE WHEN EXISTS (
+             SELECT 1 FROM erp_customer_invoices i WHERE i.company_id = $1 AND i.invoice_date BETWEEN $2 AND $3
+               AND i.status IN ('posted','paid','partial','overdue') AND i.tax_amount > 0 AND i.is_deleted = FALSE
+             UNION ALL
+             SELECT 1 FROM erp_customer_credit_notes n WHERE n.company_id = $1 AND n.credit_date BETWEEN $2 AND $3
+               AND n.status = 'posted' AND n.tax_amount > 0
+             UNION ALL
+             SELECT 1 FROM erp_supplier_bills b WHERE b.company_id = $1 AND b.bill_date BETWEEN $2 AND $3
+               AND b.status IN ('posted','partial','paid','overdue') AND b.tax_amount > 0 AND b.is_deleted = FALSE
+             UNION ALL
+             SELECT 1 FROM erp_supplier_return_credit_notes c WHERE c.company_id = $1 AND c.received_date BETWEEN $2 AND $3
+               AND c.status = 'posted' AND c.vat_amount > 0 AND c.is_deleted = FALSE
+           ) AND NOT EXISTS (
+             SELECT 1 FROM erp_vat_returns vr WHERE vr.company_id = $1 AND vr.period_id = $4 AND vr.status = 'locked'
+           ) THEN 1 ELSE 0 END) AS vat_return_not_locked,
          ABS(COALESCE((
            SELECT SUM(g.opening_debit + g.period_debit - g.opening_credit - g.period_credit)
            FROM erp_gl_balances g
@@ -191,4 +237,4 @@ async function reopenFiscalPeriod({ companyId, periodId, userId, reason }) {
   } finally { client.release(); }
 }
 
-module.exports = { getPeriodCloseChecklist, closeFiscalPeriod, reopenFiscalPeriod };
+module.exports = { buildChecklist, getPeriodCloseChecklist, closeFiscalPeriod, reopenFiscalPeriod };

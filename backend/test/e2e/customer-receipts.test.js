@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { getTestContext, getCustomerId, getItemId, pool } = require("./helpers");
 const sales = require("../../src/services/salesService");
 const receipts = require("../../src/services/customerReceiptService");
+const mpesa = require("../../src/services/mpesaService");
 const { ACCOUNT_CODES } = require("../../src/services/accountCodes");
 
 async function makeInvoice(ctx, customerId) {
@@ -76,6 +77,57 @@ test("one payment on account can be allocated across multiple invoices to the ce
       await pool.query("DELETE FROM erp_customer_receipts WHERE id=$1 AND company_id=$2", [receiptId,ctx.companyId]);
     }
     await pool.query("UPDATE erp_customer_invoices SET is_deleted=TRUE WHERE id=ANY($1::uuid[])", [[firstInvoice.id,secondInvoice.id]]);
+  }
+});
+
+test("unallocated C2B payments post to a customer account once and support audited rejection", async () => {
+  const ctx = await getTestContext();
+  const customerId = await getCustomerId(ctx.companyId);
+  const transId = `C2B-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+  const rejectedTransId = `${transId}-R`;
+  const inserted = await pool.query(
+    `INSERT INTO erp_mpesa_transactions
+       (company_id,trans_id,trans_time,amount,msisdn_masked,bill_reference,shortcode,customer_id,
+        status,callback_payload)
+     VALUES ($1,$2,NOW(),1.25,'254****5678',$3,'174379',$4,'unmatched','{}'::jsonb) RETURNING id`,
+    [ctx.companyId, transId, `ONACCT-${Date.now()}`, customerId],
+  );
+  const rejected = await pool.query(
+    `INSERT INTO erp_mpesa_transactions
+       (company_id,trans_id,trans_time,amount,msisdn_masked,bill_reference,shortcode,status,callback_payload)
+     VALUES ($1,$2,NOW(),2,'254****5678',$3,'174379','unmatched','{}'::jsonb) RETURNING id`,
+    [ctx.companyId, rejectedTransId, `REJECT-${Date.now()}`],
+  );
+  let receiptId;
+  try {
+    const queue = await mpesa.getUnallocatedMpesaTransactions({ companyId: ctx.companyId });
+    assert.ok(queue.some((row) => row.id === inserted.rows[0].id));
+    const allocation = await mpesa.allocateMpesaTransaction({
+      companyId: ctx.companyId, userId: ctx.userId, transactionId: inserted.rows[0].id, customerId,
+    });
+    receiptId = allocation.receipt_id;
+    const retry = await mpesa.allocateMpesaTransaction({
+      companyId: ctx.companyId, userId: ctx.userId, transactionId: inserted.rows[0].id, customerId,
+    });
+    assert.equal(retry.receipt_id, receiptId);
+    assert.equal(retry.idempotent, true);
+    const receiptCount = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM erp_customer_receipts WHERE company_id=$1 AND provider_receipt_no=$2",
+      [ctx.companyId, transId],
+    );
+    assert.equal(receiptCount.rows[0].count, 1);
+    assert.equal((await pool.query("SELECT status FROM erp_mpesa_transactions WHERE id=$1", [inserted.rows[0].id])).rows[0].status, "posted");
+
+    const rejection = await mpesa.rejectMpesaTransaction({
+      companyId: ctx.companyId, userId: ctx.userId, transactionId: rejected.rows[0].id, reason: "Unrecognized reference",
+    });
+    assert.equal(rejection.status, "rejected");
+  } finally {
+    await pool.query("DELETE FROM erp_mpesa_transactions WHERE id=ANY($1::uuid[])", [[inserted.rows[0].id, rejected.rows[0].id]]);
+    if (receiptId) {
+      await pool.query("DELETE FROM erp_receipt_allocations WHERE receipt_id=$1 AND company_id=$2", [receiptId, ctx.companyId]);
+      await pool.query("DELETE FROM erp_customer_receipts WHERE id=$1 AND company_id=$2", [receiptId, ctx.companyId]);
+    }
   }
 });
 

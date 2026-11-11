@@ -2,7 +2,10 @@ require("dotenv").config();
 
 const path = require("path");
 const { runMigrations } = require("../src/migrate");
-const { runEtimsOutboxBatch } = require("../src/services/integrationService");
+const { runEtimsCreditNoteBatch, runEtimsOutboxBatch } = require("../src/services/integrationService");
+const { runEtimsItemRegistrationBatch } = require("../src/services/etimsItemService");
+const { runEtimsEventBatch } = require("../src/services/etimsEventService");
+const { getEtimsProvider } = require("../src/services/etimsProvider");
 const pool = require("../src/db");
 
 const pollIntervalMs = Math.max(1000, Number(process.env.ETIMS_POLL_INTERVAL_MS || 5000));
@@ -12,15 +15,30 @@ let stopping = false;
 function loadAdapter() {
   const configuredPath = process.env.ETIMS_ADAPTER_MODULE;
   if (!configuredPath) {
-    throw new Error("ETIMS_ADAPTER_MODULE must point to a certified provider adapter module");
+    const invoke = async (method, { companyId, ...args }) => {
+      const provider = await getEtimsProvider({ companyId });
+      if (typeof provider[method] !== "function") throw new Error(`Company eTIMS provider does not implement ${method}`);
+      return provider[method](args);
+    };
+    return {
+      submitInvoice: (input) => invoke("submitInvoice", input),
+      submitCreditNote: (input) => invoke("submitCreditNote", input),
+      saveItem: (input) => invoke("saveItem", input),
+      savePurchase: (input) => invoke("savePurchase", input),
+      saveStockMaster: (input) => invoke("saveStockMaster", input),
+      saveStockItems: (input) => invoke("saveStockItems", input),
+      lookupInvoiceStatus: (input) => invoke("lookupInvoiceStatus", input),
+    };
   }
   const adapterPath = path.isAbsolute(configuredPath)
     ? configuredPath
     : path.resolve(process.cwd(), configuredPath);
   const loaded = require(adapterPath);
   const adapter = loaded.default || loaded;
-  if (typeof adapter.submitInvoice !== "function") {
-    throw new Error("The configured eTIMS adapter must export submitInvoice({ payload, idempotencyKey })");
+  if (typeof adapter.submitInvoice !== "function" || typeof adapter.submitCreditNote !== "function"
+    || typeof adapter.saveItem !== "function" || typeof adapter.savePurchase !== "function"
+    || typeof adapter.saveStockItems !== "function") {
+    throw new Error("The configured eTIMS adapter must export invoice, credit-note, item, purchase, and stock methods");
   }
   return adapter;
 }
@@ -34,6 +52,12 @@ async function run() {
     try {
       const summary = await runEtimsOutboxBatch({ adapter, limit: batchSize });
       if (summary.processed) console.log(JSON.stringify(summary));
+      const itemSummary = await runEtimsItemRegistrationBatch({ adapter, limit: batchSize });
+      if (itemSummary.processed) console.log(JSON.stringify({ item_registrations: itemSummary }));
+      const creditSummary = await runEtimsCreditNoteBatch({ adapter, limit: batchSize });
+      if (creditSummary.processed) console.log(JSON.stringify({ credit_notes: creditSummary }));
+      const eventSummary = await runEtimsEventBatch({ adapter, limit: batchSize });
+      if (eventSummary.processed) console.log(JSON.stringify({ purchase_stock_events: eventSummary }));
     } catch (error) {
       console.error(`eTIMS outbox batch failed: ${error.message}`);
     }

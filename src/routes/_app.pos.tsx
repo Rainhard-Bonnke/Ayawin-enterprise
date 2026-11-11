@@ -7,24 +7,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
+import { canPerformSalesAction } from "@/lib/rbac";
 import {
   createInvoiceFromSalesOrder,
   createSalesOrder,
   confirmSalesOrder,
   cancelSalesOrder,
   dispatchSalesOrder,
-  downloadReceiptPdf,
-  fetchCustomers,
-  fetchMasterItems,
-  fetchWarehouses,
   paySalesInvoice,
-  previewSalesTax,
+  downloadReceiptPdf,
   printReceiptPdf,
   type BackendCustomer,
   type BackendMasterItem,
   type BackendWarehouse,
 } from "@/lib/api";
+import {
+  normalizeMasterCustomer,
+  normalizeMasterItem,
+  normalizeMasterWarehouse,
+  v1Api,
+} from "@/lib/api-v1";
 import { toast } from "sonner";
+import { posCheckoutSchema } from "@/lib/schemas/sales";
 
 export const Route = createFileRoute("/_app/pos")({
   component: PosPage,
@@ -36,6 +40,16 @@ type CartLine = BackendMasterItem & { quantity: number; unit_price: number };
 function PosPage() {
   const navigate = useNavigate();
   const { token, user } = useAuth();
+  const canCheckout = [
+    "sales.order.create",
+    "sales.delivery.post",
+    "sales.invoice.create",
+    "sales.receipt.create",
+  ].every((permission) => canPerformSalesAction(user, permission as
+    | "sales.order.create"
+    | "sales.delivery.post"
+    | "sales.invoice.create"
+    | "sales.receipt.create"));
   const [items, setItems] = useState<BackendMasterItem[]>([]);
   const [customers, setCustomers] = useState<BackendCustomer[]>([]);
   const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
@@ -59,12 +73,19 @@ function PosPage() {
 
   useEffect(() => {
     if (!token) return;
-    Promise.all([fetchMasterItems(token, "", 60), fetchCustomers(token), fetchWarehouses(token)])
-      .then(([catalog, customerRows, warehouseRows]) => {
+    Promise.all([
+      v1Api.master.items(token, 60),
+      v1Api.master.customers(token),
+      v1Api.master.warehouses(token),
+    ])
+      .then(([catalogRows, customerRows, warehouseRows]) => {
+        const catalog = catalogRows.map(normalizeMasterItem) as BackendMasterItem[];
+        const customers = customerRows.map(normalizeMasterCustomer) as BackendCustomer[];
+        const locations = warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[];
         setItems(catalog.filter((item) => item.is_active));
-        setCustomers(customerRows);
-        setWarehouses(warehouseRows);
-        setCustomerId(String(customerRows[0]?.id || ""));
+        setCustomers(customers);
+        setWarehouses(locations);
+        setCustomerId(String(customers[0]?.id || ""));
       })
       .catch((error) =>
         toast.error(error instanceof Error ? error.message : "Unable to load POS catalog"),
@@ -76,8 +97,8 @@ function PosPage() {
     if (!token || !search.trim()) return;
     const timer = window.setTimeout(() => {
       setSearching(true);
-      void fetchMasterItems(token, search.trim(), 60)
-        .then((catalog) => setItems(catalog.filter((item) => item.is_active)))
+      void v1Api.master.items(token, 60, undefined, search.trim())
+        .then((rows) => setItems(rows.map(normalizeMasterItem).filter((item) => item.is_active) as BackendMasterItem[]))
         .catch((error) =>
           toast.error(error instanceof Error ? error.message : "Unable to search catalog"),
         )
@@ -90,7 +111,7 @@ function PosPage() {
     if (!token || !cart.length) { setTaxPreview(null); setTaxPreviewLoading(false); return; }
     let active = true;
     setTaxPreviewLoading(true);
-    void previewSalesTax(token, cart.map((line) => ({ item_id: line.id, quantity: line.quantity, unit_price: line.unit_price })))
+    void v1Api.sales.taxPreview(token, cart.map((line) => ({ item_id: line.id, quantity: line.quantity, unit_price: line.unit_price })))
       .then((preview) => {
         if (active) setTaxPreview({ subtotal: preview.subtotal, tax_amount: preview.tax_amount, total_amount: preview.total_amount });
       })
@@ -142,6 +163,28 @@ function PosPage() {
   };
 
   const completeSale = async () => {
+    if (!token) return;
+    if (!canCheckout) {
+      toast.error("Your role is missing a permission required to complete POS checkout.");
+      return;
+    }
+    const validation = posCheckoutSchema.safeParse({
+      customer_id: customerId,
+      warehouse_id: String(warehouses[0]?.id || ""),
+      order_date: new Date().toISOString().slice(0, 10),
+      required_date: new Date().toISOString().slice(0, 10),
+      payment_method: paymentMethod,
+      amount_received: Number(amountReceived || 0),
+      lines: cart.map((line) => ({
+        item_id: line.id,
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+      })),
+    });
+    if (!validation.success) {
+      toast.error(validation.error.issues[0]?.message || "Please fix the sale details before continuing.");
+      return;
+    }
     if (!token || !customerId || !warehouses[0]?.id || !cart.length) {
       toast.error("Select a customer, warehouse, and at least one item.");
       return;
@@ -416,10 +459,10 @@ function PosPage() {
             <Button
               className="w-full"
               size="lg"
-              disabled={submitting || !cart.length}
+              disabled={submitting || !cart.length || !canCheckout}
               onClick={completeSale}
             >
-              {submitting ? "Processing sale..." : `Complete sale · ${KES(total)}`}
+              {submitting ? "Processing sale..." : !canCheckout ? "Checkout permission required" : `Complete sale · ${KES(total)}`}
             </Button>
           </CardContent>
         </Card>

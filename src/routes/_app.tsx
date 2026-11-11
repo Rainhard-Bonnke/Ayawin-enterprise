@@ -15,9 +15,15 @@ export const Route = createFileRoute("/_app")({
 
 function workspaceForPath(path: string) {
   if (
-    ["/sales", "/pos", "/customers", "/invoices", "/delivery", "/route-closures"].some((route) =>
-      path.startsWith(route),
-    )
+    [
+      "/sales",
+      "/pos",
+      "/customers",
+      "/customer-credit-notes",
+      "/invoices",
+      "/delivery",
+      "/route-closures",
+    ].some((route) => path.startsWith(route))
   )
     return "sales";
   if (["/procurement", "/goods-received", "/suppliers"].some((route) => path.startsWith(route)))
@@ -36,6 +42,7 @@ function workspaceForPath(path: string) {
       "/quarantine",
       "/reorder-alerts",
       "/driver-stock",
+      "/inventory-lots",
     ].some((route) => path.startsWith(route))
   )
     return "inventory";
@@ -44,6 +51,7 @@ function workspaceForPath(path: string) {
       "/accounting",
       "/accounts-receivable",
       "/accounts-payable",
+      "/bank-reconciliation",
       "/supplier-credit-notes",
       "/reports",
       "/assets",

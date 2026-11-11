@@ -4,6 +4,7 @@ const { getTestContext, getCustomerId, getItemId, pool } = require("./helpers");
 const sales = require("../../src/services/salesService");
 const integration = require("../../src/services/integrationService");
 const mpesa = require("../../src/services/mpesaService");
+const integrationSettings = require("../../src/services/integrationSettingsService");
 const { buildInvoiceVerificationHash } = require("../../src/services/documentVerificationService");
 
 test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) => {
@@ -167,6 +168,10 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
         assert.match(idempotencyKey, new RegExp(inv.rows[0].id));
         return { accepted: true, provider_reference: acceptedReference, qr_code: "e2e-qr" };
       },
+      async lookupInvoiceStatus({ idempotencyKey }) {
+        assert.match(idempotencyKey, new RegExp(inv.rows[0].id));
+        return { status: "not_found" };
+      },
     },
   });
   assert.equal(workerResult.processed, 1);
@@ -191,9 +196,30 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
   const mpesaToken = `e2e-callback-${Date.now()}`;
   const oldMpesaToken = process.env.MPESA_CALLBACK_TOKEN;
   process.env.MPESA_CALLBACK_TOKEN = mpesaToken;
+  const previousMpesaSettings = await pool.query(
+    `SELECT * FROM erp_integration_settings WHERE company_id=$1 AND provider='mpesa' AND branch_id IS NULL AND environment='sandbox'`,
+    [ctx.companyId],
+  );
+  await integrationSettings.saveIntegrationSettings({
+    companyId: ctx.companyId, userId: ctx.userId, provider: "mpesa", providerMode: "mock", environment: "sandbox",
+    publicConfig: { shortcode: "174379" }, secrets: { callbackToken: mpesaToken }, policy: { b2c_enabled: false },
+  });
   t.after(() => {
     if (oldMpesaToken === undefined) delete process.env.MPESA_CALLBACK_TOKEN;
     else process.env.MPESA_CALLBACK_TOKEN = oldMpesaToken;
+  });
+  t.after(async () => {
+    await pool.query("DELETE FROM erp_integration_settings WHERE company_id=$1 AND provider='mpesa' AND branch_id IS NULL AND environment='sandbox'", [ctx.companyId]);
+    for (const setting of previousMpesaSettings.rows) {
+      await pool.query(
+        `INSERT INTO erp_integration_settings
+           (id,company_id,branch_id,provider,provider_mode,environment,public_config,secret_payload_encrypted,policy,updated_by,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10,$11,$12)`,
+        [setting.id,setting.company_id,setting.branch_id,setting.provider,setting.provider_mode,setting.environment,
+          JSON.stringify(setting.public_config),setting.secret_payload_encrypted,JSON.stringify(setting.policy),setting.updated_by,
+          setting.created_at,setting.updated_at],
+      );
+    }
   });
   const mpesaKey = `e2e-mpesa-${Date.now()}`;
   const request = await mpesa.createStkRequest({
@@ -234,13 +260,13 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
   await assert.rejects(
     () => mpesa.receiveMpesaCallback({
       token: "wrong-callback-token",
-      payload: { Body: { stkCallback: { CheckoutRequestID: `checkout-${mpesaKey}` } } },
+      payload: { Body: { stkCallback: { MerchantRequestID: `merchant-${mpesaKey}`, CheckoutRequestID: `checkout-${mpesaKey}` } } },
     }),
     /Invalid M-Pesa callback token/,
   );
   const callback = await mpesa.receiveMpesaCallback({
     token: mpesaToken,
-    payload: { Body: { stkCallback: { CheckoutRequestID: `checkout-${mpesaKey}`, ResultCode: 0 } } },
+    payload: { Body: { stkCallback: { MerchantRequestID: `merchant-${mpesaKey}`, CheckoutRequestID: `checkout-${mpesaKey}`, ResultCode: 0 } } },
   });
   assert.equal(callback.status, "callback_received");
   const invoiceBeforeVerification = await pool.query(
@@ -257,7 +283,9 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
       async verifyPayment({ checkoutRequestId }) {
         assert.equal(checkoutRequestId, `checkout-${mpesaKey}`);
         return {
-          confirmed: true,
+          awaiting_status_callback: true,
+          status_query_originator_id: `status-${mpesaKey}`,
+          status_query_conversation_id: `status-conversation-${mpesaKey}`,
           phone: "254712345678",
           amount: Number(inv.rows[0].total_amount),
           receipt_number: `MPESA-${mpesaKey}`,
@@ -266,7 +294,47 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
       },
     },
   });
-  assert.equal(verification.confirmed, 1);
+  assert.equal(verification.confirmed, 0);
+  assert.equal(verification.retrying, 1);
+  const pendingStatusRequest = await mpesa.getMpesaPaymentRequest({ companyId: ctx.companyId, requestId: request.id });
+  assert.equal(pendingStatusRequest.status, "awaiting_status_callback");
+  const callbackReplay = await mpesa.receiveMpesaCallback({
+    companyId: ctx.companyId,
+    token: mpesaToken,
+    payload: { Body: { stkCallback: {
+      MerchantRequestID: `merchant-${mpesaKey}`, CheckoutRequestID: `checkout-${mpesaKey}`, ResultCode: 0,
+    } } },
+  });
+  assert.equal(callbackReplay.duplicate, true);
+  const nonFinalStatus = await mpesa.receiveMpesaStatusResult({
+    companyId: ctx.companyId,
+    token: mpesaToken,
+    payload: { Result: { OriginatorConversationID: `status-${mpesaKey}`, ResultCode: 0, ResultType: 1,
+      ResultDesc: "Waiting for further messages" } },
+  });
+  assert.equal(nonFinalStatus.status, "awaiting_status_callback");
+  await mpesa.receiveMpesaStatusResult({
+    companyId: ctx.companyId,
+    token: mpesaToken,
+    payload: { Result: {
+      OriginatorConversationID: `status-${mpesaKey}`,
+      ResultCode: 0,
+      ResultType: 0,
+      ResultDesc: "The service request is processed successfully.",
+      TransactionID: `MPESA-${mpesaKey}`,
+      ResultParameters: { ResultParameter: [
+        { Key: "TransactionStatus", Value: "Completed" },
+        { Key: "ReceiptNo", Value: `MPESA-${mpesaKey}` },
+        { Key: "Amount", Value: Number(inv.rows[0].total_amount) },
+      ] },
+    } },
+  });
+  const finalVerification = await mpesa.runMpesaCallbackBatch({
+    companyId: ctx.companyId,
+    invoiceId: inv.rows[0].id,
+    adapter: { verifyPayment: async () => { throw new Error("must not query again after final callback"); } },
+  });
+  assert.equal(finalVerification.confirmed, 1);
   const payment = { ok: true, status: "paid" };
   assert.equal(payment.ok, true);
   assert.equal(payment.status, "paid");

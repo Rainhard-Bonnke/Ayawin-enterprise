@@ -36,13 +36,14 @@ function getOtpAuthUrl({ secret, email, issuer = "Martin ERP" }) {
 }
 
 async function enableMfaPending(userId, companyId, secret) {
+  const encryptedSecret = encryptSecret(secret);
   await pool.query(
-    `INSERT INTO erp_user_mfa (company_id, user_id, pending_secret_encrypted, created_by)
-     VALUES ($1, $2, $3, $2)
+    `INSERT INTO erp_user_mfa (company_id, user_id, secret_encrypted, pending_secret_encrypted, created_by)
+     VALUES ($1, $2, $3, $3, $2)
      ON CONFLICT (user_id) DO UPDATE
      SET pending_secret_encrypted = EXCLUDED.pending_secret_encrypted,
          updated_at = NOW()`,
-    [companyId, userId, encryptSecret(secret)],
+    [companyId, userId, encryptedSecret],
   );
 }
 
@@ -107,7 +108,8 @@ async function getPendingSecret(userId) {
 function verifyTotpStep(secret, token, afterStep = -1) {
   const current = Math.floor(Date.now() / 30000);
   for (let step = current - 1; step <= current + 1; step += 1) {
-    if (step > afterStep && authenticator.generate(secret, { epoch: step * 30000 }) === token) return step;
+    const stepAuthenticator = authenticator.clone({ epoch: step * 30000 });
+    if (step > afterStep && stepAuthenticator.generate(secret) === token) return step;
   }
   return null;
 }

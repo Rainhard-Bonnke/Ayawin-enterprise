@@ -1,7 +1,16 @@
 const crypto = require("crypto");
+const ipaddr = require("ipaddr.js");
 const pool = require("../db");
 const integrationSettings = require("./integrationSettingsService");
 const { logIntegration } = require("./integrationService");
+const { logAudit } = require("./auditService");
+const customerReceipts = require("./customerReceiptService");
+
+const SAFARICOM_CALLBACK_SOURCE_IPS = Object.freeze([
+  "196.201.214.200", "196.201.214.206", "196.201.213.114", "196.201.214.207",
+  "196.201.214.208", "196.201.213.44", "196.201.212.127", "196.201.212.138",
+  "196.201.212.129", "196.201.212.136", "196.201.212.74", "196.201.212.69",
+]);
 
 function normalizeKenyanPhone(value) {
   const digits = String(value || "").replace(/[\s()-]/g, "").replace(/^\+/, "");
@@ -220,6 +229,7 @@ async function runMpesaInitiationBatch({ adapter, limit = 20, maxAttempts = 8, c
   for (const request of requests) {
     try {
       const response = await adapter.initiateStkPush({
+        companyId: request.company_id,
         phone: request.phone_number,
         amount: Number(request.amount),
         accountReference: request.account_reference,
@@ -264,18 +274,39 @@ async function runMpesaCallbackBatch({ adapter, limit = 20, maxAttempts = 8, com
 
   for (const request of requests) {
     try {
-      const verification = await adapter.verifyPayment({
-        merchantRequestId: request.merchant_request_id,
-        checkoutRequestId: request.checkout_request_id,
-        callbackPayload: request.callback_payload,
-        idempotencyKey: request.idempotency_key,
-      });
+      let verification;
+      if (request.status_result_payload) {
+        verification = normalizeMpesaStatusResult({
+          payload: request.status_result_payload,
+          provisional: request.verification_payload,
+        });
+      } else {
+        verification = await adapter.verifyPayment({
+          companyId: request.company_id,
+          merchantRequestId: request.merchant_request_id,
+          checkoutRequestId: request.checkout_request_id,
+          callbackPayload: request.callback_payload,
+          idempotencyKey: request.idempotency_key,
+        });
+      }
+      if (verification?.awaiting_status_callback === true) {
+        await pool.query(
+          `UPDATE erp_mpesa_payment_requests SET status='awaiting_status_callback',processing_stage=NULL,
+             status_query_originator_id=$3,status_query_conversation_id=$4,
+             verification_payload=$5::jsonb,last_error=NULL,updated_at=NOW()
+           WHERE id=$1 AND company_id=$2 AND status='processing' AND attempt_count=$6`,
+          [request.id,request.company_id,verification.status_query_originator_id,
+            verification.status_query_conversation_id,JSON.stringify(verification),request.attempt_count],
+        );
+        summary.retrying += 1;
+        continue;
+      }
       if (verification?.retryable === true) {
         const terminal = request.attempt_count >= attemptsLimit;
         await pool.query(
-          `UPDATE erp_mpesa_payment_requests SET status = $3, processing_stage = NULL, last_error = $4,
+           `UPDATE erp_mpesa_payment_requests SET status = $3, processing_stage = NULL, last_error = $4,
              next_attempt_at = CASE WHEN $5::int IS NULL THEN next_attempt_at ELSE NOW() + ($5::int * INTERVAL '1 second') END,
-             verification_payload = $6::jsonb, updated_at = NOW()
+             verification_payload = $6::jsonb,status_result_payload=NULL, updated_at = NOW()
            WHERE id = $1 AND company_id = $2 AND status = 'processing' AND attempt_count = $7`,
           [request.id, request.company_id, terminal ? "failed" : "callback_received",
             String(verification.message || "Provider status is not final").slice(0, 2000),
@@ -361,10 +392,45 @@ async function getMpesaPaymentRequest({ companyId, requestId }) {
   return result.rows[0] || null;
 }
 
+async function listMpesaExceptions({ companyId, limit = 100 }) {
+  const boundedLimit=Math.max(1,Math.min(200,Number(limit)||100));
+  const result=await pool.query(
+    `SELECT 'mpesa_stk'::text AS type,request.id,request.invoice_id AS source_id,invoice.invoice_no AS reference,
+       request.status,request.attempt_count,request.next_attempt_at,request.last_error,request.created_at,
+       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-request.created_at))))::int AS age_seconds,
+       FALSE AS manually_retryable
+     FROM erp_mpesa_payment_requests request JOIN erp_customer_invoices invoice
+       ON invoice.id=request.invoice_id AND invoice.company_id=request.company_id
+     WHERE request.company_id=$1 AND request.status IN ('pending','processing','awaiting_callback','callback_received','awaiting_status_callback','failed','timeout')
+     ORDER BY request.created_at LIMIT $2`,[companyId,boundedLimit]);
+  return result.rows;
+}
+
 async function validateCompanyCallbackToken({ companyId, token }) {
   if (!companyId) return safeTokenEqual(process.env.MPESA_CALLBACK_TOKEN, token);
   const config = await integrationSettings.getProviderRuntimeConfig({ companyId, provider: "mpesa" });
   return Boolean(config.secrets.callbackToken) && safeTokenEqual(config.secrets.callbackToken, token);
+}
+
+function matchesCallbackSourceIp(sourceIp, allowlist = []) {
+  if (!Array.isArray(allowlist) || allowlist.length === 0) return true;
+  if (!sourceIp) return false;
+  let address;
+  let ranges;
+  try {
+    address = ipaddr.process(sourceIp);
+    ranges = allowlist.map((value) => ipaddr.parseCIDR(String(value).trim()));
+  } catch {
+    return false;
+  }
+  return ranges.some((range) => address.match(range));
+}
+
+async function validateCompanyCallbackSourceIp({ companyId, sourceIp }) {
+  if (!companyId) return true;
+  const config = await integrationSettings.getProviderRuntimeConfig({ companyId, provider: "mpesa" });
+  const allowlist = config.public_config.callbackSourceIpAllowlist;
+  return matchesCallbackSourceIp(sourceIp, allowlist);
 }
 
 function parseKenyanTransactionTimestamp(value) {
@@ -404,7 +470,7 @@ async function receiveMpesaCallback({ companyId = null, token, payload }) {
       error.statusCode = 404;
       throw error;
     }
-    if (["confirmed", "failed", "cancelled", "timeout"].includes(request.status)) {
+    if (["confirmed", "failed", "cancelled", "timeout", "awaiting_status_callback"].includes(request.status)) {
       await logIntegration({ companyId, provider: "mpesa", action: "stk_callback_duplicate", request: payload, response: { status: request.status }, status: "duplicate", correlationId: crypto.randomUUID(), outcome: "duplicate" });
       return { received: true, duplicate: true, request_id: request.id, status: request.status };
     }
@@ -437,6 +503,74 @@ async function receiveMpesaCallback({ companyId = null, token, payload }) {
     outcome: "received",
   });
   return { received: true, request_id: result.rows[0].id, status: result.rows[0].status };
+}
+
+function statusResultParameters(result) {
+  const entries = result?.ResultParameters?.ResultParameter || [];
+  return Object.fromEntries(entries.map((entry) => [String(entry.Key || ""), entry.Value]));
+}
+
+function normalizeMpesaStatusResult({ payload, provisional }) {
+  const result = payload?.Result || {};
+  const params = statusResultParameters(result);
+  const resultCode = Number(result.ResultCode);
+  const status = String(params.TransactionStatus || "").toLowerCase();
+  if (Number(result.ResultType) === 1 || ["initiated","pending","waiting","processing",""].includes(status) && resultCode === 0) {
+    return { confirmed: false, pending: true, message: "Safaricom transaction status is still pending", provider_response: payload };
+  }
+  const receiptNumber = String(result.TransactionID || params.ReceiptNo || params.TransactionID || "").trim();
+  if (resultCode !== 0 || !["completed","success","successful"].includes(status) || !receiptNumber) {
+    return { confirmed: false, message: String(result.ResultDesc || params.TransactionStatus || "Safaricom status was not completed"), provider_response: payload };
+  }
+  const amount = Number(params.Amount ?? provisional?.amount);
+  const phone = String(provisional?.phone || "");
+  const transactionDate = String(params.TransactionDate || provisional?.transaction_date || "");
+  return { confirmed: true, amount, phone, receipt_number: receiptNumber,
+    transaction_date: transactionDate, provider_response: payload };
+}
+
+async function receiveMpesaStatusResult({ companyId, token, payload }) {
+  if (!(await validateCompanyCallbackToken({ companyId, token }))) {
+    const error = new Error("Invalid M-Pesa callback token"); error.statusCode = 401; throw error;
+  }
+  const result = payload?.Result || {};
+  const originatorId = String(result.OriginatorConversationID || "").trim();
+  if (!originatorId || !Number.isInteger(Number(result.ResultCode))) throw new Error("Invalid M-Pesa Transaction Status callback schema");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const request = await client.query(
+      `SELECT id,status FROM erp_mpesa_payment_requests
+       WHERE company_id=$1 AND status_query_originator_id=$2 FOR UPDATE`, [companyId,originatorId],
+    );
+    if (!request.rowCount) {
+      const error = new Error("No awaiting M-Pesa payment request matches this status callback");
+      error.statusCode = 404; throw error;
+    }
+    const row=request.rows[0];
+    if (row.status === "confirmed" || row.status === "failed") {
+      await logIntegration({companyId,provider:"mpesa",action:"stk_status_callback_duplicate",request:payload,
+        response:{status:row.status},status:"duplicate",correlationId:crypto.randomUUID(),outcome:"duplicate"});
+      await client.query("COMMIT");
+      return {received:true,duplicate:true,status:row.status,request_id:row.id};
+    }
+    const normalized=normalizeMpesaStatusResult({payload,provisional:null});
+    const final=normalized.confirmed;
+    const pending=normalized.pending===true;
+    await client.query(
+      `UPDATE erp_mpesa_payment_requests SET status=$3,status_result_payload=$4::jsonb,
+         processing_stage=NULL,next_attempt_at=NOW(),last_error=$5,updated_at=NOW()
+       WHERE id=$1 AND company_id=$2`,
+      [row.id,companyId,final?"callback_received":pending?"awaiting_status_callback":"failed",JSON.stringify(payload),
+        final||pending?null:String(normalized.message||"Safaricom status did not confirm payment").slice(0,2000)],
+    );
+    await logIntegration({companyId,provider:"mpesa",action:"stk_status_result",request:payload,
+      response:{request_id:row.id,status:final?"callback_received":pending?"awaiting_status_callback":"failed"},status:final?"received":pending?"pending":"failed",
+      correlationId:crypto.randomUUID(),outcome:final?"received":pending?"pending":"failed"});
+    await client.query("COMMIT");
+    return {received:true,duplicate:false,status:final?"callback_received":pending?"awaiting_status_callback":"failed",request_id:row.id};
+  } catch(error){await client.query("ROLLBACK");throw error;}
+  finally{client.release();}
 }
 
 async function receiveC2bConfirmation({ companyId, token, payload }) {
@@ -501,13 +635,126 @@ async function receiveC2bConfirmation({ companyId, token, payload }) {
   return { received: true, duplicate: !inserted.rowCount, transaction_id: transaction.id, status: transaction.status };
 }
 
+async function getUnallocatedMpesaTransactions({ companyId, limit = 100 }) {
+  const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 100));
+  const result = await pool.query(
+    `SELECT transaction.id, transaction.trans_id, transaction.trans_time, transaction.amount,
+            transaction.msisdn_masked, transaction.bill_reference, transaction.customer_id,
+            customer.name AS customer_name, transaction.invoice_id, invoice.invoice_no,
+            transaction.status, transaction.created_at
+     FROM erp_mpesa_transactions transaction
+     LEFT JOIN erp_customers customer ON customer.id = transaction.customer_id AND customer.company_id = transaction.company_id
+     LEFT JOIN erp_customer_invoices invoice ON invoice.id = transaction.invoice_id AND invoice.company_id = transaction.company_id
+     WHERE transaction.company_id = $1 AND transaction.status IN ('unmatched','matched')
+       AND transaction.receipt_id IS NULL
+     ORDER BY transaction.trans_time, transaction.id LIMIT $2`,
+    [companyId, boundedLimit],
+  );
+  return result.rows;
+}
+
+async function allocateMpesaTransaction({ companyId, userId, transactionId, customerId = null, invoiceId = null, allocations = [] }) {
+  const transactionResult = await pool.query(
+    `SELECT * FROM erp_mpesa_transactions WHERE id = $1 AND company_id = $2`,
+    [transactionId, companyId],
+  );
+  const transaction = transactionResult.rows[0];
+  if (!transaction) throw new Error("Unallocated M-Pesa transaction not found");
+  if (transaction.receipt_id) {
+    return { ok: true, transaction_id: transaction.id, receipt_id: transaction.receipt_id, status: transaction.status, idempotent: true };
+  }
+  if (!["unmatched", "matched"].includes(transaction.status)) throw new Error("M-Pesa transaction is not available for allocation");
+  const resolvedCustomerId = customerId || transaction.customer_id;
+  const receipt = await customerReceipts.createCustomerReceipt({
+    companyId,
+    userId,
+    customerId: resolvedCustomerId,
+    invoiceId: invoiceId || transaction.invoice_id,
+    allocations,
+    amount: Number(transaction.amount),
+    paymentMethod: "mpesa",
+    referenceNo: transaction.bill_reference || transaction.trans_id,
+    providerReceiptNo: transaction.trans_id,
+    paymentDate: new Date(transaction.trans_time).toISOString().slice(0, 10),
+    notes: `C2B transaction ${transaction.trans_id}`,
+    idempotencyKey: `mpesa-c2b:${companyId}:${transaction.trans_id}`,
+  });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const updated = await client.query(
+      `UPDATE erp_mpesa_transactions
+       SET customer_id = $3, invoice_id = COALESCE($4, invoice_id), receipt_id = $5,
+           status = CASE WHEN $6 = 'posted' THEN 'posted' ELSE 'verified' END, updated_at = NOW()
+       WHERE id = $1 AND company_id = $2 AND receipt_id IS NULL
+       RETURNING id, status, receipt_id`,
+      [transactionId, companyId, resolvedCustomerId, invoiceId || transaction.invoice_id,
+        receipt.receipt_id, receipt.status],
+    );
+    if (updated.rowCount) {
+      await logAudit({ client, companyId, userId, entityType: "erp_mpesa_transactions", entityId: transactionId,
+        action: "mpesa_c2b_allocated", newValues: { receipt_id: receipt.receipt_id, customer_id: resolvedCustomerId,
+          invoice_id: invoiceId || transaction.invoice_id, receipt_status: receipt.status } });
+    }
+    await client.query("COMMIT");
+    const current = updated.rows[0] || (await pool.query(
+      "SELECT status,receipt_id FROM erp_mpesa_transactions WHERE id=$1 AND company_id=$2", [transactionId, companyId],
+    )).rows[0];
+    return { ok: true, transaction_id: transactionId, receipt_id: current.receipt_id,
+      status: current.status, receipt_status: receipt.status, idempotent: !updated.rowCount };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
+async function rejectMpesaTransaction({ companyId, userId, transactionId, reason }) {
+  const cleanReason = String(reason || "").trim().slice(0, 1000);
+  if (!cleanReason) throw new Error("A rejection reason is required");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM erp_mpesa_transactions WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [transactionId, companyId],
+    );
+    const transaction = result.rows[0];
+    if (!transaction) throw new Error("M-Pesa transaction not found");
+    if (transaction.receipt_id || !["unmatched", "matched"].includes(transaction.status)) {
+      throw new Error("Only an unallocated M-Pesa transaction can be rejected");
+    }
+    await client.query(
+      `UPDATE erp_mpesa_transactions SET status = 'rejected', updated_at = NOW()
+       WHERE id = $1 AND company_id = $2`,
+      [transactionId, companyId],
+    );
+    await logAudit({ client, companyId, userId, entityType: "erp_mpesa_transactions", entityId: transactionId,
+      action: "mpesa_c2b_rejected", oldValues: { status: transaction.status },
+      newValues: { status: "rejected", reason: cleanReason } });
+    await client.query("COMMIT");
+    return { ok: true, transaction_id: transactionId, status: "rejected" };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
 module.exports = {
   normalizeKenyanPhone,
   createStkRequest,
   runMpesaInitiationBatch,
   runMpesaCallbackBatch,
   receiveMpesaCallback,
+  receiveMpesaStatusResult,
+  normalizeMpesaStatusResult,
   receiveC2bConfirmation,
+  getUnallocatedMpesaTransactions,
+  allocateMpesaTransaction,
+  rejectMpesaTransaction,
   getMpesaPaymentRequest,
+  listMpesaExceptions,
   validateCompanyCallbackToken,
+  matchesCallbackSourceIp,
+  validateCompanyCallbackSourceIp,
+  SAFARICOM_CALLBACK_SOURCE_IPS,
 };

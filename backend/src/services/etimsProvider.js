@@ -10,6 +10,14 @@ class EtimsProvider {
   async testConnection() { throw new Error("EtimsProvider.testConnection must be implemented"); }
   async submitInvoice() { throw new Error("EtimsProvider.submitInvoice must be implemented"); }
   async submitCreditNote() { throw new Error("EtimsProvider.submitCreditNote must be implemented"); }
+  async lookupInvoiceStatus() { throw new Error("EtimsProvider.lookupInvoiceStatus must be implemented"); }
+  async selectCodeList() { throw new Error("EtimsProvider.selectCodeList must be implemented"); }
+  async selectItemClassList() { throw new Error("EtimsProvider.selectItemClassList must be implemented"); }
+  async saveItem() { throw new Error("EtimsProvider.saveItem must be implemented"); }
+  async selectPurchaseSalesList() { throw new Error("EtimsProvider.selectPurchaseSalesList must be implemented"); }
+  async savePurchase() { throw new Error("EtimsProvider.savePurchase must be implemented"); }
+  async saveStockMaster() { throw new Error("EtimsProvider.saveStockMaster must be implemented"); }
+  async saveStockItems() { throw new Error("EtimsProvider.saveStockItems must be implemented"); }
 }
 
 class DisabledEtimsProvider extends EtimsProvider {
@@ -17,6 +25,13 @@ class DisabledEtimsProvider extends EtimsProvider {
   async testConnection() { return { configured: false, connected: false, message: "eTIMS integration is disabled" }; }
   async submitInvoice() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
   async submitCreditNote() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
+  async selectCodeList() { return { configured: false, data: null }; }
+  async selectItemClassList() { return { configured: false, data: null }; }
+  async saveItem() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
+  async selectPurchaseSalesList() { return { configured: false, data: null }; }
+  async savePurchase() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
+  async saveStockMaster() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
+  async saveStockItems() { return { accepted: false, retryable: false, message: "eTIMS integration is disabled" }; }
 }
 
 class MockEtimsProvider extends EtimsProvider {
@@ -47,8 +62,42 @@ class MockEtimsProvider extends EtimsProvider {
   }
 
   async submitCreditNote({ idempotencyKey }) {
-    return this.submitInvoice({ idempotencyKey });
+    return this.fixture.creditNoteSubmission || {
+      accepted: true,
+      provider_reference: `MOCK-CREDIT-${String(idempotencyKey).slice(-12)}`,
+      response: { resultCd: "000", resultMsg: "Mock credit note accepted" },
+    };
   }
+
+  async lookupInvoiceStatus({ idempotencyKey }) {
+    return this.fixture.lookup || { status: "not_found", idempotency_key: idempotencyKey };
+  }
+
+  async selectCodeList() {
+    return this.fixture.codeList || { resultCd: "000", data: { clsList: [] } };
+  }
+
+  async selectItemClassList() {
+    return this.fixture.itemClassList || { resultCd: "000", data: { itemClsList: [] } };
+  }
+
+  async saveItem({ payload }) {
+    if (this.fixture.itemRegistrationError) throw new Error(this.fixture.itemRegistrationError);
+    return this.fixture.itemRegistration || { accepted: true, response: { resultCd: "000", data: null }, payload };
+  }
+
+  async savePurchase({ idempotencyKey }) {
+    return this.fixture.purchase || { accepted: true, reference: `MOCK-PURCHASE-${String(idempotencyKey).slice(-12)}` };
+  }
+
+  async saveStockMaster({ idempotencyKey }) {
+    return this.fixture.stockMaster || { accepted: true, reference: `MOCK-STOCK-MASTER-${String(idempotencyKey).slice(-8)}` };
+  }
+
+  async saveStockItems({ idempotencyKey }) {
+    return this.fixture.stockMovement || { accepted: true, reference: `MOCK-STOCK-MOVE-${String(idempotencyKey).slice(-8)}` };
+  }
+
 }
 
 class SandboxEtimsProvider extends EtimsProvider {
@@ -120,18 +169,70 @@ class SandboxEtimsProvider extends EtimsProvider {
     if (!secrets.tin || !secrets.communicationKey || !publicConfig.bhfId) {
       return { configured: false, connected: false, message: "Initialize the eTIMS device before testing the connection" };
     }
-    await this.post("/selectCodeList", {
-      tin: secrets.tin,
-      bhfId: publicConfig.bhfId,
-      cmcKey: secrets.communicationKey,
-      lastReqDt: "20000101000000",
-    }, "test_connection");
+    await this.selectCodeList({ lastReqDt: "20000101000000" });
     return { configured: true, connected: true, environment: this.config.environment };
   }
 
-  async submitInvoice({ payload }) {
+  async selectCodeList({ lastReqDt = "20000101000000" } = {}) {
+    const { secrets, public_config: publicConfig } = this.config;
+    return this.post("/selectCodeList", {
+      tin: secrets.tin,
+      bhfId: publicConfig.bhfId,
+      cmcKey: secrets.communicationKey,
+      lastReqDt,
+    }, "select_code_list");
+  }
+
+  async selectItemClassList({ lastReqDt = "20000101000000" } = {}) {
+    const { secrets, public_config: publicConfig } = this.config;
+    return this.post("/selectItemClsList", {
+      tin: secrets.tin,
+      bhfId: publicConfig.bhfId,
+      cmcKey: secrets.communicationKey,
+      lastReqDt,
+    }, "select_item_class_list");
+  }
+
+  async saveItem({ payload }) {
+    if (!payload || typeof payload !== "object") throw new Error("A mapped OSCU saveItem request is required");
+    const response = await this.post("/saveItem", this.withCredentials(payload), "register_item");
+    return { accepted: true, response };
+  }
+
+  async selectPurchaseSalesList({ lastReqDt = "20000101000000" } = {}) {
+    const { secrets, public_config: publicConfig } = this.config;
+    return this.post("/selectTrnsPurchaseSalesList", {
+      tin: secrets.tin, bhfId: publicConfig.bhfId, cmcKey: secrets.communicationKey, lastReqDt,
+    }, "select_purchase_sales_list");
+  }
+
+  async savePurchase({ payload }) {
+    if (!payload || typeof payload !== "object") throw new Error("A mapped OSCU purchase request is required");
+    return { accepted: true, response: await this.post("/insertTrnsPurchase", this.withCredentials(payload), "save_purchase") };
+  }
+
+  async saveStockMaster({ payload }) {
+    if (!payload || typeof payload !== "object") throw new Error("A mapped OSCU stock-master request is required");
+    return { accepted: true, response: await this.post("/saveStockMaster", this.withCredentials(payload), "save_stock_master") };
+  }
+
+  async saveStockItems({ payload }) {
+    if (!payload || typeof payload !== "object") throw new Error("A mapped OSCU stock in/out request is required");
+    return { accepted: true, response: await this.post("/insertStockIO", this.withCredentials(payload), "save_stock_items") };
+  }
+
+  withCredentials(payload) {
+    return {
+      ...payload,
+      tin: this.config.secrets.tin,
+      bhfId: this.config.public_config.bhfId,
+      cmcKey: this.config.secrets.communicationKey,
+    };
+  }
+
+  async submitSalesRequest({ payload, action }) {
     if (!payload || typeof payload !== "object") throw new Error("A mapped official eTIMS sales request is required");
-    const response = await this.post("/saveTrnsSalesOsdc", payload, "submit_invoice");
+    const response = await this.post("/saveTrnsSalesOsdc", this.withCredentials(payload), action);
     const data = response.data || {};
     const sdcId = String(this.config.public_config.sdcId || "").trim();
     const receiptCounter = String(data.curRcptNo || "").trim();
@@ -163,8 +264,16 @@ class SandboxEtimsProvider extends EtimsProvider {
     };
   }
 
+  async submitInvoice({ payload }) {
+    if (payload?.rcptTyCd !== "S") throw new Error("eTIMS invoice payload must use KRA sale receipt type S");
+    return this.submitSalesRequest({ payload, action: "submit_invoice" });
+  }
+
   async submitCreditNote({ payload }) {
-    return this.submitInvoice({ payload });
+    if (payload?.rcptTyCd !== "R" || !Number(payload?.orgInvcNo) || !payload?.rfdRsnCd || !payload?.rfdDt) {
+      throw new Error("A KRA credit-note request must use receipt type R and include original invoice and refund fields");
+    }
+    return this.submitSalesRequest({ payload, action: "submit_credit_note" });
   }
 }
 
@@ -175,7 +284,7 @@ async function getEtimsProvider({ companyId, branchId = null, fetchImpl, onCall 
     if (config.environment !== "sandbox") throw new Error("Mock eTIMS provider is permitted only in sandbox environment");
     return new MockEtimsProvider();
   }
-  if (config.provider_mode === "sandbox") {
+  if (["sandbox", "production"].includes(config.provider_mode)) {
     const logCall = onCall || (async ({ action, request, response, status, durationMs }) => {
       const { logIntegration } = require("./integrationService");
       await logIntegration({

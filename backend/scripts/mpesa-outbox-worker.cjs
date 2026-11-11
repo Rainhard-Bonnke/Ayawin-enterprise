@@ -3,6 +3,7 @@ require("dotenv").config();
 const path = require("path");
 const { runMigrations } = require("../src/migrate");
 const mpesa = require("../src/services/mpesaService");
+const { getMpesaProvider } = require("../src/services/mpesaProvider");
 const pool = require("../src/db");
 
 const pollIntervalMs = Math.max(1000, Number(process.env.MPESA_POLL_INTERVAL_MS || 5000));
@@ -12,10 +13,15 @@ let stopping = false;
 function loadAdapter() {
   const configuredPath = process.env.MPESA_ADAPTER_MODULE;
   if (!configuredPath) {
-    throw new Error("MPESA_ADAPTER_MODULE must point to a configured Safaricom Daraja adapter module");
-  }
-  if (!process.env.MPESA_CALLBACK_TOKEN) {
-    throw new Error("MPESA_CALLBACK_TOKEN must be configured for callback authentication");
+    const invoke = async (method, { companyId, ...args }) => {
+      const provider = await getMpesaProvider({ companyId });
+      if (typeof provider[method] !== "function") throw new Error(`Company M-Pesa provider does not implement ${method}`);
+      return provider[method](args);
+    };
+    return {
+      initiateStkPush: (input) => invoke("initiateStkPush", input),
+      verifyPayment: (input) => invoke("verifyPayment", input),
+    };
   }
   const adapterPath = path.isAbsolute(configuredPath)
     ? configuredPath

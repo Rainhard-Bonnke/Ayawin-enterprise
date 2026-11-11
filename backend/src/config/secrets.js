@@ -21,6 +21,22 @@ function validateSecrets(env = process.env) {
     throw new Error("MFA_ENCRYPTION_KEY must be at least 32 characters and must not be a placeholder");
   }
   if (mfaKey === jwtSecret) throw new Error("MFA_ENCRYPTION_KEY must be separate from JWT_SECRET");
+
+  const integrationKey = env.INTEGRATION_ENCRYPTION_KEY;
+  if (isPlaceholder(integrationKey)) {
+    throw new Error("INTEGRATION_ENCRYPTION_KEY must be at least 32 characters and must not be a placeholder");
+  }
+  if (integrationKey === jwtSecret || integrationKey === mfaKey) {
+    throw new Error("INTEGRATION_ENCRYPTION_KEY must be separate from JWT_SECRET and MFA_ENCRYPTION_KEY");
+  }
+
+  const piiKey = env.PII_ENCRYPTION_KEY;
+  if (isPlaceholder(piiKey)) {
+    throw new Error("PII_ENCRYPTION_KEY must be at least 32 characters and must not be a placeholder");
+  }
+  if ([jwtSecret, mfaKey, integrationKey].includes(piiKey)) {
+    throw new Error("PII_ENCRYPTION_KEY must be separate from all other security keys");
+  }
 }
 
 module.exports = { validateSecrets };

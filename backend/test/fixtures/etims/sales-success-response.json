@@ -1,0 +1,13 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20261109083045",
+  "data": {
+    "invcNo": 77,
+    "curRcptNo": "12",
+    "totRcptNo": "1/12",
+    "intrlData": "NON_SECRET_FIXTURE_INTERNAL_DATA",
+    "rcptSign": "NON_SECRET_FIXTURE_RECEIPT_SIGNATURE",
+    "sdcDateTime": "20261109083045"
+  }
+}

@@ -1,5 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { type FormEvent, useState } from "react";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import {
   BriefcaseBusiness,
   CircleHelp,
@@ -13,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
+import { loginSchema, type LoginFormValues } from "@/lib/schemas/auth";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -31,23 +34,24 @@ const modules = [
 function LoginPage() {
   const navigate = useNavigate();
   const { login } = useAuth();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFormValues>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { username: "", password: "" },
+  });
 
-  const handleSignIn = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleSignIn = async ({ username, password }: LoginFormValues) => {
     setError(null);
-    setLoading(true);
 
     try {
       const currentUser = await login(username, password);
       navigate({ to: currentUser.role === "POS Operator" ? "/pos" : "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -103,11 +107,12 @@ function LoginPage() {
               alt="Ayawin Stock Solutions"
               className="ayawin-company-emblem-logo"
             />
-            <form className="ayawin-login-fields" onSubmit={handleSignIn}>
+            <form className="ayawin-login-fields" onSubmit={handleSubmit(handleSignIn)}>
               <div className="ayawin-login-field">
                 <Label htmlFor="username">Email or username</Label>
-                <Input id="username" type="text" autoComplete="username" value={username}
-                  onChange={(event) => setUsername(event.target.value)} required placeholder="Email or username" />
+                <Input id="username" type="text" autoComplete="username" aria-invalid={Boolean(errors.username)} aria-describedby={errors.username ? "username-error" : undefined}
+                  {...register("username")} placeholder="Email or username" />
+                {errors.username && <p id="username-error" role="alert" className="ayawin-login-error">{errors.username.message}</p>}
               </div>
               <div className="ayawin-login-field">
                 <Label htmlFor="password">Password</Label>
@@ -115,15 +120,16 @@ function LoginPage() {
                   id="password"
                   type="password"
                   autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby={errors.password ? "password-error" : undefined}
+                  {...register("password")}
                   placeholder="Password"
                 />
+                {errors.password && <p id="password-error" role="alert" className="ayawin-login-error">{errors.password.message}</p>}
               </div>
               <div className="ayawin-login-actions">
-                <Button type="submit" disabled={loading}>
-                  {loading ? "Signing in…" : "Sign In"}
+                <Button type="submit" disabled={isSubmitting}>
+                  {isSubmitting ? "Signing in…" : "Sign In"}
                 </Button>
                 <a href="mailto:ayawin.ke@gmail.com?subject=Password%20reset%20request">
                   Forgot Password

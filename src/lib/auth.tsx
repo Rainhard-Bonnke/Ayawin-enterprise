@@ -6,6 +6,7 @@ import {
   getStoredTokens,
   clearTokens,
   onAccessTokenRefreshed,
+  v1RestoreSession,
   v1Me,
   isV1Enabled,
   isApiSessionToken,
@@ -52,17 +53,34 @@ function parseJwt(token: string): User | null {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAccessTokenRefreshed((access) => {
-      localStorage.setItem(STORAGE_KEY, access);
       setToken(access);
       const parsed = parseJwt(access);
       if (parsed) setUser(parsed);
     });
 
     async function restoreSession() {
+      if (isV1Enabled()) {
+        clearTokens();
+        try {
+          const access = await v1RestoreSession();
+          if (!access) throw new Error("No active session");
+          const me = await v1Me(access);
+          setToken(access);
+          setUser(me);
+        } catch {
+          clearTokens();
+          setToken(null);
+          setUser(null);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
       const storedToken = getStoredTokens().access || localStorage.getItem(STORAGE_KEY);
       if (!storedToken) {
         setLoading(false);
@@ -73,7 +91,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const parsed = parseJwt(storedToken);
         if (parsed) {
           const access = getStoredTokens().access || storedToken;
-          localStorage.setItem(STORAGE_KEY, access);
           setToken(access);
           setUser(parsed);
           setLoading(false);
@@ -92,7 +109,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const me = await v1Me(storedToken);
           const access = getStoredTokens().access || storedToken;
-          localStorage.setItem(STORAGE_KEY, access);
           setToken(access);
           setUser(me);
           setLoading(false);
@@ -122,7 +138,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     const { token: newToken, user: currentUser } = await loginRequest(email, password);
-    localStorage.setItem(STORAGE_KEY, newToken);
     setToken(newToken);
     setUser(currentUser);
     return currentUser;
@@ -145,7 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(
     () => ({ user, token, login, logout, loading }),
-    [user, token, loading],
+    [user, token, login, logout, loading],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

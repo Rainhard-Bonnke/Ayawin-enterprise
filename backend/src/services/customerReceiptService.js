@@ -189,6 +189,11 @@ async function approveCustomerReceipt({ companyId, userId, receiptId }) {
     if (!methodResult.rowCount) throw new Error("Receipt payment method is unavailable");
     const posted = await postReceipt(client, { companyId, userId, receipt, method: methodResult.rows[0] });
     await client.query("UPDATE erp_customer_receipts SET approved_by=$3,approved_at=NOW(),updated_by=$3 WHERE id=$1 AND company_id=$2", [receiptId, companyId, userId]);
+    await client.query(
+      `UPDATE erp_mpesa_transactions SET status='posted',updated_at=NOW()
+       WHERE company_id=$1 AND receipt_id=$2 AND status='verified'`,
+      [companyId, receiptId],
+    );
     await logAudit({ client, companyId, userId, entityType: "erp_customer_receipts", entityId: receiptId,
       action: "customer_receipt_approved", newValues: { journal_id: posted.journalId } });
     await client.query("COMMIT");

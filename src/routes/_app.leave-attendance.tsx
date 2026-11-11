@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ResourceRegisterPage, type RegisterRow } from "@/components/ResourceRegisterPage";
-import { fetchLeaveApplications } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
+import { queryKeys } from "@/lib/queryKeys";
 
 const columns = [
   { key: "application_no", label: "Request #" },
@@ -11,9 +12,10 @@ const columns = [
   { key: "days_requested", label: "Days", align: "right" as const },
   { key: "status", label: "Status" },
 ];
-const load = (token: string): Promise<RegisterRow[]> => fetchLeaveApplications(token);
+const load = (token: string, signal?: AbortSignal): Promise<RegisterRow[]> =>
+  v1Api.hr.leaveApplications(token, signal);
 
 export const Route = createFileRoute("/_app/leave-attendance")({
-  component: () => <ResourceRegisterPage title="Leave & attendance" description="Review employee leave requests and their approval status." columns={columns} load={load} actionLabel="Open employee records" actionTo="/hr" countLabel="Leave requests" />,
+  component: () => <ResourceRegisterPage title="Leave & attendance" description="Review employee leave requests and their approval status." columns={columns} load={load} queryKey={queryKeys.hr.leaveApplications()} actionLabel="Open employee records" actionTo="/hr" countLabel="Leave requests" />,
   head: () => ({ meta: [{ title: "Leave & Attendance - Ayawin Stock Solution" }] }),
 });

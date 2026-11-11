@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { fetchMasterItems, fetchWarehouses, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
-import { v1Api } from "@/lib/api-v1";
+import { type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 import { toast } from "sonner";
@@ -36,7 +36,7 @@ function StockAdjustmentsPage() {
     try { setJournals(await v1Api.inventory.adjustmentJournals(token)); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Unable to load stock adjustment journals"); }
   }, [token]);
-  useEffect(() => { if (!token) return; void loadRegister(); void Promise.all([fetchWarehouses(token), fetchMasterItems(token, "", 2000)]).then(([ws, items]) => { setWarehouses(ws); setCatalog(items); }).catch(() => toast.error("Unable to load stock count setup data")); }, [token, loadRegister]);
+  useEffect(() => { if (!token) return; void loadRegister(); void Promise.all([v1Api.master.warehouses(token), v1Api.master.items(token, 2000)]).then(([ws, items]) => { setWarehouses(ws.map(normalizeMasterWarehouse)); setCatalog(items.map(normalizeMasterItem)); }).catch(() => toast.error("Unable to load stock count setup data")); }, [token, loadRegister]);
   const loadCountSheet = async () => {
     if (!token || !warehouseId) return;
     setLoading(true);

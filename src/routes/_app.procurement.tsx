@@ -42,18 +42,11 @@ import { supplierScoreFromBalances } from "@/lib/smartSignals";
 import { trackEvent } from "@/lib/event-tracker";
 import { useAuth } from "@/lib/auth";
 import {
-  createSupplier,
-  deleteSupplier,
-  fetchPurchaseOrders,
-  fetchGoodsReceipts,
-  fetchSuppliers,
-  receivePurchaseOrder,
-  updatePurchaseOrderStatus,
-  updateSupplier,
   type BackendPurchaseOrder,
   type BackendGoodsReceipt,
   type BackendSupplier,
 } from "@/lib/api";
+import { masterCreate, masterDelete, masterUpdate, v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 
 type SupplierFormState = {
@@ -103,44 +96,87 @@ function Procurement() {
 
   const pageSize = 5;
 
-  const loadSuppliers = async () => {
+  const loadSuppliers = useCallback(async () => {
     if (!token) return;
     setSuppliersLoading(true);
     try {
-      const data = await fetchSuppliers(token);
-      setSuppliers(data);
+      const rows = await v1Api.master.vendors(token);
+      setSuppliers(rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        kra_pin: row.tax_id || "",
+        contact: row.contact_name,
+        email: row.email,
+        phone: row.phone,
+        payment_terms: null,
+        credit_limit: Number(row.credit_limit || 0),
+        balance: 0,
+      })));
     } catch {
       setSuppliers([]);
       toast.error("Unable to load suppliers");
     } finally {
       setSuppliersLoading(false);
     }
-  };
+  }, [token]);
 
-  const loadOrders = async () => {
+  const loadOrders = useCallback(async () => {
     if (!token) return;
     setOrdersLoading(true);
     try {
-      setOrders(await fetchPurchaseOrders(token));
+      const rows = await v1Api.procurement.purchaseOrders(token);
+      const statusMap: Record<string, BackendPurchaseOrder["status"]> = {
+        draft: "Draft",
+        submitted: "Sent",
+        approved: "Approved",
+        sent: "Sent",
+        partial: "Approved",
+        received: "Received",
+        closed: "Received",
+        cancelled: "Cancelled",
+      };
+      setOrders(rows.map((row) => {
+        const status = String(row.status || "draft").toLowerCase();
+        return {
+          id: String(row.po_number || row.id),
+          internal_id: String(row.id),
+          date: String(row.order_date || row.created_at || "").slice(0, 10),
+          supplier: String(row.vendor_name || ""),
+          warehouse: String(row.warehouse_name || ""),
+          items: 0,
+          total: Number(row.total_amount || 0),
+          status: statusMap[status] || "Draft",
+        };
+      }));
     } catch (err) {
       setOrders([]);
       toast.error(err instanceof Error ? err.message : "Unable to load purchase orders");
     } finally {
       setOrdersLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     void loadOrders();
-  }, [token]);
+  }, [loadOrders]);
 
   useEffect(() => {
     if (tab === "suppliers") void loadSuppliers();
     if (tab === "receipts" && token)
-      void fetchGoodsReceipts(token)
-        .then(setReceipts)
+      void v1Api.procurement.goodsReceipts(token)
+        .then((rows) => setReceipts(rows.map((row) => ({
+          id: String(row.id),
+          grn_number: String(row.grn_number || row.id),
+          po_number: row.po_number ? String(row.po_number) : undefined,
+          receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : undefined,
+          status: row.status ? String(row.status) : undefined,
+          notes: row.notes ? String(row.notes) : null,
+          vendor_id: row.vendor_id ? String(row.vendor_id) : undefined,
+          vendor_name: row.vendor_name ? String(row.vendor_name) : undefined,
+          purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : undefined,
+        }))))
         .catch(() => setReceipts([]));
-  }, [tab, token]);
+  }, [tab, token, loadSuppliers]);
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
@@ -192,7 +228,8 @@ function Procurement() {
     }
 
     try {
-      await updatePurchaseOrderStatus(token, internalId, nextStatus);
+      if (nextStatus !== "Approved") throw new Error("This action is not supported by the live purchase-order workflow.");
+      await v1Api.procurement.approvePurchaseOrder(token, String(internalId));
       toast.success(`Status set to ${nextStatus}`);
       setPage(1);
       await loadOrders();
@@ -210,8 +247,8 @@ function Procurement() {
     }
 
     try {
-      const result = await receivePurchaseOrder(token, internalId, "Warehouse Team");
-      toast.success(`GRN created: ${result.grn_number}`);
+      const result = await v1Api.procurement.receivePurchaseOrder(token, String(internalId));
+      toast.success(`GRN created: ${String(result.grn_number || result.id || "posted")}`);
       await loadOrders();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to receive order");
@@ -305,23 +342,38 @@ function Procurement() {
     setSupplierSaving(true);
     try {
       if (supplierEditing) {
-        const updated = await updateSupplier(token, supplierEditing.id, payload);
+        const updated = await masterUpdate(token, "vendors", String(supplierEditing.id), {
+          name: payload.name,
+          tax_id: payload.kra_pin,
+          contact_name: payload.contact,
+          email: payload.email,
+          phone: payload.phone,
+          credit_limit: payload.credit_limit,
+        });
         void trackEvent({
           action: "supplier_updated",
           entityType: "supplier",
           entityId: String(updated.id),
-          details: { name: updated.name, kra_pin: updated.kra_pin },
+          details: { name: updated.name, kra_pin: updated.tax_id },
           scenario: "procurement",
           context: payload,
         });
         toast.success(`Supplier ${updated.name} updated`);
       } else {
-        const created = await createSupplier(token, payload);
+        const created = await masterCreate(token, "vendors", {
+          vendor_code: payload.kra_pin || `V-${Date.now()}`,
+          name: payload.name,
+          tax_id: payload.kra_pin,
+          contact_name: payload.contact,
+          email: payload.email,
+          phone: payload.phone,
+          credit_limit: payload.credit_limit,
+        });
         void trackEvent({
           action: "supplier_created",
           entityType: "supplier",
           entityId: String(created.id),
-          details: { name: created.name, kra_pin: created.kra_pin },
+          details: { name: created.name, kra_pin: created.tax_id },
           scenario: "procurement",
           context: payload,
         });
@@ -341,7 +393,7 @@ function Procurement() {
   const removeSupplier = async (supplier: BackendSupplier) => {
     if (!token) return;
     try {
-      await deleteSupplier(token, supplier.id);
+      await masterDelete(token, "vendors", String(supplier.id));
       void trackEvent({
         action: "supplier_deleted",
         entityType: "supplier",

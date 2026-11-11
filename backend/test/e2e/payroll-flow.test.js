@@ -44,6 +44,23 @@ test("E2E payroll flow: run -> payslips -> GL post", async (t) => {
   assert.ok(slips.rows[0].n >= 1);
   assert.ok(Number(slips.rows[0].net) > 0);
 
+  await assert.rejects(
+    () => payroll.approvePayrollRun({ companyId: ctx.companyId, userId: ctx.userId, runId: run.run_id }),
+    /creator cannot approve/,
+  );
+  const approved = await payroll.approvePayrollRun({
+    companyId: ctx.companyId,
+    userId: ctx.reviewerId,
+    runId: run.run_id,
+  });
+  assert.equal(approved.status, "approved");
+  const locked = await payroll.lockPayrollRun({
+    companyId: ctx.companyId,
+    userId: ctx.reviewerId,
+    runId: run.run_id,
+  });
+  assert.equal(locked.status, "locked");
+
   const posted = await payroll.postPayrollToGl({
     companyId: ctx.companyId,
     userId: ctx.userId,
@@ -73,14 +90,6 @@ test("E2E payroll flow: run -> payslips -> GL post", async (t) => {
     [ctx.companyId],
   );
   assert.ok(bank.rowCount > 0);
-  const approver = await pool.query(
-    `SELECT id FROM erp_users
-     WHERE company_id = $1 AND id <> $2 AND status = 'active' AND is_deleted = FALSE
-     ORDER BY created_at LIMIT 1`,
-    [ctx.companyId, ctx.userId],
-  );
-  assert.ok(approver.rowCount > 0);
-
   const payment = await remittances.createPayment({
     companyId: ctx.companyId,
     userId: ctx.userId,
@@ -96,7 +105,7 @@ test("E2E payroll flow: run -> payslips -> GL post", async (t) => {
   );
   const postedRemittance = await remittances.postPayment({
     companyId: ctx.companyId,
-    userId: approver.rows[0].id,
+    userId: ctx.reviewerId,
     paymentId: payment.id,
   });
   assert.equal(postedRemittance.remittance_status, "paid");

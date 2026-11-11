@@ -14,6 +14,21 @@ Retrieved: 2026-11-07
 
 The three PDFs were downloaded from the linked KRA publication URLs and text-extracted locally for review on the retrieval date above. Their published revision is April 2023; confirm with KRA that these remain the operative specifications before production certification.
 
+## Extracted OSCU operations (2026-11-09)
+
+The official OSCU Specification v2.0 PDF was fetched from the KRA URL above and text-extracted locally on 2026-11-09. It identifies these exact v2.0 operations:
+
+- Code refresh: `POST /selectCodeList`, request `tin`, `bhfId`, `cmcKey`, `lastReqDt`; response `data.clsList[]` with `cdCls`, `cdClsNm`, and nested `dtlList[]` (`cd`, `cdNm`, `cdDesc`, `useYn`, optional user-defined fields).
+- Item classification lookup: `POST /selectItemClsList`, same request envelope; response `data.itemClsList[]` with `itemClsCd`, `itemClsNm`, `itemClsLvl`, optional `taxTyCd`, and `useYn`.
+- Item registration: `POST /saveItem` (singular in the April 2023 v2.0 PDF), with `tin`, `bhfId`, `cmcKey`, `itemClsCd`, `itemCd`, `itemTyCd`, `itemNm`, `orgnNatCd`, `pkgUnitCd`, `qtyUnitCd`, `taxTyCd`, `dftPrc`, `isrcAplcbYn`, `useYn`, and registration/modifier IDs/names. The Phase 5 checklist calls this `saveItems` (plural); obtain KRA confirmation of the operative method name before production.
+- Sales transaction: `POST /saveTrnsSalesOsdc`. Required request fields include trader invoice number, numeric invoice number, original invoice number, receipt/payment/status codes, sale and confirmation dates, taxable and tax totals by A-E, total amounts, and `itemList[]`. Item lines include item sequence, KRA item classification/code, quantity/package units, quantity, unit price, supply/discount amounts, tax type, taxable amount, tax and total.
+- Purchase lookup/save: `POST /selectTrnsPurchaseSalesList` and `POST /insertTrnsPurchase` in the detailed v2.0 API tables. The Phase 5 prompt refers to `selectTrnsPurchaseSalesList` and `savePurchases`; confirm whether a newer API version changes the save operation before production.
+- Stock operations: `POST /saveStockMaster` and `POST /insertStockIO` in the detailed v2.0 API tables. The Phase 5 prompt calls the stock operation `saveStockItems`; confirm the current endpoint name during KRA sandbox vetting. Stock in/out requests require stable `sarNo`/`orgSarNo` numbering and documented movement codes.
+- v2.0 code tables list sale receipt `S`, sale credit note `R`; payment means `01` cash, `02` credit, `03` cash/credit, `04` bank check, `05` debit/credit card, `06` mobile money, `07` other; credit-note reason codes `01` missing quantity, `02` missing data, `03` damaged, `04` wasted, `05` raw-material shortage, `06` refund. These are document revision values, not confirmation of current company mappings.
+- Code list IDs/names and tax types are returned by KRA; validation should use synchronized active values and not hard-code assumed class identifiers. The PDF has inconsistent example tax rates elsewhere, so synchronized taxpayer-specific code data remains authoritative.
+
+These are documented v2.0 facts only. KRA must confirm the current method names, list freshness semantics, required fields and code values during sandbox vetting.
+
 ## Findings
 
 - KRA describes System-to-System integration through an API and offers OSCU and VSCU. KRA describes OSCU for invoicing systems that are always online and VSCU for bulk invoicing that is not always online.

@@ -8,6 +8,10 @@ const integrationSettings = require("../../services/integrationSettingsService")
 const etimsIntegration = require("../../services/etimsIntegrationService");
 const mpesa = require("../../services/mpesaService");
 const notificationOutbox = require("../../services/notificationOutboxService");
+const etimsItems = require("../../services/etimsItemService");
+const mpesaStatements = require("../../services/mpesaStatementService");
+const mpesaB2c = require("../../services/mpesaB2cService");
+const { getOpsStatus } = require("../../services/opsStatusService");
 
 const router = express.Router();
 router.post("/integrations/mpesa/callback", async (req, res) => {
@@ -33,6 +37,7 @@ router.get("/integrations/:provider/settings", requirePermission("foundation.vie
       companyId: req.user.company_id,
       provider: req.params.provider,
       branchId: req.query.branch_id || null,
+      environment: req.query.environment || "sandbox",
     });
     return res.json(settings || {
       provider: req.params.provider,
@@ -44,6 +49,32 @@ router.get("/integrations/:provider/settings", requirePermission("foundation.vie
     });
   } catch (error) {
     return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/:provider/production-certification", requirePermission("integrations.production_certify"), async (req, res) => {
+  try {
+    const certification = await integrationSettings.certifyProductionIntegration({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      provider: req.params.provider,
+      checklist: req.body?.checklist,
+    });
+    return res.status(201).json(certification);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/notifications/:provider/rotate-delivery-token", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    return res.status(201).json(await integrationSettings.rotateNotificationDeliveryToken({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      provider: req.params.provider,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to rotate notification delivery token" });
   }
 });
 
@@ -101,6 +132,40 @@ router.post("/integrations/etims/test-connection", requirePermission("foundation
     }));
   } catch (error) {
     return res.status(502).json({ error: error.message });
+  }
+});
+
+router.post("/integrations/etims/reference-data/refresh", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    return res.json(await etimsItems.refreshEtimsReferenceData({
+      companyId: req.user.company_id,
+      branchId: req.body?.branch_id || null,
+      lastReqDt: req.body?.last_req_dt || null,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to refresh KRA eTIMS reference data" });
+  }
+});
+
+router.get("/integrations/etims/reference-data/status", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    return res.json({ lists: await etimsItems.listEtimsReferenceSyncStatus({ companyId: req.user.company_id }) });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load eTIMS reference status" });
+  }
+});
+
+router.post("/integrations/etims/items/register", requirePermission("master_data.edit"), async (req, res) => {
+  try {
+    const result = await etimsItems.enqueueEtimsItemRegistrations({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      itemIds: Array.isArray(req.body?.item_ids) ? req.body.item_ids : null,
+      dryRun: req.body?.dry_run === true,
+    });
+    return res.status(req.body?.dry_run ? 200 : 202).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to prepare eTIMS item registration" });
   }
 });
 
@@ -162,7 +227,7 @@ router.get("/import/:id", requirePermission("master_data.view"), async (req, res
   return res.json(result.rows[0]);
 });
 
-router.post("/integrations/etims/invoices/:invoiceId/submit", requirePermission("sales.create"), async (req, res) => {
+router.post("/integrations/etims/invoices/:invoiceId/submit", requirePermission("sales.invoice.post"), async (req, res) => {
   try {
     const result = await integration.queueEtimsInvoice({
       companyId: req.user.company_id,
@@ -175,6 +240,41 @@ router.post("/integrations/etims/invoices/:invoiceId/submit", requirePermission(
   }
 });
 
+router.get("/integrations/etims/exceptions", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    const submissions = await integration.getEtimsExceptions({
+      companyId: req.user.company_id,
+      limit: req.query.limit,
+    });
+    return res.json({ submissions });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load eTIMS exceptions" });
+  }
+});
+
+router.get("/integrations/exceptions", requirePermission("reports.view"), async (req,res)=>{
+  try{
+    return res.json({exceptions:await integration.getEtimsExceptions({companyId:req.user.company_id,limit:req.query.limit})});
+  }catch(error){return res.status(400).json({error:error.message||"Unable to load integration exceptions"});}
+});
+
+router.post("/integrations/etims/events/:id/retry", requirePermission("integrations.retry"), async (req, res) => {
+  try {
+    return res.json(await integration.retryEtimsEvent({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      eventId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to retry eTIMS event" });
+  }
+});
+
+router.post("/integrations/etims/invoices/:id/retry", requirePermission("integrations.retry"), async (req,res)=>{
+  try{return res.json(await integration.retryEtimsInvoice({companyId:req.user.company_id,invoiceId:req.params.id,userId:req.user.id}));}
+  catch(error){return res.status(400).json({error:error.message||"Unable to retry eTIMS invoice"});}
+});
+
 router.get("/integrations/etims/invoices/:invoiceId", requirePermission("sales.view"), async (req, res) => {
   const submission = await integration.getEtimsSubmission({
     companyId: req.user.company_id,
@@ -184,7 +284,7 @@ router.get("/integrations/etims/invoices/:invoiceId", requirePermission("sales.v
   return res.json(submission);
 });
 
-router.post("/integrations/mpesa/invoices/:invoiceId/stk-push", requirePermission("sales.create"), async (req, res) => {
+router.post("/integrations/mpesa/invoices/:invoiceId/stk-push", requirePermission("sales.receipt.create"), async (req, res) => {
   try {
     const result = await mpesa.createStkRequest({
       companyId: req.user.company_id,
@@ -209,6 +309,107 @@ router.get("/integrations/mpesa/requests/:id", requirePermission("sales.view"), 
   return res.json(request);
 });
 
+router.get("/integrations/mpesa/unallocated-payments", requirePermission("sales.view"), async (req, res) => {
+  try {
+    return res.json({ transactions: await mpesa.getUnallocatedMpesaTransactions({
+      companyId: req.user.company_id,
+      limit: req.query.limit,
+    }) });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load unallocated M-Pesa payments" });
+  }
+});
+
+router.post("/integrations/mpesa/unallocated-payments/:id/allocate", requirePermission("sales.receipt.create"), async (req, res) => {
+  try {
+    return res.json(await mpesa.allocateMpesaTransaction({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      transactionId: req.params.id,
+      customerId: req.body?.customer_id || null,
+      invoiceId: req.body?.invoice_id || null,
+      allocations: req.body?.allocations || [],
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to allocate M-Pesa payment" });
+  }
+});
+
+router.post("/integrations/mpesa/unallocated-payments/:id/reject", requirePermission("sales.receipt.approve"), async (req, res) => {
+  try {
+    return res.json(await mpesa.rejectMpesaTransaction({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      transactionId: req.params.id,
+      reason: req.body?.reason,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to reject M-Pesa payment" });
+  }
+});
+
+router.post("/integrations/mpesa/statements/import", requirePermission("sales.receipt.approve"),
+  express.text({ type: ["text/csv", "application/csv"], limit: "10mb" }), async (req, res) => {
+    try {
+      const csvText = typeof req.body === "string" ? req.body : req.body?.csv;
+      const result = await mpesaStatements.importMpesaStatement({
+        companyId: req.user.company_id,
+        userId: req.user.id,
+        statementReference: req.body?.statement_reference || req.get("x-statement-reference"),
+        csvText,
+        fileName: req.body?.file_name || null,
+      });
+      return res.status(201).json(result);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || "Unable to import M-Pesa statement" });
+    }
+  });
+
+router.get("/integrations/mpesa/statements/:id/variance", requirePermission("sales.view"), async (req, res) => {
+  try {
+    const report = await mpesaStatements.getMpesaStatementVariance({ companyId: req.user.company_id, importId: req.params.id });
+    if (!report) return res.status(404).json({ error: "M-Pesa statement import not found" });
+    return res.json(report);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load M-Pesa statement variance" });
+  }
+});
+
+router.post("/integrations/mpesa/refunds/prepare", requirePermission("sales.credit_note.create"), async (req, res) => {
+  try {
+    const result = await mpesaB2c.prepareB2cRefund({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      creditNoteId: req.body?.credit_note_id,
+      phone: req.body?.phone,
+      idempotencyKey: req.get("idempotency-key") || req.body?.idempotency_key,
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to prepare M-Pesa refund" });
+  }
+});
+
+router.get("/integrations/mpesa/refunds", requirePermission("sales.view"), async (req, res) => {
+  try {
+    return res.json({ refunds: await mpesaB2c.listB2cRefundRequests({ companyId: req.user.company_id, limit: req.query.limit }) });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load M-Pesa refund requests" });
+  }
+});
+
+router.post("/integrations/mpesa/refunds/:id/approve", requirePermission("sales.credit_note.approve"), async (req, res) => {
+  try {
+    return res.json(await mpesaB2c.approveAndReleaseB2cRefund({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      requestId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to approve M-Pesa refund" });
+  }
+});
+
 router.post("/notifications/send", requireAnyPermission("foundation.edit", "sales.create"), async (req, res) => {
   try {
     const result = await notificationOutbox.enqueueNotification({
@@ -226,6 +427,72 @@ router.post("/notifications/send", requireAnyPermission("foundation.edit", "sale
   }
 });
 
+router.get("/notifications/templates", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    return res.json({ templates: await notificationOutbox.listNotificationTemplates({ companyId: req.user.company_id }) });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to load notification templates" });
+  }
+});
+
+router.put("/notifications/templates/:code", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    const template = await notificationOutbox.saveNotificationTemplate({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      code: req.params.code,
+      channel: req.body?.channel,
+      subject: req.body?.subject,
+      body: req.body?.body,
+    });
+    return res.json(template);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to save notification template" });
+  }
+});
+
+router.post("/notifications/send-template", requireAnyPermission("foundation.edit", "sales.create"), async (req, res) => {
+  try {
+    const result = await notificationOutbox.enqueueTemplatedNotification({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      code: req.body?.template_code,
+      destination: req.body?.to,
+      variables: req.body?.variables || {},
+      idempotencyKey: req.get("idempotency-key") || req.body?.idempotency_key,
+    });
+    return res.status(result.queued ? 202 : 200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to queue notification" });
+  }
+});
+
+router.post("/notifications/opt-outs", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    return res.status(201).json(await notificationOutbox.addNotificationOptOut({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      channel: req.body?.channel,
+      destination: req.body?.destination,
+      reason: req.body?.reason,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to add notification opt-out" });
+  }
+});
+
+router.delete("/notifications/opt-outs", requirePermission("foundation.edit"), async (req, res) => {
+  try {
+    return res.json(await notificationOutbox.removeNotificationOptOut({
+      companyId: req.user.company_id,
+      channel: req.body?.channel,
+      destination: req.body?.destination,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to remove notification opt-out" });
+  }
+});
+
 router.get("/notifications/:id", requireAnyPermission("foundation.view", "sales.view"), async (req, res) => {
   const notification = await notificationOutbox.getNotification({
     companyId: req.user.company_id,
@@ -233,6 +500,14 @@ router.get("/notifications/:id", requireAnyPermission("foundation.view", "sales.
   });
   if (!notification) return res.status(404).json({ error: "Notification not found" });
   return res.json(notification);
+});
+
+router.get("/status", requirePermission("foundation.view"), async (req, res) => {
+  try {
+    return res.json(await getOpsStatus({ companyId: req.user.company_id }));
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unable to load platform health status" });
+  }
 });
 
 router.get("/jobs", requirePermission("foundation.view"), async (req, res) => {

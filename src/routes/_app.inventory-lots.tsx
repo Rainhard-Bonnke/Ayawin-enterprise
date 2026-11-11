@@ -13,8 +13,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
-import { changeInventoryLotQuarantine, fetchInventoryLotEvents, fetchInventoryLots, fetchMasterItems, fetchWarehouses, reconcileOpeningLots, type BackendInventoryLot, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
-import { v1Api } from "@/lib/api-v1";
+import { type BackendInventoryLot, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/inventory-lots")({
@@ -42,21 +42,21 @@ function InventoryLotsPage() {
   const [actionReason, setActionReason] = useState("");
   const [savingAction, setSavingAction] = useState(false);
   const [historyLot, setHistoryLot] = useState<BackendInventoryLot | null>(null);
-  const [lotEvents, setLotEvents] = useState<Awaited<ReturnType<typeof fetchInventoryLotEvents>>>([]);
+  const [lotEvents, setLotEvents] = useState<Array<{ id: string; event_type: string; quantity: number; reason: string; created_at: string; created_by_name?: string }>>([]);
   const canReconcile = user?.role === "Admin" || user?.permissions?.includes("procurement.approve");
   const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
-    try { setRows(await fetchInventoryLots(token, showExpired)); }
+    try { setRows(await v1Api.inventory.lots(token, showExpired) as BackendInventoryLot[]); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Unable to load stock lots"); }
     finally { setLoading(false); }
   }, [token, showExpired]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!token) return;
-    void Promise.all([fetchMasterItems(token, "", 2000), fetchWarehouses(token)]).then(([itemRows, warehouseRows]) => {
-      setItems(itemRows.filter((item) => item.is_active));
-      setWarehouses(warehouseRows.filter((warehouse) => warehouse.is_active));
+    void Promise.all([v1Api.master.items(token, 2000), v1Api.master.warehouses(token)]).then(([itemRows, warehouseRows]) => {
+      setItems(itemRows.map(normalizeMasterItem).filter((item) => item.is_active));
+      setWarehouses(warehouseRows.map(normalizeMasterWarehouse).filter((warehouse) => warehouse.is_active));
     }).catch((error) => toast.error(error instanceof Error ? error.message : "Unable to load lot reconciliation setup"));
   }, [token]);
   useEffect(() => {
@@ -85,7 +85,7 @@ function InventoryLotsPage() {
     }
     setSavingOpening(true);
     try {
-      const result = await reconcileOpeningLots(token, { warehouse_id: warehouseId, item_id: itemId, notes: openingNote, lines: payload });
+      const result = await v1Api.inventory.reconcileOpeningLots(token, { warehouse_id: warehouseId, item_id: itemId, notes: openingNote, lines: payload });
       toast.success(`Reconciled ${result.lot_count} opening lots for ${result.stock_quantity} units.`);
       setItemId(""); setOpeningNote(""); setOpeningLots([{ batch_no: "", expiry_date: "", quantity: "", unit_cost: "" }]); await load();
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to reconcile opening lots"); }
@@ -100,7 +100,7 @@ function InventoryLotsPage() {
     if (!token || !lotAction || !actionReason.trim() || Number(actionQuantity) <= 0) { toast.error("Enter a positive quantity and a reason."); return; }
     setSavingAction(true);
     try {
-      await changeInventoryLotQuarantine(token, lotAction.lot.id, lotAction.action, Number(actionQuantity), actionReason);
+      await v1Api.inventory.setLotQuarantine(token, lotAction.lot.id, lotAction.action, Number(actionQuantity), actionReason);
       toast.success(lotAction.action === "quarantine" ? "Lot quantity quarantined." : "Quarantined quantity released.");
       setLotAction(null); await load();
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to update lot quarantine"); }
@@ -108,7 +108,7 @@ function InventoryLotsPage() {
   };
   const showLotHistory = async (lot: BackendInventoryLot) => {
     if (!token) return;
-    try { setLotEvents(await fetchInventoryLotEvents(token, lot.id)); setHistoryLot(lot); }
+    try { setLotEvents(await v1Api.inventory.lotEvents(token, lot.id)); setHistoryLot(lot); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Unable to load lot event history"); }
   };
 

@@ -66,6 +66,26 @@ router.get("/supplier-bills", requirePermission("procurement.view"), async (req,
   return res.json(result.rows);
 });
 
+router.get("/supplier-bills/tax-review", requirePermission("tax.view"), async (req, res) => {
+  const result = await pool.query(
+    `SELECT b.id, b.bill_no, b.supplier_invoice_no, b.bill_date, b.status,
+            b.evidence_status, b.etims_invoice_no, b.etims_receipt_signature,
+            v.vendor_code, v.name AS vendor_name,
+            COUNT(l.id)::int AS line_count,
+            COALESCE(SUM(l.claimable_vat), 0) AS claimable_vat,
+            COALESCE(SUM(l.non_claimable_vat), 0) AS non_claimable_vat
+     FROM erp_supplier_bills b
+     JOIN erp_vendors v ON v.id = b.vendor_id AND v.company_id = b.company_id
+     LEFT JOIN erp_supplier_bill_lines l ON l.bill_id = b.id AND l.company_id = b.company_id
+     WHERE b.company_id = $1 AND b.is_deleted = FALSE
+       AND b.evidence_status IN ('unverified', 'rejected')
+     GROUP BY b.id, v.id
+     ORDER BY b.bill_date, b.bill_no`,
+    [req.user.company_id],
+  );
+  return res.json(result.rows);
+});
+
 router.get("/supplier-bills/:id", requirePermission("procurement.view"), async (req, res) => {
   const bill = await pool.query(
     `SELECT b.*, v.vendor_code, v.name AS vendor_name, v.tax_id AS supplier_pin,
@@ -97,10 +117,29 @@ router.post("/supplier-bills", requirePermission("procurement.create"), async (r
       notes: req.body.notes,
       purchaseOrderId: req.body.purchase_order_id,
       goodsReceiptId: req.body.goods_receipt_id,
+      etimsInvoiceNo: req.body.etims_invoice_no,
+      etimsReceiptSignature: req.body.etims_receipt_signature,
+      permissions: req.user.permissions || [],
     });
     return res.status(201).json(bill);
   } catch (error) {
     return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/supplier-bills/:id/verify-evidence", requirePermission("tax.approve"), async (req, res) => {
+  try {
+    const result = await accountsPayable.verifySupplierBillEvidence({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      billId: req.params.id,
+      etimsInvoiceNo: req.body?.etims_invoice_no,
+      etimsReceiptSignature: req.body?.etims_receipt_signature,
+      verificationNote: req.body?.verification_note,
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to verify supplier invoice evidence" });
   }
 });
 

@@ -4,12 +4,24 @@ const pool = require("../../db");
 const tokenService = require("../../services/tokenService");
 const userService = require("../../services/userService");
 const mfaService = require("../../services/mfaService");
+const {
+  REFRESH_COOKIE,
+  readCookie,
+  isValidCsrfRequest,
+  setSessionCookies,
+  ensureCsrfCookie,
+  clearSessionCookies,
+} = require("../../services/authCookieService");
 const { logAudit } = require("../../services/auditService");
 const { authenticateErp, getClientIp } = require("../../middleware/erpAuth");
 
 const router = express.Router();
 
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS) || 5;
+
+router.get("/csrf", (req, res) => {
+  return res.json({ csrf_token: ensureCsrfCookie(req, res) });
+});
 
 router.post("/login", async (req, res) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
@@ -108,9 +120,10 @@ router.post("/login", async (req, res) => {
       userAgent: req.headers["user-agent"],
     });
 
+    const csrfToken = setSessionCookies(res, refreshToken);
     return res.json({
       access_token: accessToken,
-      refresh_token: refreshToken,
+      csrf_token: csrfToken,
       token_type: "Bearer",
       expires_in: process.env.JWT_ACCESS_EXPIRES || "15m",
       user: userService.sanitizeUser(user),
@@ -122,30 +135,46 @@ router.post("/login", async (req, res) => {
 });
 
 router.post("/refresh", async (req, res) => {
-  const refreshToken = typeof req.body?.refresh_token === "string" ? req.body.refresh_token : "";
+  const refreshToken = readCookie(req, REFRESH_COOKIE);
   if (!refreshToken) {
-    return res.status(400).json({ error: "refresh_token is required" });
+    clearSessionCookies(res);
+    return res.status(401).json({ error: "Invalid refresh token" });
+  }
+  if (!isValidCsrfRequest(req)) {
+    return res.status(403).json({ error: "CSRF validation failed" });
   }
 
   try {
     const row = await tokenService.findRefreshToken(refreshToken);
     if (!row) {
+      clearSessionCookies(res);
       return res.status(401).json({ error: "Invalid refresh token" });
     }
     if (row.revoked_at) {
       await tokenService.revokeUserRefreshTokens(row.user_id);
       await logAudit({ companyId: row.company_id, userId: row.user_id, entityType: "erp_refresh_tokens",
         entityId: row.token_id, action: "refresh_token_reuse_detected", ipAddress: getClientIp(req) });
+      clearSessionCookies(res);
       return res.status(401).json({ error: "Invalid refresh token" });
     }
-    if (row.expires_at <= new Date() || row.status !== "active") return res.status(401).json({ error: "Invalid refresh token" });
+    if (row.expires_at <= new Date() || row.status !== "active") {
+      clearSessionCookies(res);
+      return res.status(401).json({ error: "Invalid refresh token" });
+    }
 
     const user = await userService.findUserById(row.user_id);
-    if (!user) return res.status(401).json({ error: "User not found" });
-    if (user.status !== "active") return res.status(401).json({ error: "User is inactive" });
+    if (!user) {
+      clearSessionCookies(res);
+      return res.status(401).json({ error: "User not found" });
+    }
+    if (user.status !== "active") {
+      clearSessionCookies(res);
+      return res.status(401).json({ error: "User is inactive" });
+    }
     const ip = getClientIp(req);
     if (!(await userService.checkIpWhitelist(user, ip))) return res.status(403).json({ error: "Access denied from this IP address" });
     if (row.session_type === "pos" && user.role_name !== "POS Operator") {
+      clearSessionCookies(res);
       return res.status(401).json({ error: "POS session is no longer valid" });
     }
     if (row.session_type === "pos") user.permissions = tokenService.permissionsForSession(user, "pos");
@@ -159,10 +188,11 @@ router.post("/refresh", async (req, res) => {
       sessionType: row.session_type,
     });
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken), stored.id);
+    const csrfToken = setSessionCookies(res, newRefresh);
 
     return res.json({
       access_token: tokenService.generateAccessToken(user, { sessionType: row.session_type }),
-      refresh_token: newRefresh,
+      csrf_token: csrfToken,
       token_type: "Bearer",
     });
   } catch (err) {
@@ -176,7 +206,10 @@ router.post("/refresh", async (req, res) => {
 });
 
 router.post("/logout", authenticateErp, async (req, res) => {
-  const refreshToken = typeof req.body?.refresh_token === "string" ? req.body.refresh_token : "";
+  if (!isValidCsrfRequest(req)) {
+    return res.status(403).json({ error: "CSRF validation failed" });
+  }
+  const refreshToken = readCookie(req, REFRESH_COOKIE);
   if (refreshToken) {
     await tokenService.revokeRefreshToken(tokenService.hashToken(refreshToken));
   }
@@ -189,6 +222,7 @@ router.post("/logout", authenticateErp, async (req, res) => {
     ipAddress: getClientIp(req),
     userAgent: req.headers["user-agent"],
   });
+  clearSessionCookies(res);
   return res.json({ ok: true });
 });
 
@@ -244,7 +278,6 @@ router.patch("/profile", authenticateErp, async (req, res) => {
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
     if (full_name || phone || locale) {
       await client.query(
         `UPDATE erp_users

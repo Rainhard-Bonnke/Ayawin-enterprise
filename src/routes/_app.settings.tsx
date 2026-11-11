@@ -7,9 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
-import { fetchWarehouses, type BackendWarehouse } from "@/lib/api";
-import { useEffect } from "react";
-import { KES } from "@/lib/format";
+import { normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
+import { useEffect, useMemo, useState } from "react";
 import {
   Table,
   TableBody,
@@ -20,7 +19,6 @@ import {
 } from "@/components/ui/table";
 import { SearchBar } from "@/components/SearchBar";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
-import { useState } from "react";
 import { toast } from "sonner";
 import { trackEvent } from "@/lib/event-tracker";
 
@@ -37,22 +35,55 @@ function SettingsPage() {
     Array<{ id: string; name: string; location: string; manager: string }>
   >([]);
   const [warehouseQ, setWarehouseQ] = useState("");
+  const [etimsSettings, setEtimsSettings] = useState<Record<string, unknown> | null>(null);
+  const [mpesaSettings, setMpesaSettings] = useState<Record<string, unknown> | null>(null);
+  const [templates, setTemplates] = useState<Array<Record<string, unknown>>>([]);
+  const [templateCode, setTemplateCode] = useState("invoice_overdue");
+  const [templateChannel, setTemplateChannel] = useState("email");
+  const [templateSubject, setTemplateSubject] = useState("Invoice follow-up");
+  const [templateBody, setTemplateBody] = useState("Hello {{customer_name}}, your invoice {{invoice_number}} is due.");
+
+  const maskedToken = useMemo(() => {
+    const value = String((mpesaSettings?.public_config as Record<string, unknown> | undefined)?.callbackBaseUrl || "");
+    if (!value) return "Not configured";
+    return value.replace(/https?:\/\//, "").replace(/\b([A-Za-z0-9._%+-]+)@/, "***@");
+  }, [mpesaSettings]);
 
   useEffect(() => {
     if (!token) return;
-    void fetchWarehouses(token)
-      .then((rows: BackendWarehouse[]) => {
+    void v1Api.master.warehouses(token)
+      .then((rows) => {
         if (!rows.length) return;
         setWarehouseRows(
-          rows.map((w) => ({
-            id: String(w.id),
-            name: w.name,
-            location: w.address,
-            manager: w.manager || "—",
-          })),
+          rows.map((row) => {
+            const warehouse = normalizeMasterWarehouse(row);
+            return {
+              id: warehouse.id,
+              name: warehouse.name,
+              location: warehouse.address,
+              manager: warehouse.manager || "—",
+            };
+          }),
         );
       })
       .catch(() => undefined);
+
+    void Promise.all([
+      v1Api.integrations.providerSettings(token, "etims", "sandbox").catch(() => null),
+      v1Api.integrations.providerSettings(token, "mpesa", "sandbox").catch(() => null),
+      v1Api.integrations.notificationTemplates(token).catch(() => ({ templates: [] })),
+    ]).then(([etims, mpesa, templatesResult]) => {
+      setEtimsSettings(etims as Record<string, unknown> | null);
+      setMpesaSettings(mpesa as Record<string, unknown> | null);
+      setTemplates((templatesResult as { templates?: Array<Record<string, unknown>> }).templates || []);
+      const first = ((templatesResult as { templates?: Array<Record<string, unknown>> }).templates || [])[0];
+      if (first) {
+        setTemplateCode(String(first.template_code || "invoice_overdue"));
+        setTemplateChannel(String(first.channel || "email"));
+        setTemplateSubject(String(first.subject_template || ""));
+        setTemplateBody(String(first.message_template || ""));
+      }
+    });
   }, [token]);
 
   const filteredWarehouses = warehouseRows.filter((w) =>
@@ -64,6 +95,53 @@ function SettingsPage() {
     if (["company", "tax", "warehouses", "notifications", "security"].includes(nextTab))
       setTab(nextTab);
   }, [hash]);
+
+  const handleEtimsInitialize = async () => {
+    if (!token) return;
+    try {
+      const result = await v1Api.integrations.initializeEtims(token, { environment: "sandbox" });
+      setEtimsSettings((prev) => ({ ...(prev || {}), last_result: result }));
+      toast.success("eTIMS device initialised");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to initialise eTIMS");
+    }
+  };
+
+  const handleEtimsTest = async () => {
+    if (!token) return;
+    try {
+      const result = await v1Api.integrations.testEtimsConnection(token, { environment: "sandbox" });
+      setEtimsSettings((prev) => ({ ...(prev || {}), test_result: result }));
+      toast.success("eTIMS connection test passed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "eTIMS connection test failed");
+    }
+  };
+
+  const handleRotateMpesaToken = async () => {
+    if (!token) return;
+    try {
+      const result = await v1Api.integrations.rotateMpesaCallbackToken(token, { environment: "sandbox" });
+      setMpesaSettings((prev) => ({ ...(prev || {}), callback: result }));
+      toast.success("Callback token rotated");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to rotate callback token");
+    }
+  };
+
+  const handleTemplateSave = async () => {
+    if (!token) return;
+    try {
+      await v1Api.integrations.saveNotificationTemplate(token, templateCode, {
+        channel: templateChannel,
+        subject: templateSubject,
+        body: templateBody,
+      });
+      toast.success("Notification template saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save template");
+    }
+  };
 
   return (
     <div>
@@ -88,43 +166,57 @@ function SettingsPage() {
         </TabsList>
 
         <TabsContent value="company" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Company Profile</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2">
-              <Field label="Company Name" value="Ayawin Stock Solution Ltd" />
-              <Field label="Company PIN" value="P051999999Z" />
-              <Field label="VAT Registration" value="0123456789" />
-              <Field label="ETR / TIMS Serial" value="KRACU0010000123" />
-              <Field label="Phone" value="+254 711 100 200" />
-              <Field label="Email" value="info@ayawinenterprise.co.ke" />
-              <Field
-                label="Physical Address"
-                value="Industrial Area, Nairobi"
-                className="sm:col-span-2"
-              />
-              <Field label="Financial Year Start" value="01/01/2026" />
-              <Field label="Default Currency" value="KES" />
-              <div className="sm:col-span-2">
-                <Button
-                  onClick={() => {
-                    void trackEvent({
-                      action: "settings_company_saved",
-                      entityType: "settings",
-                      entityId: "company",
-                      details: { company: "Ayawin Stock Solution Ltd", currency: "KES" },
-                      scenario: "reports",
-                      context: { tab: "company" },
-                    });
-                    toast.success("Company profile saved");
-                  }}
-                >
-                  Save changes
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Company Profile</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <Field label="Company Name" value="Ayawin Stock Solution Ltd" />
+                <Field label="Company PIN" value="P051999999Z" />
+                <Field label="VAT Registration" value="0123456789" />
+                <Field label="ETR / TIMS Serial" value="KRACU0010000123" />
+                <Field label="Phone" value="+254 711 100 200" />
+                <Field label="Email" value="info@ayawinenterprise.co.ke" />
+                <Field
+                  label="Physical Address"
+                  value="Industrial Area, Nairobi"
+                  className="sm:col-span-2"
+                />
+                <Field label="Financial Year Start" value="01/01/2026" />
+                <Field label="Default Currency" value="KES" />
+                <div className="sm:col-span-2">
+                  <Button
+                    onClick={() => {
+                      void trackEvent({
+                        action: "settings_company_saved",
+                        entityType: "settings",
+                        entityId: "company",
+                        details: { company: "Ayawin Stock Solution Ltd", currency: "KES" },
+                        scenario: "reports",
+                        context: { tab: "company" },
+                      });
+                      toast.success("Company profile saved");
+                    }}
+                  >
+                    Save changes
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Integration Health</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <InfoRow label="eTIMS" value={String(etimsSettings?.provider_mode || "disabled")} />
+                <InfoRow label="M-Pesa" value={String(mpesaSettings?.provider_mode || "disabled")} />
+                <InfoRow label="Email" value="sandbox" />
+                <InfoRow label="SMS" value="sandbox" />
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="tax" className="mt-4">
@@ -208,86 +300,146 @@ function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="notifications" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Notifications</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Toggle label="Email when invoice goes overdue" defaultOn />
-              <Toggle label="Email daily sales summary at 18:00 EAT" defaultOn />
-              <Toggle label="SMS driver on delivery assignment" defaultOn />
-              <Toggle label="Alert when stock falls below minimum" defaultOn />
-              <Toggle label="Alert 30 days before product expiry" defaultOn />
-              <Toggle label="Weekly KRA filing reminder" />
-              <div className="flex flex-wrap gap-2 pt-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    void trackEvent({
-                      action: "settings_notifications_saved",
-                      entityType: "settings",
-                      entityId: "notifications",
-                      details: { warehouseQ, enabled: true },
-                      scenario: "reports",
-                      context: { tab: "notifications" },
-                    });
-                    toast.success("Notification settings saved");
-                  }}
-                >
-                  Save notifications
-                </Button>
-                <ConfirmActionDialog
-                  title="Restore backup?"
-                  description="This will replace the current environment settings with the last saved backup."
-                  confirmLabel="Restore"
-                  onConfirm={() => {
-                    void trackEvent({
-                      action: "settings_backup_restore_queued",
-                      entityType: "settings",
-                      entityId: "backup",
-                      details: { requested: true },
-                      scenario: "reports",
-                      context: { tab: "notifications" },
-                    });
-                    toast.success("Backup restore queued");
-                  }}
-                >
-                  <Button variant="destructive">Restore backup</Button>
-                </ConfirmActionDialog>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Notifications</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Toggle label="Email when invoice goes overdue" defaultOn />
+                <Toggle label="Email daily sales summary at 18:00 EAT" defaultOn />
+                <Toggle label="SMS driver on delivery assignment" defaultOn />
+                <Toggle label="Alert when stock falls below minimum" defaultOn />
+                <Toggle label="Alert 30 days before product expiry" defaultOn />
+                <Toggle label="Weekly KRA filing reminder" />
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      void trackEvent({
+                        action: "settings_notifications_saved",
+                        entityType: "settings",
+                        entityId: "notifications",
+                        details: { warehouseQ, enabled: true },
+                        scenario: "reports",
+                        context: { tab: "notifications" },
+                      });
+                      toast.success("Notification settings saved");
+                    }}
+                  >
+                    Save notifications
+                  </Button>
+                  <ConfirmActionDialog
+                    title="Restore backup?"
+                    description="This will replace the current environment settings with the last saved backup."
+                    confirmLabel="Restore"
+                    onConfirm={() => {
+                      void trackEvent({
+                        action: "settings_backup_restore_queued",
+                        entityType: "settings",
+                        entityId: "backup",
+                        details: { requested: true },
+                        scenario: "reports",
+                        context: { tab: "notifications" },
+                      });
+                      toast.success("Backup restore queued");
+                    }}
+                  >
+                    <Button variant="destructive">Restore backup</Button>
+                  </ConfirmActionDialog>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Notification Templates</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Template code</Label>
+                    <Input value={templateCode} onChange={(e) => setTemplateCode(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Channel</Label>
+                    <Input value={templateChannel} onChange={(e) => setTemplateChannel(e.target.value)} />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Email subject</Label>
+                  <Input value={templateSubject} onChange={(e) => setTemplateSubject(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Template body</Label>
+                  <textarea
+                    className="min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={templateBody}
+                    onChange={(e) => setTemplateBody(e.target.value)}
+                  />
+                </div>
+                <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                  Variables supported: {{customer_name}}, {{invoice_number}}, {{amount_due}}, {{company_name}}
+                </div>
+                <Button onClick={() => void handleTemplateSave()}>Save template</Button>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="security" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Security and Access</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2">
-              <Toggle label="Require 2FA for admins and accountants" defaultOn />
-              <Toggle label="Log every destructive action" defaultOn />
-              <Toggle label="Restrict modules by role" defaultOn />
-              <Toggle label="Enable password rotation reminders" />
-              <div className="sm:col-span-2 flex flex-wrap gap-2 pt-2">
-                <Button
-                  onClick={() => {
-                    void trackEvent({
-                      action: "settings_security_saved",
-                      entityType: "settings",
-                      entityId: "security",
-                      details: { twoFactor: true, moduleRestrictions: true },
-                      scenario: "reports",
-                      context: { tab: "security" },
-                    });
-                    toast.success("Security settings saved");
-                  }}
-                >
-                  Save security settings
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Security and Access</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <Toggle label="Require 2FA for admins and accountants" defaultOn />
+                <Toggle label="Log every destructive action" defaultOn />
+                <Toggle label="Restrict modules by role" defaultOn />
+                <Toggle label="Enable password rotation reminders" />
+                <div className="sm:col-span-2 flex flex-wrap gap-2 pt-2">
+                  <Button
+                    onClick={() => {
+                      void trackEvent({
+                        action: "settings_security_saved",
+                        entityType: "settings",
+                        entityId: "security",
+                        details: { twoFactor: true, moduleRestrictions: true },
+                        scenario: "reports",
+                        context: { tab: "security" },
+                      });
+                      toast.success("Security settings saved");
+                    }}
+                  >
+                    Save security settings
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>eTIMS & M-Pesa settings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-md border p-3">
+                  <div className="mb-2 flex items-center justify-between"><span className="font-medium">eTIMS</span><span className="text-xs text-muted-foreground">{String(etimsSettings?.provider_mode || "disabled")}</span></div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={() => void handleEtimsInitialize()}>Initialise</Button>
+                    <Button variant="outline" onClick={() => void handleEtimsTest()}>Test connection</Button>
+                  </div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="mb-2 flex items-center justify-between"><span className="font-medium">M-Pesa callback</span><span className="text-xs text-muted-foreground">{String(mpesaSettings?.provider_mode || "disabled")}</span></div>
+                  <InfoRow label="Callback URL" value={maskedToken} />
+                  <div className="mt-3 flex gap-2">
+                    <Button variant="outline" onClick={() => void handleRotateMpesaToken()}>Rotate token</Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
       </Tabs>
     </div>
@@ -299,6 +451,15 @@ function Field({ label, value, className }: { label: string; value: string; clas
     <div className={`space-y-1.5 ${className ?? ""}`}>
       <Label>{label}</Label>
       <Input defaultValue={value} />
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium text-right break-all">{value}</span>
     </div>
   );
 }

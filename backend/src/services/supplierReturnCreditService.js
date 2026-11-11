@@ -6,6 +6,43 @@ const { roundMoney, sumMoney, toMinorUnits } = require("../lib/money");
 
 const money = roundMoney;
 
+function splitVatByClaimableRatio(vatAmount, claimableVatRatio) {
+  const vat = money(vatAmount);
+  const ratio = Number(claimableVatRatio);
+  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+    throw new Error("Source supplier bill has an invalid claimable VAT ratio");
+  }
+  const claimableVat = money(vat * ratio);
+  return {
+    claimableVat,
+    nonClaimableVat: money(vat - claimableVat),
+  };
+}
+
+function buildSupplierCreditVatReversalLines({ claimableVatAmount, nonClaimableVatAmount,
+  claimableAccountId, nonClaimableAccountId, invoiceNo }) {
+  const lines = [];
+  if (Number(claimableVatAmount) > 0) {
+    if (!claimableAccountId) throw new Error("Supplier credit claimable VAT account is required");
+    lines.push({
+      account_id: claimableAccountId,
+      debit: 0,
+      credit: Number(claimableVatAmount),
+      description: `Reverse claimable input VAT on invoice ${invoiceNo}`,
+    });
+  }
+  if (Number(nonClaimableVatAmount) > 0) {
+    if (!nonClaimableAccountId) throw new Error("Supplier credit non-claimable VAT account is required");
+    lines.push({
+      account_id: nonClaimableAccountId,
+      debit: 0,
+      credit: Number(nonClaimableVatAmount),
+      description: `Reverse non-claimable VAT cost on invoice ${invoiceNo}`,
+    });
+  }
+  return lines;
+}
+
 async function getSetup(companyId) {
   const [claims, bills, sourceLines, accounts] = await Promise.all([
     pool.query(
@@ -169,8 +206,10 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
     );
     if (!dates.rows[0].received_after_return || !dates.rows[0].received_after_issue) throw new Error("Credit note issue/received dates must follow the posted supplier return");
     const sourceResult = await client.query(
-      `SELECT bl.id, bl.quantity, bl.net_amount, bl.tax_amount, bl.tax_rate, bl.goods_receipt_line_id AS receipt_line_id,
-              b.id AS bill_id, b.vendor_id, b.currency_code, b.supplier_invoice_no, b.bill_date, b.status AS bill_status,
+            `SELECT bl.id, bl.quantity, bl.net_amount, bl.tax_amount, bl.tax_rate,
+              bl.claimable_vat_ratio, bl.account_id, bl.goods_receipt_line_id AS receipt_line_id,
+              b.id AS bill_id, b.vendor_id, b.currency_code, b.supplier_invoice_no, b.bill_date,
+              b.status AS bill_status, b.evidence_status,
               grl.item_id, grl.quantity AS receipt_quantity, grl.batch_no, receipt_lot.id AS receipt_lot_id,
               grll.quantity_received AS linked_receipt_quantity, receipt_layer.id AS receipt_layer_id,
               i.lot_tracking_enabled
@@ -243,6 +282,7 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
         || toMinorUnits(tax) > toMinorUnits(Number(source.tax_amount) / Number(source.quantity) * returnedQty)) {
       throw new Error("VAT reversal must match the original invoice line tax rate and remaining deductible input VAT");
     }
+    const vatSplit = splitVatByClaimableRatio(tax, source.claimable_vat_ratio);
     const claimValue = money(Number(dispositionLine.value));
     const claimReserved = await client.query(
       `SELECT COALESCE(SUM(inventory_claim_amount), 0) AS amount,
@@ -283,12 +323,15 @@ async function create({ companyId, user, dispositionId, sourceBillLineId, credit
       `INSERT INTO erp_supplier_return_credit_notes
        (company_id, disposition_id, vendor_id, credit_note_no, credit_date, received_date, reference_no,
         amount, source_bill_line_id, original_invoice_no, returned_quantity, inventory_claim_amount, vat_amount,
+        claimable_vat_ratio, claimable_vat_amount, non_claimable_vat_amount, source_evidence_status,
         allocated_amount, refund_amount, unapplied_amount, refund_bank_account_id, unapplied_account_id,
         refund_reference_no, court_dispute_determined_on, court_case_reference, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,COALESCE($5,CURRENT_DATE),COALESCE($6,CURRENT_DATE),$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$22)
+      VALUES ($1,$2,$3,$4,COALESCE($5,CURRENT_DATE),COALESCE($6,CURRENT_DATE),$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26)
        RETURNING *`,
       [companyId, dispositionId, disposition.vendor_id, noteNo, creditDate || null, receivedDate || null, rma, total,
-        sourceBillLineId, source.supplier_invoice_no, returnedQty, principal, tax, allocated, refund, unapplied,
+        sourceBillLineId, source.supplier_invoice_no, returnedQty, principal, tax,
+        source.claimable_vat_ratio, vatSplit.claimableVat, vatSplit.nonClaimableVat, source.evidence_status,
+        allocated, refund, unapplied,
         (refund > 0 ? refundBankAccountId : null) || null, (unapplied > 0 ? unappliedAccountId : null) || null,
         refundRef, courtDisputeDeterminedOn || null, caseRef, user.id],
     );
@@ -346,10 +389,12 @@ async function post({ companyId, id, user }) {
         || toMinorUnits(credit.amount) !== toMinorUnits(sumMoney([credit.allocated_amount, credit.refund_amount, credit.unapplied_amount]))) {
       throw new Error("Credit note values or settlement split no longer balance");
     }
+    let sourceTaxContext = null;
     if (credit.source_bill_line_id) {
       const sourceResult = await client.query(
-        `SELECT bl.quantity, bl.net_amount, bl.tax_amount, bl.tax_rate, bl.goods_receipt_line_id AS receipt_line_id,
-                b.bill_date, b.supplier_invoice_no, b.vendor_id, b.currency_code,
+        `SELECT bl.quantity, bl.net_amount, bl.tax_amount, bl.tax_rate, bl.claimable_vat_ratio,
+          bl.account_id, bl.non_claimable_vat_account_id, bl.goods_receipt_line_id AS receipt_line_id,
+                b.bill_date, b.supplier_invoice_no, b.vendor_id, b.currency_code, b.evidence_status,
                 grl.item_id, grl.quantity AS receipt_quantity, grl.batch_no,
                 receipt_lot.id AS receipt_lot_id, grll.quantity_received AS linked_receipt_quantity,
                 receipt_layer.id AS receipt_layer_id,
@@ -373,6 +418,7 @@ async function post({ companyId, id, user }) {
       );
       const source = sourceResult.rows[0];
       if (!source || source.supplier_invoice_no !== credit.original_invoice_no) throw new Error("Original supplier tax invoice source no longer matches");
+      sourceTaxContext = source;
       if (source.lot_tracking_enabled && (!source.receipt_lot_id || !source.receipt_layer_id
           || Math.abs(Number(source.linked_receipt_quantity) - Number(source.receipt_quantity)) > 0.00005)) throw new Error("Tracked receipt lot layer lineage no longer matches the source receipt");
       const matchedDisposition = await client.query(
@@ -419,6 +465,12 @@ async function post({ companyId, id, user }) {
           || toMinorUnits(credit.vat_amount) > toMinorUnits(maxVatForQty)
           || toMinorUnits(credit.vat_amount) !== toMinorUnits(money(Number(credit.inventory_claim_amount) * Number(source.tax_rate || 0) / 100))) {
         throw new Error("Return quantity, principal or VAT exceeds the remaining source invoice line amounts");
+      }
+      const sourceVatSplit = splitVatByClaimableRatio(credit.vat_amount, source.claimable_vat_ratio);
+      if (Math.abs(Number(credit.claimable_vat_ratio) - Number(source.claimable_vat_ratio)) > 0.00005
+          || toMinorUnits(credit.claimable_vat_amount) !== toMinorUnits(sourceVatSplit.claimableVat)
+          || toMinorUnits(credit.non_claimable_vat_amount) !== toMinorUnits(sourceVatSplit.nonClaimableVat)) {
+        throw new Error("Supplier credit VAT split no longer matches the original bill line's claimable ratio");
       }
       const timing = await client.query(
         `SELECT $1::date >= $2::date AS note_after_invoice,
@@ -489,15 +541,35 @@ async function post({ companyId, id, user }) {
       journalLines.push({ account_id: account.rows[0].id, debit: Number(credit.unapplied_amount), credit: 0, description: `Unapplied supplier credit ${credit.credit_note_no}` });
     }
     journalLines.push({ account_id: claimAccount.rows[0].id, debit: 0, credit: Number(credit.inventory_claim_amount), description: `Clear supplier return claim ${disposition.disposition_no}` });
-    if (Number(credit.vat_amount) > 0) {
+    let claimableVatAccountId = null;
+    if (Number(credit.claimable_vat_amount) > 0) {
+      const inputVatCode = sourceTaxContext?.evidence_status === "verified" ? "1400" : "1401";
       const inputVat = await client.query(
         `SELECT id FROM erp_chart_of_accounts WHERE company_id = $1 AND account_code = $2
          AND account_type = 'asset' AND is_active = TRUE AND is_deleted = FALSE AND is_postable = TRUE`,
-        [companyId, ACCOUNT_CODES.vatInput],
+        [companyId, inputVatCode],
       );
-      if (!inputVat.rowCount) throw new Error("VAT Input control account 1400 is unavailable for the VAT reversal");
-      journalLines.push({ account_id: inputVat.rows[0].id, debit: 0, credit: Number(credit.vat_amount), description: `Reverse input VAT on invoice ${credit.original_invoice_no}` });
+      if (!inputVat.rowCount) throw new Error(`Input VAT account ${inputVatCode} is unavailable for the supplier credit reversal`);
+      claimableVatAccountId = inputVat.rows[0].id;
     }
+    let nonClaimableAccountId = null;
+    if (Number(credit.non_claimable_vat_amount) > 0) {
+      nonClaimableAccountId = sourceTaxContext?.non_claimable_vat_account_id || sourceTaxContext?.account_id;
+      const nonClaimableAccount = await client.query(
+        `SELECT id FROM erp_chart_of_accounts WHERE id = $1 AND company_id = $2
+         AND is_active = TRUE AND is_deleted = FALSE AND is_postable = TRUE`,
+        [nonClaimableAccountId, companyId],
+      );
+      if (!nonClaimableAccount.rowCount) throw new Error("The original non-claimable VAT cost account is unavailable");
+      nonClaimableAccountId = nonClaimableAccount.rows[0].id;
+    }
+    journalLines.push(...buildSupplierCreditVatReversalLines({
+      claimableVatAmount: credit.claimable_vat_amount,
+      nonClaimableVatAmount: credit.non_claimable_vat_amount,
+      claimableAccountId: claimableVatAccountId,
+      nonClaimableAccountId,
+      invoiceNo: credit.original_invoice_no,
+    }));
     const journal = await gl.createJournalInTransaction(client, {
       companyId, userId: user.id, entryDate: credit.received_date, journalType: "purchase",
       referenceNo: credit.credit_note_no,
@@ -516,9 +588,10 @@ async function post({ companyId, id, user }) {
     }
     await client.query(
       `UPDATE erp_supplier_return_credit_notes SET status = 'posted', journal_id = $3,
-       posted_at = NOW(), posted_by = $4, updated_at = NOW(), updated_by = $4
+        posted_at = NOW(), posted_by = $4, updated_at = NOW(), updated_by = $4,
+        source_evidence_status = COALESCE($5, source_evidence_status)
        WHERE id = $1 AND company_id = $2`,
-      [id, companyId, journal.id, user.id],
+            [id, companyId, journal.id, user.id, sourceTaxContext?.evidence_status || null],
     );
     await logAudit({ client, companyId, userId: user.id, entityType: "erp_supplier_return_credit_notes", entityId: id,
       action: "supplier_return_credit_posted", newValues: { credit_note_no: credit.credit_note_no, disposition_id: credit.disposition_id,
@@ -556,4 +629,12 @@ async function cancel({ companyId, id, user }) {
   finally { client.release(); }
 }
 
-module.exports = { getSetup, list, create, post, cancel };
+module.exports = {
+  getSetup,
+  list,
+  create,
+  post,
+  cancel,
+  splitVatByClaimableRatio,
+  buildSupplierCreditVatReversalLines,
+};

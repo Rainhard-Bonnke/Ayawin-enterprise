@@ -1,4 +1,5 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,24 +42,27 @@ import { Label } from "@/components/ui/label";
 import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { useAuth } from "@/lib/auth";
 import { canPerformSalesAction } from "@/lib/rbac";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   createInvoiceFromSalesOrder,
-  createSalesOrder,
-  cancelSalesOrder,
-  confirmSalesOrder,
   dispatchSalesOrder,
-  fetchCustomers,
-  fetchMasterItems,
-  fetchSalesOrders,
-  fetchSalesOrderDetail,
   fetchSalesAnalytics,
-  fetchWarehouses,
+  fetchSalesOrderDetail,
   type BackendCustomer,
   type BackendMasterItem,
   type BackendSalesOrder,
   type BackendWarehouse,
+  type SalesAnalytics,
+  type SalesOrderDetail,
 } from "@/lib/api";
+import {
+  normalizeMasterCustomer,
+  normalizeMasterItem,
+  normalizeMasterWarehouse,
+  v1Api,
+} from "@/lib/api-v1";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { salesOrderSchema } from "@/lib/schemas/sales";
 
 export const Route = createFileRoute("/_app/sales")({
   component: SalesPage,
@@ -71,43 +75,58 @@ function SalesPage() {
   const canApproveOrder = canPerformSalesAction(user, "sales.order.approve");
   const canPostDelivery = canPerformSalesAction(user, "sales.delivery.post");
   const canCreateInvoice = canPerformSalesAction(user, "sales.invoice.create");
-  const [rows, setRows] = useState<BackendSalesOrder[]>([]);
+  const salesOrdersQuery = useQuery({
+    queryKey: queryKeys.sales.orders(user?.id),
+    queryFn: async () => {
+      const data = await v1Api.sales.orders(token!, 25);
+      const statusMap: Record<string, BackendSalesOrder["status"]> = {
+        draft: "Draft", confirmed: "Confirmed", partial: "Partial", delivered: "Delivered",
+        invoiced: "Invoiced", cancelled: "Cancelled",
+      };
+      return data.map((row) => {
+        const orderStatus = String(row.status || "draft").toLowerCase();
+        return {
+          id: String(row.order_no || row.id),
+          internal_id: String(row.id),
+          date: String(row.order_date || "").slice(0, 10),
+          customer: String(row.customer_name || ""),
+          rep: "—",
+          items: 0,
+          total: Number(row.total_amount || 0),
+          status: statusMap[orderStatus] || "Draft",
+        };
+      });
+    },
+    enabled: Boolean(token),
+  });
+  const rows = salesOrdersQuery.data ?? [];
+  const salesOrdersError = salesOrdersQuery.error;
+  const refetchSalesOrders = salesOrdersQuery.refetch;
   const [warehouseIds, setWarehouseIds] = useState<string[]>([]);
   const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const loading = salesOrdersQuery.isPending;
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string>("all");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [view, setView] = useState(() => hash.replace(/^#/, "") || "orders");
-  const [analytics, setAnalytics] = useState<Awaited<
-    ReturnType<typeof fetchSalesAnalytics>
-  > | null>(null);
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchSalesOrderDetail>> | null>(
-    null,
-  );
+  const [analytics, setAnalytics] = useState<SalesAnalytics | null>(null);
+  const [detail, setDetail] = useState<SalesOrderDetail | null>(null);
   const pageSize = 5;
 
   const reloadSalesOrders = async () => {
     if (!token) return;
-    setLoading(true);
-    try {
-      const data = await fetchSalesOrders(token);
-      setRows(data);
-      setPage(1);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to load sales orders");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
+    await salesOrdersQuery.refetch();
+    setPage(1);
   };
 
   useEffect(() => {
-    void reloadSalesOrders();
-  }, [token]);
+    if (salesOrdersError) {
+      toast.error(salesOrdersError instanceof Error ? salesOrdersError.message : "Unable to load sales orders");
+    }
+  }, [salesOrdersError]);
 
   useEffect(() => {
     const nextView = hash.replace(/^#/, "");
@@ -123,18 +142,18 @@ function SalesPage() {
 
   useEffect(() => {
     if (!token) return;
-    void fetchWarehouses(token)
-      .then((whs) => setWarehouseIds(whs.map((w) => String(w.id))))
+    void v1Api.master.warehouses(token)
+      .then((whs) => setWarehouseIds(whs.map((row) => normalizeMasterWarehouse(row).id)))
       .catch(() => setWarehouseIds([]));
   }, [token]);
 
   useEffect(() => {
     if (!token) return;
     const id = window.setInterval(() => {
-      if (!document.hidden) void reloadSalesOrders();
+      if (!document.hidden) void refetchSalesOrders();
     }, 60000);
     return () => window.clearInterval(id);
-  }, [token]);
+  }, [token, refetchSalesOrders]);
 
   const filtered = rows
     .filter(
@@ -182,7 +201,7 @@ function SalesPage() {
     try {
       let currentStatus = order.status;
       if (currentStatus === "Draft") {
-        const confirmed = await confirmSalesOrder(token, order.internal_id);
+        const confirmed = await v1Api.sales.confirmOrder(token, order.internal_id);
         if (!confirmed.ok) throw new Error("Order confirmation failed.");
         currentStatus = "Confirmed";
       }
@@ -475,7 +494,7 @@ function SalesPage() {
                                   onClick={async () => {
                                     if (!token) return;
                                     try {
-                                      const result = await confirmSalesOrder(token, o.internal_id!);
+                                      const result = await v1Api.sales.confirmOrder(token, o.internal_id!);
                                       if (result.ok) {
                                         toast.success(`${o.id} confirmed`);
                                         await reloadSalesOrders();
@@ -534,7 +553,7 @@ function SalesPage() {
                                     event.stopPropagation();
                                     if (!token || !window.confirm(`Cancel ${o.id}? Any remaining stock reservation will be released.`)) return;
                                     try {
-                                      await cancelSalesOrder(token, o.internal_id!);
+                                      await v1Api.sales.cancelOrder(token, o.internal_id!);
                                       toast.success(`${o.id} cancelled and remaining reserved stock released`);
                                       await reloadSalesOrders();
                                     } catch (error) {
@@ -671,8 +690,15 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
   useEffect(() => {
     if (!open || !token) return;
     setFormLoading(true);
-    void Promise.all([fetchCustomers(token), fetchMasterItems(token), fetchWarehouses(token)])
-      .then(([cust, items, whs]) => {
+    void Promise.all([
+      v1Api.master.customers(token),
+      v1Api.master.items(token),
+      v1Api.master.warehouses(token),
+    ])
+      .then(([customerRows, itemRows, warehouseRows]) => {
+        const cust = customerRows.map(normalizeMasterCustomer) as BackendCustomer[];
+        const items = itemRows.map(normalizeMasterItem) as BackendMasterItem[];
+        const whs = warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[];
         setApiCustomers(cust);
         setApiItems(items);
         setApiWarehouses(whs);
@@ -696,15 +722,23 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!token || !customerId || !warehouseId || !itemId || qty < 1) return;
+    if (!token) return;
     const price = Number(unitPrice) || selectedItem?.standard_cost || 0;
-    if (price <= 0) {
-      notify("Invalid price", "Enter a unit price greater than zero.");
+    const validation = salesOrderSchema.safeParse({
+      customer_id: customerId,
+      warehouse_id: warehouseId,
+      order_date: orderDate,
+      required_date: requiredDate,
+      notes: notes.trim(),
+      lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
+    });
+    if (!validation.success) {
+      notify("Invalid sales order", validation.error.issues[0]?.message || "Check the order details and try again.");
       return;
     }
     setSaving(true);
     try {
-      const created = await createSalesOrder(token, {
+      const created = await v1Api.sales.createOrder(token, {
         customer_id: customerId,
         warehouse_id: warehouseId,
         order_date: orderDate,
@@ -712,20 +746,22 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         notes: notes.trim() || undefined,
         lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
       });
-      notify("Sales order created", `${created.id} saved to the database.`);
+      const createdId = String(created.order_no || created.id);
+      const createdTotal = Number(created.total_amount || 0);
+      notify("Sales order created", `${createdId} saved to the database.`);
       void trackEvent({
         action: "sales_order_created",
         entityType: "sales_order",
-        entityId: created.id,
+        entityId: createdId,
         details: { customerId, itemId, qty, orderDate, requiredDate },
         scenario: "sales",
-        context: { customerId, itemId, qty, total: created.total },
+        context: { customerId, itemId, qty, total: createdTotal },
       });
       if (selectedCustomer?.email) {
         if (token) void triggerEmailNotification(token, {
           recipient: selectedCustomer.email,
-          subject: `Order ${created.id}`,
-          message: `Sales order ${created.id} has been created for ${selectedCustomer.name}.`,
+          subject: `Order ${createdId}`,
+          message: `Sales order ${createdId} has been created for ${selectedCustomer.name}.`,
         });
       }
       await onCompleted();

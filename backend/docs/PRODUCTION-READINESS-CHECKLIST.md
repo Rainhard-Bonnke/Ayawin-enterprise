@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-Last updated: 2026-05-28
+Last updated: 2026-11-09
 
 This checklist tracks production readiness for the ERP modules and platform services.
 
@@ -48,6 +48,13 @@ Status legend:
 - Payment GL posting (cash vs AR): PASS
 - Full reconciliation workflows (bank, suspense, adjustments): PARTIAL
 - Financial period close controls and lock windows: PARTIAL
+- Supplier VAT split, pending-evidence posting, manual reclassification, and source-linked credit reversal: PARTIAL (legacy journal review and accountant validation remain)
+- VAT3 internal working paper with CSV/XLSX, GL variance, maker-checker approval, and period locks: PARTIAL (not an iTax filing integration)
+- Foreign-currency posting and revaluation: FAIL
+- Withholding-tax categories and remittance workflow: FAIL (KRA rates documented; company categories not selected)
+- Statutory payroll upload files and P9 cards: FAIL (current agency templates not publicly retrievable; see `PAYROLL-STATUTORY-FILES.md`)
+- Fixed-asset acquisition/depreciation/disposal postings: FAIL
+- Payment batches, AP tolerance exceptions, and supplier statement reconciliation: FAIL
 
 ## 5) HR & Payroll
 
@@ -82,6 +89,7 @@ Status legend:
 - E2E journey coverage:
   - order -> delivery -> invoice -> payment -> receipt: PASS (critical chain in CI covers payment + receipt allocation + verification hash integrity)
   - procurement -> receipt -> stock update: PASS
+   - supplier bill VAT split, reclassification, and receipt-matched posting: PASS (focused E2E)
   - HR payroll run -> export artifacts: FAIL
 
 ## Priority Remaining Work (Execution Order)

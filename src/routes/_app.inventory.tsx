@@ -38,16 +38,17 @@ import { trackEvent } from "@/lib/event-tracker";
 import { KES, fmtDate } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import {
-  createStockTransfer,
-  fetchInventoryItems,
-  fetchMasterItems,
-  fetchWarehouses,
   type BackendInventoryItem,
   type BackendMasterItem,
   type BackendWarehouse,
 } from "@/lib/api";
 import { toast } from "sonner";
-import { v1Api, type InventoryFinding } from "@/lib/api-v1";
+import {
+  normalizeMasterItem,
+  normalizeMasterWarehouse,
+  v1Api,
+  type InventoryFinding,
+} from "@/lib/api-v1";
 
 export const Route = createFileRoute("/_app/inventory")({
   component: InventoryPage,
@@ -83,7 +84,7 @@ function InventoryPage() {
   const loadCatalog = async () => {
     if (!token) return [];
     try {
-      const catalog = await fetchMasterItems(token);
+      const catalog = (await v1Api.master.items(token)).map(normalizeMasterItem) as BackendMasterItem[];
       setMasterItems(catalog);
       return catalog;
     } catch {
@@ -96,9 +97,31 @@ function InventoryPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [inv, whs] = await Promise.all([fetchInventoryItems(token), fetchWarehouses(token)]);
-      setItems(inv);
-      setWarehouses(whs);
+      const [stockRows, warehouseRows] = await Promise.all([
+        v1Api.inventory.stock(token, 1000),
+        v1Api.master.warehouses(token),
+      ]);
+      setItems(stockRows.map((row, index) => ({
+        item_id: String(row.item_id),
+        product_id: index + 1,
+        name: String(row.item_name || row.name || ""),
+        sku: String(row.item_code || ""),
+        barcode: null,
+        category: String(row.category || ""),
+        brand: null,
+        abv: 0,
+        pack_size: null,
+        cost_price: Number(row.avg_unit_cost || 0),
+        retail_price: Number(row.avg_unit_cost || 0) * 1.4,
+        min_stock: Number(row.reorder_point || 0),
+        warehouse_id: String(row.warehouse_id),
+        warehouse: String(row.warehouse_name || row.warehouse_code || ""),
+        stock: Number(row.quantity || 0),
+        reserved_quantity: Number(row.reserved_quantity || 0),
+        available_quantity: Number(row.available_quantity ?? row.quantity ?? 0),
+        expiry_date: row.nearest_expiry_date ? String(row.nearest_expiry_date).slice(0, 10) : null,
+      })));
+      setWarehouses(warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[]);
       setInventoryError(false);
     } catch {
       setItems([]);
@@ -251,7 +274,7 @@ function InventoryPage() {
     }
     setSaving(true);
     try {
-      const result = await createStockTransfer(token, {
+      const result = await v1Api.inventory.dispatchTransfer(token, {
         from_warehouse_id: transferForm.from_warehouse_id,
         to_warehouse_id: transferForm.to_warehouse_id,
         lines: [{ item_id: transferForm.item_id, quantity: qty }],

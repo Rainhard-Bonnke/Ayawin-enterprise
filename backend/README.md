@@ -23,16 +23,40 @@ That starts:
 
 ## API endpoints
 
+The platform exposes the ERP API under `/api/v1`. Retired `/api/*` business routes return `410 Gone`.
+
 - `GET /health` - health check
-- `POST /api/auth/login` - login
-- `GET /api/auth/me` - current user
-- `GET /api/products` - products
-- `GET /api/customers` - customers
-- `GET /api/users` - users
-- `POST /api/sales/product-sale` - transactional sale workflow
-- `GET /api/dashboard/summary` - live dashboard aggregates
+- `GET /ready` - readiness check
+- `GET /api/v1/auth/me` - current user
+- `GET /api/v1/master/customers` - customers
+- `GET /api/v1/procurement/purchase-orders` - purchase orders
+- `GET /api/v1/sales/orders` - sales orders
 
 ## Backup and restore
+
+Replace the company's product catalog from the supplied certified workbook after reviewing a dry run:
+
+```bash
+npm run db:import-certified-products -- --dry-run
+npm run db:backup
+npm run db:import-certified-products -- --confirm-replace-catalog
+```
+
+The import preserves the workbook's category, SKU, product name, package size, volume, origin, type, packaging tier, stock-status label, and retail price. The workbook contains no cost, tax, or physical stock quantities; those values are deliberately not inferred. Configure the correct tax treatment and opening inventory before selling or posting stock.
+
+Before a legacy-data migration or cleanup, run the read-only reconciliation audit:
+
+```bash
+npm run db:legacy-audit --prefix backend
+```
+
+It reports table counts and aggregate reconciliation checks without selecting personal fields or modifying data. A nonzero document delta or missing source detail requires business reconciliation before the guarded legacy cleanup migration can proceed.
+
+Refresh planner statistics and reclaim eligible dead tuples without deleting live records:
+
+```bash
+npm run db:maintain
+```
 
 Create a PostgreSQL backup:
 

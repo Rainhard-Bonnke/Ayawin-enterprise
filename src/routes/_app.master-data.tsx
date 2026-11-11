@@ -28,27 +28,6 @@ import { SearchBar } from "@/components/SearchBar";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
 import { KES } from "@/lib/format";
 import {
-  createMasterItem,
-  createCustomer,
-  createSupplier,
-  deleteCustomer,
-  createWarehouse,
-  deleteMasterItem,
-  deleteSupplier,
-  deleteWarehouse,
-  fetchCustomers,
-  fetchMasterItems,
-  fetchTaxGroups,
-  fetchTaxRates,
-  createTaxRateVersion,
-  downloadUnmappedEtimsItems,
-  fetchWarehouses,
-  fetchSuppliers,
-  importMasterData,
-  updateMasterItem,
-  updateCustomer,
-  updateSupplier,
-  updateWarehouse,
   type BackendCustomer,
   type BackendMasterItem,
   type BackendTaxGroup,
@@ -56,6 +35,18 @@ import {
   type BackendSupplier,
   type BackendWarehouse,
 } from "@/lib/api";
+import {
+  apiV1FetchBlob,
+  importRows,
+  masterCreate,
+  masterDelete,
+  masterList,
+  masterUpdate,
+  normalizeMasterCustomer,
+  normalizeMasterItem,
+  normalizeMasterWarehouse,
+  v1Api,
+} from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
@@ -100,15 +91,89 @@ function MasterDataPage() {
     try {
       if (requestedTab === "items") {
         const [itemRows, groupRows] = await Promise.all([
-          fetchMasterItems(token, "", 2000), fetchTaxGroups(token),
+          masterList(token, "items", "", 2000),
+          v1Api.master.taxGroups(token),
         ]);
-        setItems(itemRows);
-        setTaxGroups(groupRows);
+        setItems(itemRows.map(normalizeMasterItem) as BackendMasterItem[]);
+        setTaxGroups(groupRows.map((row) => ({
+          id: String(row.id),
+          code: String(row.code),
+          name: String(row.name),
+          tax_treatment: String(row.tax_treatment || "standard") as BackendTaxGroup["tax_treatment"],
+        })));
       }
-      if (requestedTab === "tax") setTaxRates(await fetchTaxRates(token));
-      if (requestedTab === "warehouses") setWarehouses(await fetchWarehouses(token));
-      if (requestedTab === "customers") setCustomers(await fetchCustomers(token));
-      if (requestedTab === "suppliers") setSuppliers(await fetchSuppliers(token));
+      if (requestedTab === "tax") {
+        const rows = await v1Api.master.taxRates(token);
+        setTaxRates(rows.map((row) => ({
+          id: String(row.id),
+          code: String(row.code),
+          name: String(row.name),
+          rate: Number(row.rate || 0),
+          tax_type: String(row.tax_type || "vat"),
+          basis: String(row.basis || "percentage"),
+          effective_from: String(row.effective_from || "").slice(0, 10),
+          effective_to: row.effective_to ? String(row.effective_to).slice(0, 10) : null,
+          tax_groups: Array.isArray(row.tax_groups) ? row.tax_groups.map(String) : [],
+        })));
+      }
+      if (requestedTab === "warehouses") {
+        setWarehouses(
+          (await v1Api.master.warehouses(token)).map((row) => ({
+            id: String((row as Record<string, unknown>).id ?? ""),
+            code: String((row as Record<string, unknown>).code ?? ""),
+            name: String((row as Record<string, unknown>).name ?? ""),
+            address: String(
+              (row as Record<string, unknown>).address_line1 ??
+                (row as Record<string, unknown>).address ??
+                "",
+            ),
+            city: ((row as Record<string, unknown>).city as string | null) ?? null,
+            manager: ((row as Record<string, unknown>).manager_name as string | null) ?? null,
+            phone: ((row as Record<string, unknown>).phone as string | null) ?? null,
+            is_active: (row as Record<string, unknown>).is_active !== false,
+          })) as BackendWarehouse[],
+        );
+      }
+      if (requestedTab === "customers") {
+        setCustomers(
+          (await v1Api.master.customers(token)).map((row) => ({
+            id: String((row as Record<string, unknown>).id ?? ""),
+            name: String((row as Record<string, unknown>).name ?? ""),
+            kra_pin: String(
+              (row as Record<string, unknown>).tax_id ??
+                (row as Record<string, unknown>).kra_pin ??
+                "",
+            ),
+            contact:
+              ((row as Record<string, unknown>).contact_name as string | null) ??
+              ((row as Record<string, unknown>).phone as string | null) ??
+              null,
+            email: ((row as Record<string, unknown>).email as string | null) ?? null,
+            address: ((row as Record<string, unknown>).address_line1 as string | null) ?? null,
+            location: ((row as Record<string, unknown>).city as string | null) ?? null,
+            type: ((row as Record<string, unknown>).customer_type as string | null) ?? null,
+            segment: ((row as Record<string, unknown>).customer_type as string | null) ?? null,
+            credit_limit: Number((row as Record<string, unknown>).credit_limit ?? 0),
+            payment_terms:
+              ((row as Record<string, unknown>).payment_terms as string | null) ?? null,
+            balance: 0,
+          })) as BackendCustomer[],
+        );
+      }
+      if (requestedTab === "suppliers") {
+        const rows = await v1Api.master.vendors(token);
+        setSuppliers(rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          kra_pin: row.tax_id || "",
+          contact: row.contact_name,
+          email: row.email,
+          phone: row.phone,
+          payment_terms: null,
+          credit_limit: Number(row.credit_limit || 0),
+          balance: 0,
+        })));
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load master data");
       setItems([]);
@@ -197,7 +262,7 @@ function MasterDataPage() {
         return;
       }
 
-      const result = await importMasterData(token, importType, rows, file.name);
+      const result = await importRows(token, importType, rows, file.name);
       toast.success(`Imported ${result.success} of ${result.total} rows`);
       if (result.errors.length) {
         toast.warning(`${result.errors.length} rows failed — check server logs`);
@@ -364,7 +429,7 @@ function TaxSettingsPanel({ rates, token, onSaved }: {
     }
     setSaving(true);
     try {
-      await createTaxRateVersion(token, {
+      await v1Api.master.createTaxRateVersion(token, {
         code, name: `${code} ${Number(rate)}%`, rate: Number(rate), tax_type: "vat", basis: "percentage", effective_from: effectiveFrom,
       });
       toast.success(`${code} ${Number(rate)}% saved from ${effectiveFrom}; prior rate history was retained.`);
@@ -485,12 +550,12 @@ function ItemsPanel({
         etims_tax_type_code: form.etims_tax_type_code || null,
       };
       if (editing) {
-        const updated = await updateMasterItem(token, editing.id, body);
+        const updated = normalizeMasterItem(await masterUpdate(token, "items", editing.id, body)) as BackendMasterItem;
         toast.success("Item updated");
         await onSaved();
         onItemsChange((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
       } else {
-        const created = await createMasterItem(token, { item_code: form.item_code, ...body });
+        const created = normalizeMasterItem(await masterCreate(token, "items", { item_code: form.item_code, ...body })) as BackendMasterItem;
         toast.success("Item created");
         onItemsChange((prev) => {
           const exists = prev.some(
@@ -517,7 +582,7 @@ function ItemsPanel({
           <Button variant="outline" className="mr-2" disabled={!token} onClick={async () => {
             if (!token) return;
             try {
-              const blob = await downloadUnmappedEtimsItems(token);
+              const blob = await apiV1FetchBlob("/master/items/etims-unmapped.csv", {}, token);
               const url = URL.createObjectURL(blob);
               const anchor = document.createElement("a");
               anchor.href = url;
@@ -649,7 +714,7 @@ function ItemsPanel({
                       confirmLabel="Delete"
                       onConfirm={async () => {
                         if (!token) return;
-                        await deleteMasterItem(token, row.id);
+                        await masterDelete(token, "items", row.id);
                         toast.success("Item deleted");
                         await onSaved();
                       }}
@@ -734,12 +799,47 @@ function PartyPanel({
           : { phone: form.contact || undefined }),
       };
       if (editing) {
-        if (isCustomer) await updateCustomer(token, editing.id, payload);
-        else await updateSupplier(token, editing.id, payload);
+        if (isCustomer) {
+          await masterUpdate(token, "customers", String(editing.id), {
+            name: payload.name,
+            tax_id: payload.kra_pin,
+            email: payload.email,
+            phone: payload.contact,
+            credit_limit: payload.credit_limit,
+          });
+        } else {
+          await masterUpdate(token, "vendors", String(editing.id), {
+            name: payload.name,
+            tax_id: payload.kra_pin,
+            contact_name: payload.contact,
+            email: payload.email,
+            phone: payload.phone,
+            credit_limit: payload.credit_limit,
+          });
+        }
         toast.success(`${isCustomer ? "Customer" : "Supplier"} updated`);
       } else {
-        if (isCustomer) await createCustomer(token, payload);
-        else await createSupplier(token, payload);
+        if (isCustomer) {
+          await masterCreate(token, "customers", {
+            customer_code: payload.kra_pin || `C-${Date.now()}`,
+            name: payload.name,
+            tax_id: payload.kra_pin,
+            email: payload.email,
+            phone: payload.contact,
+            city: payload.location,
+            credit_limit: payload.credit_limit,
+          });
+        } else {
+          await masterCreate(token, "vendors", {
+            vendor_code: payload.kra_pin || `V-${Date.now()}`,
+            name: payload.name,
+            tax_id: payload.kra_pin,
+            contact_name: payload.contact,
+            email: payload.email,
+            phone: payload.phone,
+            credit_limit: payload.credit_limit,
+          });
+        }
         toast.success(`${isCustomer ? "Customer" : "Supplier"} created`);
       }
       setOpen(false);
@@ -751,8 +851,7 @@ function PartyPanel({
 
   const remove = async (row: BackendCustomer | BackendSupplier) => {
     if (!token) return;
-    if (isCustomer) await deleteCustomer(token, row.id);
-    else await deleteSupplier(token, row.id);
+    await masterDelete(token, isCustomer ? "customers" : "vendors", String(row.id));
     toast.success(`${isCustomer ? "Customer" : "Supplier"} deleted`);
     await onSaved();
   };
@@ -928,10 +1027,10 @@ function WarehousesPanel({
         phone: form.phone || undefined,
       };
       if (editing) {
-        await updateWarehouse(token, String(editing.id), body);
+        await masterUpdate(token, "warehouses", String(editing.id), body);
         toast.success("Warehouse updated");
       } else {
-        await createWarehouse(token, body);
+        await masterCreate(token, "warehouses", body);
         toast.success("Warehouse created");
       }
       setOpen(false);
@@ -1040,7 +1139,7 @@ function WarehousesPanel({
                       confirmLabel="Delete"
                       onConfirm={async () => {
                         if (!token) return;
-                        await deleteWarehouse(token, String(row.id));
+                        await masterDelete(token, "warehouses", String(row.id));
                         toast.success("Warehouse deleted");
                         await onSaved();
                       }}

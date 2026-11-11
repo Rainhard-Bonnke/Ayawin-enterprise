@@ -3,6 +3,27 @@ const assert = require("node:assert/strict");
 const { getTestContext, getVendorId, getCustomerId, getItemId, pool } = require("./helpers");
 const reporting = require("../../src/services/reportingService");
 
+test("E2E reports: as-at AR/AP aging and stock valuation execute with GL reconciliation", async () => {
+  const ctx = await getTestContext();
+  const asOf = "2099-12-31";
+
+  const [ar, ap, stock] = await Promise.all([
+    reporting.runStandardReport(ctx.companyId, "ar_aging", { as_of: asOf }),
+    reporting.runStandardReport(ctx.companyId, "ap_aging", { as_of: asOf }),
+    reporting.runStandardReport(ctx.companyId, "stock_valuation", { as_of: asOf }),
+  ]);
+
+  assert.equal(ar.as_of, asOf);
+  assert.equal(ap.as_of, asOf);
+  assert.equal(stock.as_of, asOf);
+  assert.ok(Array.isArray(ar.rows));
+  assert.ok(Array.isArray(ap.rows));
+  assert.ok(Array.isArray(stock.rows));
+  assert.equal(Number.isFinite(stock.reconciliation.variance), true);
+  assert.equal(Number.isFinite(stock.reconciliation.inventory_control_balance), true);
+  assert.throws(() => reporting.normalizeAsOfDate("2026-02-30"), /valid YYYY-MM-DD/);
+});
+
 test("E2E reporting metrics: AP uses bill balances and OTIF checks due date and quantity", async () => {
   const ctx = await getTestContext();
   const vendorId = await getVendorId(ctx.companyId);
@@ -32,7 +53,7 @@ test("E2E reporting metrics: AP uses bill balances and OTIF checks due date and 
     );
     poIds.push(po.rows[0].id);
     const apAfter = await reporting.METRICS.ap_outstanding(ctx.companyId);
-    assert.equal(apAfter - apBefore, 60);
+    assert.ok(Math.abs((apAfter - apBefore) - 60) < 0.005);
 
     const today = await pool.query("SELECT CURRENT_DATE::text AS today");
     const dueDate = today.rows[0].today;

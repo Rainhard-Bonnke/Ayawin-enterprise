@@ -3,6 +3,8 @@ const pool = require("../../db");
 const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
 const reporting = require("../../services/reportingService");
 const inventory = require("../../services/inventoryService");
+const scheduledReports = require("../../services/scheduledReportService");
+const fs = require("fs");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -140,12 +142,55 @@ router.get("/bi/:dataset", requirePermission("reports.export"), async (req, res)
 router.post("/schedules", requirePermission("reports.export"), async (req, res) => {
   const { saved_report_id, cron_expression, recipients, format } = req.body || {};
   if (!saved_report_id) return res.status(400).json({ error: "saved_report_id required" });
+  try {
+    const report = await pool.query(
+      `SELECT id FROM erp_saved_reports WHERE id = $1 AND company_id = $2
+       AND is_active = TRUE AND is_deleted = FALSE`,
+      [saved_report_id, req.user.company_id],
+    );
+    if (!report.rowCount) return res.status(404).json({ error: "Saved report not found" });
+    const cron = cron_expression || "0 8 1 * *";
+    const outputFormat = format || "csv";
+    const emailRecipients = recipients;
+    if (!Array.isArray(emailRecipients) || !emailRecipients.length || emailRecipients.length > 50
+      || emailRecipients.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email)))) {
+      return res.status(400).json({ error: "Enter one to 50 valid email recipients" });
+    }
+    if (!["csv", "pdf", "xlsx"].includes(outputFormat)) return res.status(400).json({ error: "format must be csv, pdf, or xlsx" });
+    const nextRunAt = scheduledReports.getNextScheduledRunAt(cron);
+    const result = await pool.query(
+      `INSERT INTO erp_report_schedules (company_id, saved_report_id, cron_expression, recipients, format, next_run_at, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [req.user.company_id, saved_report_id, cron, emailRecipients, outputFormat, nextRunAt, req.user.id],
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to create report schedule" });
+  }
+});
+
+router.get("/schedules/:id/runs", requirePermission("reports.view"), async (req, res) => {
   const result = await pool.query(
-    `INSERT INTO erp_report_schedules (company_id, saved_report_id, cron_expression, recipients, format, created_by)
-     VALUES ($1,$2,COALESCE($3,'0 8 1 * *'),$4,COALESCE($5,'csv'),$6) RETURNING *`,
-    [req.user.company_id, saved_report_id, cron_expression, recipients || [], format, req.user.id],
+    `SELECT id, schedule_id, saved_report_id, scheduled_for, status, filename,
+            file_size_bytes, recipients, error_message, started_at, completed_at, created_at
+     FROM erp_report_schedule_runs WHERE schedule_id = $1 AND company_id = $2
+     ORDER BY created_at DESC LIMIT 100`,
+    [req.params.id, req.user.company_id],
   );
-  return res.status(201).json(result.rows[0]);
+  return res.json({ runs: result.rows });
+});
+
+router.get("/scheduled-runs/:id/download", requirePermission("reports.export"), async (req, res) => {
+  const run = await pool.query(
+    `SELECT filename, storage_path FROM erp_report_schedule_runs
+     WHERE id = $1 AND company_id = $2 AND status = 'sent'`,
+    [req.params.id, req.user.company_id],
+  );
+  if (!run.rowCount || !run.rows[0].storage_path || !fs.existsSync(run.rows[0].storage_path)) {
+    return res.status(404).json({ error: "Scheduled report file not found or expired" });
+  }
+  res.setHeader("Content-Disposition", `attachment; filename="${String(run.rows[0].filename).replace(/[\"\r\n]/g, "")}"`);
+  return res.sendFile(run.rows[0].storage_path);
 });
 
 module.exports = router;

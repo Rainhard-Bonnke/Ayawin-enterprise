@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Search } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,16 +14,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
-import { toast } from "sonner";
 
 export type RegisterRow = Record<string, unknown>;
 export type RegisterColumn = { key: string; label: string; align?: "left" | "right" };
+const EMPTY_REGISTER_ROWS: RegisterRow[] = [];
 
 export function ResourceRegisterPage({
   title,
   description,
   columns,
   load,
+  queryKey,
   actionLabel,
   actionTo,
   countLabel = "Records",
@@ -30,36 +32,21 @@ export function ResourceRegisterPage({
   title: string;
   description: string;
   columns: RegisterColumn[];
-  load: (token: string) => Promise<RegisterRow[]>;
+  load: (token: string, signal?: AbortSignal) => Promise<RegisterRow[]>;
+  queryKey?: readonly unknown[];
   actionLabel?: string;
   actionTo?: string;
   countLabel?: string;
 }) {
-  const { token } = useAuth();
-  const [rows, setRows] = useState<RegisterRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { token, user } = useAuth();
   const [query, setQuery] = useState("");
-
-  useEffect(() => {
-    let current = true;
-    if (!token) return;
-    setLoading(true);
-    void load(token)
-      .then((data) => {
-        if (current) setRows(data);
-      })
-      .catch((error: unknown) => {
-        if (!current) return;
-        setRows([]);
-        toast.error(error instanceof Error ? error.message : `Unable to load ${title.toLowerCase()}`);
-      })
-      .finally(() => {
-        if (current) setLoading(false);
-      });
-    return () => {
-      current = false;
-    };
-  }, [token, load, title]);
+  const registerQuery = useQuery({
+    queryKey: [...(queryKey ?? ["register", title]), user?.id],
+    queryFn: ({ signal }) => load(token!, signal),
+    enabled: Boolean(token),
+  });
+  const rows = registerQuery.data ?? EMPTY_REGISTER_ROWS;
+  const loading = registerQuery.isPending;
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -101,7 +88,8 @@ export function ResourceRegisterPage({
                     {columns.map((column) => <TableCell key={column.key} className={column.align === "right" ? "text-right tabular-nums" : undefined}>{String(row[column.key] ?? "—")}</TableCell>)}
                   </TableRow>
                 ))}
-                {!loading && filtered.length === 0 && <TableRow><TableCell colSpan={columns.length} className="h-32 text-center text-sm text-muted-foreground">{query ? "No records match your search." : `No ${title.toLowerCase()} records yet.`}</TableCell></TableRow>}
+                {!loading && !registerQuery.isError && filtered.length === 0 && <TableRow><TableCell colSpan={columns.length} className="h-32 text-center text-sm text-muted-foreground">{query ? "No records match your search." : `No ${title.toLowerCase()} records yet.`}</TableCell></TableRow>}
+                {registerQuery.isError && <TableRow><TableCell colSpan={columns.length} className="h-32 text-center text-sm text-destructive">{registerQuery.error instanceof Error ? registerQuery.error.message : `Unable to load ${title.toLowerCase()}`} <Button variant="ghost" size="sm" onClick={() => void registerQuery.refetch()}>Retry</Button></TableCell></TableRow>}
                 {loading && <TableRow><TableCell colSpan={columns.length} className="h-32 text-center text-sm text-muted-foreground">Loading {title.toLowerCase()}…</TableCell></TableRow>}
               </TableBody>
             </Table>

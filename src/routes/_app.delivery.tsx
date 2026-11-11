@@ -29,7 +29,7 @@ import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { fetchSalesDeliveries, type BackendDelivery } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/delivery")({
@@ -39,7 +39,16 @@ export const Route = createFileRoute("/_app/delivery")({
 
 function DeliveryPage() {
   const { token } = useAuth();
-  const [deliveries, setDeliveries] = useState<BackendDelivery[]>([]);
+  const [deliveries, setDeliveries] = useState<Array<{
+    id: string;
+    delivery_no: string;
+    order_no?: string;
+    delivery_date?: string;
+    status?: string;
+    driver_name?: string | null;
+    vehicle_no?: string | null;
+    route?: string | null;
+  }>>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
@@ -48,13 +57,26 @@ function DeliveryPage() {
   const pageSize = 5;
   useEffect(() => {
     if (!token) return;
-    void fetchSalesDeliveries(token)
-      .then(setDeliveries)
+    const controller = new AbortController();
+    void v1Api.sales.deliveries(token, controller.signal)
+      .then((rows) => setDeliveries(rows.map((row) => ({
+        ...row,
+        id: String(row.id),
+        delivery_no: String(row.delivery_no || row.id),
+        order_no: row.order_no ? String(row.order_no) : undefined,
+        delivery_date: row.delivery_date ? String(row.delivery_date).slice(0, 10) : undefined,
+        status: row.status ? String(row.status) : undefined,
+        driver_name: row.driver_name ? String(row.driver_name) : null,
+        vehicle_no: row.vehicle_no ? String(row.vehicle_no) : null,
+        route: row.route ? String(row.route) : null,
+      }))))
       .catch((err) => {
+        if (controller.signal.aborted) return;
         toast.error(err instanceof Error ? err.message : "Unable to load deliveries");
         setDeliveries([]);
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
   }, [token]);
   const filtered = deliveries
     .filter(

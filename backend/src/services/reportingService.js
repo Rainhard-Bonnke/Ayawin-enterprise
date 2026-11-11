@@ -1,5 +1,18 @@
 const pool = require("../db");
 
+function normalizeAsOfDate(value) {
+  if (value === undefined || value === null || value === "") return new Date().toISOString().slice(0, 10);
+  const text = String(value).trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) throw new Error("as_of must be a valid YYYY-MM-DD date");
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    throw new Error("as_of must be a valid YYYY-MM-DD date");
+  }
+  return text;
+}
+
 function kpiStatus(actual, target, warning, critical, higherIsBetter) {
   if (higherIsBetter) {
     if (actual >= target) return "green";
@@ -40,7 +53,7 @@ async function metricApOutstanding(companyId) {
      WHERE company_id = $1 AND status IN ('posted','partial','overdue') AND is_deleted = FALSE`,
     [companyId],
   );
-  return Number(r.rows[0].v);
+  return Math.round((Number(r.rows[0].v) + Number.EPSILON) * 100) / 100;
 }
 
 async function metricStockValue(companyId) {
@@ -237,35 +250,80 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       return { report: reportKey, rows: r.rows };
     }
     case "ar_aging": {
+      const asOf = normalizeAsOfDate(filters.as_of);
       const r = await pool.query(
-        `SELECT invoice_no, c.name AS customer, invoice_date, due_date,
-                GREATEST(total_amount - amount_paid - credited_amount,0) AS outstanding,
+        `SELECT inv.invoice_no, c.name AS customer, inv.invoice_date, inv.due_date,
+                inv.total_amount,
+                COALESCE(receipts.amount, 0) AS paid_as_of,
+                COALESCE(credits.amount, 0) AS credited_as_of,
+                GREATEST(inv.total_amount - COALESCE(receipts.amount, 0) - COALESCE(credits.amount, 0), 0) AS outstanding,
                 CASE
-                  WHEN due_date >= CURRENT_DATE THEN 'current'
-                  WHEN due_date >= CURRENT_DATE - 30 THEN '1-30'
-                  WHEN due_date >= CURRENT_DATE - 60 THEN '31-60'
+                  WHEN inv.due_date >= $2::date THEN 'current'
+                  WHEN inv.due_date >= $2::date - 30 THEN '1-30'
+                  WHEN inv.due_date >= $2::date - 60 THEN '31-60'
                   ELSE '61+'
                 END AS bucket
          FROM erp_customer_invoices inv
-         JOIN erp_customers c ON c.id = inv.customer_id
-         WHERE inv.company_id = $1 AND inv.status IN ('posted','partial','overdue')
-           AND total_amount > amount_paid + credited_amount
-         ORDER BY due_date`,
-        [companyId],
+         JOIN erp_customers c ON c.id = inv.customer_id AND c.company_id = inv.company_id
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(a.amount), 0) AS amount
+           FROM erp_receipt_allocations a
+           JOIN erp_customer_receipts receipt ON receipt.id = a.receipt_id AND receipt.company_id = a.company_id
+           WHERE a.company_id = inv.company_id AND a.invoice_id = inv.id
+             AND receipt.status = 'posted' AND receipt.receipt_date <= $2::date
+         ) receipts ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(n.total_amount - COALESCE(n.refund_amount, 0)), 0) AS amount
+           FROM erp_customer_credit_notes n
+           WHERE n.company_id = inv.company_id AND n.invoice_id = inv.id
+             AND n.status = 'posted' AND n.posted_at::date <= $2::date
+         ) credits ON TRUE
+         WHERE inv.company_id = $1 AND inv.status <> 'draft' AND inv.is_deleted = FALSE
+           AND inv.invoice_date <= $2::date
+           AND inv.total_amount > COALESCE(receipts.amount, 0) + COALESCE(credits.amount, 0)
+         ORDER BY inv.due_date`,
+        [companyId, asOf],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, as_of: asOf, rows: r.rows };
     }
     case "stock_valuation": {
+      const asOf = normalizeAsOfDate(filters.as_of);
       const r = await pool.query(
-        `SELECT w.name AS warehouse, i.item_code, i.name AS item, s.quantity, s.avg_unit_cost,
-                (s.quantity * s.avg_unit_cost) AS value
-         FROM erp_stock_on_hand s
-         JOIN erp_items i ON i.id = s.item_id
-         JOIN erp_warehouses w ON w.id = s.warehouse_id
-         WHERE s.company_id = $1 ORDER BY w.name, i.item_code`,
-        [companyId],
+        `SELECT w.name AS warehouse, i.item_code, i.name AS item,
+                SUM(l.quantity) AS quantity,
+                CASE WHEN SUM(l.quantity) <> 0
+                     THEN SUM(l.quantity * l.unit_cost) / SUM(l.quantity) ELSE 0 END AS avg_unit_cost,
+                SUM(l.quantity * l.unit_cost) AS value
+         FROM erp_stock_ledger l
+         JOIN erp_items i ON i.id = l.item_id AND i.company_id = l.company_id
+         JOIN erp_warehouses w ON w.id = l.warehouse_id AND w.company_id = l.company_id
+         WHERE l.company_id = $1 AND l.movement_date < ($2::date + INTERVAL '1 day')
+         GROUP BY w.id, w.name, i.id, i.item_code, i.name
+         HAVING ABS(SUM(l.quantity)) > 0.00005
+         ORDER BY w.name, i.item_code`,
+        [companyId, asOf],
       );
-      return { report: reportKey, rows: r.rows };
+      const gl = await pool.query(
+        `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS inventory_control_balance
+         FROM erp_journal_lines l
+         JOIN erp_journals j ON j.id = l.journal_id AND j.company_id = l.company_id
+         JOIN erp_chart_of_accounts a ON a.id = l.account_id AND a.company_id = l.company_id
+         WHERE l.company_id = $1 AND j.status = 'posted' AND j.is_deleted = FALSE
+           AND j.entry_date <= $2::date AND a.account_code = '1300'`,
+        [companyId, asOf],
+      );
+      const inventoryValue = r.rows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+      const controlBalance = Number(gl.rows[0].inventory_control_balance || 0);
+      return {
+        report: reportKey,
+        as_of: asOf,
+        rows: r.rows,
+        reconciliation: {
+          stock_ledger_value: inventoryValue,
+          inventory_control_balance: controlBalance,
+          variance: Math.round((inventoryValue - controlBalance) * 100) / 100,
+        },
+      };
     }
     case "payroll_summary": {
       const r = await pool.query(
@@ -290,26 +348,44 @@ async function runStandardReport(companyId, reportKey, filters = {}) {
       return { report: reportKey, rows: r.rows };
     }
     case "ap_aging": {
+      const asOf = normalizeAsOfDate(filters.as_of);
       const r = await pool.query(
         `SELECT b.bill_no, b.supplier_invoice_no, v.name AS vendor,
                 b.bill_date, b.due_date, b.total_amount, b.amount_paid,
-                GREATEST(b.total_amount - b.amount_paid, 0) AS outstanding,
-                GREATEST(CURRENT_DATE - b.due_date, 0)::int AS days_overdue,
+                COALESCE(payments.amount, 0) AS paid_as_of,
+                COALESCE(credits.amount, 0) AS credited_as_of,
+                GREATEST(b.total_amount - COALESCE(payments.amount, 0) - COALESCE(credits.amount, 0), 0) AS outstanding,
+                GREATEST($2::date - b.due_date, 0)::int AS days_overdue,
                 CASE
-                  WHEN b.due_date >= CURRENT_DATE THEN 'current'
-                  WHEN b.due_date >= CURRENT_DATE - 30 THEN '1-30'
-                  WHEN b.due_date >= CURRENT_DATE - 60 THEN '31-60'
-                  WHEN b.due_date >= CURRENT_DATE - 90 THEN '61-90'
+                  WHEN b.due_date >= $2::date THEN 'current'
+                  WHEN b.due_date >= $2::date - 30 THEN '1-30'
+                  WHEN b.due_date >= $2::date - 60 THEN '31-60'
+                  WHEN b.due_date >= $2::date - 90 THEN '61-90'
                   ELSE '91+'
                 END AS bucket
          FROM erp_supplier_bills b
          JOIN erp_vendors v ON v.id = b.vendor_id AND v.company_id = b.company_id
-         WHERE b.company_id = $1 AND b.status IN ('posted','partial','overdue')
-           AND b.is_deleted = FALSE AND b.total_amount > b.amount_paid
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(a.amount), 0) AS amount
+           FROM erp_supplier_payment_allocations a
+           JOIN erp_supplier_payments payment ON payment.id = a.payment_id AND payment.company_id = a.company_id
+           WHERE a.company_id = b.company_id AND a.bill_id = b.id
+             AND payment.status = 'posted' AND payment.payment_date <= $2::date
+         ) payments ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(a.amount), 0) AS amount
+           FROM erp_supplier_return_credit_allocations a
+           JOIN erp_supplier_return_credit_notes note ON note.id = a.credit_note_id AND note.company_id = a.company_id
+           WHERE a.company_id = b.company_id AND a.bill_id = b.id
+             AND note.status = 'posted' AND note.received_date <= $2::date
+         ) credits ON TRUE
+         WHERE b.company_id = $1 AND b.status <> 'draft'
+           AND b.is_deleted = FALSE AND b.bill_date <= $2::date
+           AND b.total_amount > COALESCE(payments.amount, 0) + COALESCE(credits.amount, 0)
          ORDER BY b.due_date, v.name, b.bill_no`,
-        [companyId],
+        [companyId, asOf],
       );
-      return { report: reportKey, rows: r.rows };
+      return { report: reportKey, as_of: asOf, rows: r.rows };
     }
     default:
       throw new Error(`Unknown report: ${reportKey}`);
@@ -354,6 +430,7 @@ module.exports = {
   computeKpis,
   runStandardReport,
   rowsToCsv,
+  normalizeAsOfDate,
   getBiDataset,
   kpiStatus,
   METRICS,

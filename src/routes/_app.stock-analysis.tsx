@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { fetchWarehouses, type BackendWarehouse } from "@/lib/api";
 import { v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
@@ -26,10 +25,12 @@ type AnalysisRow = {
   analysis_status: "stockout" | "below_reorder" | "no_recent_movement" | "healthy";
 };
 
+type AnalysisWarehouse = { id: string; name: string; is_active?: boolean };
+
 function StockAnalysisPage() {
   const { token } = useAuth();
   const [rows, setRows] = useState<AnalysisRow[]>([]);
-  const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
+  const [warehouses, setWarehouses] = useState<AnalysisWarehouse[]>([]);
   const [days, setDays] = useState(30);
   const [warehouseId, setWarehouseId] = useState("all");
   const [status, setStatus] = useState("all");
@@ -45,7 +46,22 @@ function StockAnalysisPage() {
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to analyze stock"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (!token) return; void fetchWarehouses(token).then(setWarehouses).catch(() => setWarehouses([])); }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    void v1Api.master.warehouses(token)
+      .then((rows) => {
+        if (active) {
+          setWarehouses(rows.map((row) => ({
+            id: String(row.id),
+            name: String(row.name ?? ""),
+            is_active: row.is_active !== false,
+          })));
+        }
+      })
+      .catch(() => { if (active) setWarehouses([]); });
+    return () => { active = false; };
+  }, [token]);
   useEffect(() => { void load(); }, [token, days, warehouseId]);
   const counts = useMemo(() => ({
     stockout: rows.filter((row) => row.analysis_status === "stockout").length,

@@ -5,22 +5,18 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { canPerformSalesAction } from "@/lib/rbac";
 import {
-  createSalesInvoice,
-  downloadInvoicePdf,
-  downloadReceiptPdf,
-  fetchCustomers,
-  fetchMasterItems,
-  fetchSalesInvoices,
-  previewSalesTax,
-  paySalesInvoice,
-  postSalesInvoice,
-  verifyInvoiceDocument,
-  requestMpesaInvoicePayment,
   type BackendCustomer,
   type BackendInvoice,
   type BackendMasterItem,
 } from "@/lib/api";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  normalizeMasterCustomer,
+  normalizeMasterItem,
+  v1Api,
+  type MpesaPaymentRequest,
+} from "@/lib/api-v1";
+import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { KES, fmtDate } from "@/lib/format";
 import { SearchBar } from "@/components/SearchBar";
@@ -58,6 +54,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportVerificationCertificatePdf } from "@/lib/pdf";
+import { invoiceSchema } from "@/lib/schemas/sales";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/_app/invoices")({
   component: InvoicesPage,
@@ -74,15 +72,51 @@ const dueInDays = (days: number) => {
 };
 
 const emptyLine = (): InvoiceLineForm => ({ item_id: "", quantity: "1", unit_price: "" });
+const EMPTY_INVOICES: BackendInvoice[] = [];
+
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function mapInvoiceRow(row: Record<string, unknown>): BackendInvoice {
+  const statusMap: Record<string, BackendInvoice["status"]> = {
+    draft: "Draft",
+    posted: "Sent",
+    paid: "Paid",
+    partial: "Sent",
+    overdue: "Overdue",
+    cancelled: "Cancelled",
+  };
+  const status = String(row.status || "draft").toLowerCase();
+  return {
+    id: String(row.invoice_no || row.id),
+    internalId: String(row.id),
+    date: String(row.invoice_date || "").slice(0, 10),
+    due: String(row.due_date || row.invoice_date || "").slice(0, 10),
+    customer: String(row.customer_name || ""),
+    kraPin: String(row.customer_tax_id || row.tax_id || ""),
+    etr: String(row.etims_ref || "—"),
+    etimsStatus: String(row.etims_status || "not_submitted"),
+    subtotal: Number(row.subtotal || 0),
+    excise: 0,
+    vat: Number(row.tax_amount || 0),
+    total: Number(row.total_amount || 0),
+    status: statusMap[status] || "Draft",
+  };
+}
 
 function InvoicesPage() {
   const { token, user } = useAuth();
   const canCreateInvoice = canPerformSalesAction(user, "sales.invoice.create");
   const canPostInvoice = canPerformSalesAction(user, "sales.invoice.post");
   const canCreateReceipt = canPerformSalesAction(user, "sales.receipt.create");
-  const [rows, setRows] = useState<BackendInvoice[]>([]);
-  const rowsRef = useRef<BackendInvoice[]>([]);
-  const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
   const [page, setPage] = useState(1);
@@ -91,7 +125,7 @@ function InvoicesPage() {
   const [mpesaPhone, setMpesaPhone] = useState("");
   const [mpesaAmount, setMpesaAmount] = useState("");
   const [mpesaSubmitting, setMpesaSubmitting] = useState(false);
-  const [mpesaRequest, setMpesaRequest] = useState<Awaited<ReturnType<typeof requestMpesaInvoicePayment>> | null>(null);
+  const [mpesaRequest, setMpesaRequest] = useState<MpesaPaymentRequest | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifyHashInput, setVerifyHashInput] = useState("");
@@ -111,11 +145,37 @@ function InvoicesPage() {
     due_date: dueInDays(30),
     lines: [emptyLine()] as InvoiceLineForm[],
   });
+  const invoicesQuery = useQuery({
+    queryKey: queryKeys.invoices.list(user?.id ?? user?.email),
+    queryFn: async ({ signal }) =>
+      (await v1Api.sales.invoices(token!, 25, signal)).map(mapInvoiceRow),
+    enabled: Boolean(token),
+    initialData: () => {
+      if (typeof window === "undefined") return undefined;
+      try {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (!cached) return undefined;
+        const parsed = JSON.parse(cached) as BackendInvoice[];
+        return Array.isArray(parsed) ? parsed : undefined;
+      } catch {
+        sessionStorage.removeItem(cacheKey);
+        return undefined;
+      }
+    },
+  });
+  const rows = invoicesQuery.data ?? EMPTY_INVOICES;
+  const loading = invoicesQuery.isPending;
+  const invoiceRows = invoicesQuery.data;
+  const invoiceError = invoicesQuery.error;
+  const refetchInvoices = invoicesQuery.refetch;
+  const loadInvoices = useCallback(async () => {
+    if (token) await refetchInvoices();
+  }, [token, refetchInvoices]);
 
   useEffect(() => {
     setMpesaRequest(null);
     setMpesaAmount(preview ? String(preview.total) : "");
-  }, [preview?.id]);
+  }, [preview]);
 
   const requestMpesaPayment = async () => {
     if (!token || !preview) return;
@@ -126,7 +186,7 @@ function InvoicesPage() {
     }
     setMpesaSubmitting(true);
     try {
-      const request = await requestMpesaInvoicePayment(token, preview.internalId || preview.id, {
+      const request = await v1Api.integrations.createMpesaStkRequest(token, preview.internalId || preview.id, {
         phone: mpesaPhone,
         amount,
         idempotency_key: crypto.randomUUID(),
@@ -140,40 +200,17 @@ function InvoicesPage() {
     }
   };
 
-  const loadInvoices = useCallback(async () => {
-    if (!token) return;
-    if (!rowsRef.current.length) setLoading(true);
-    try {
-      const data = await fetchSalesInvoices(token);
-      rowsRef.current = data ?? [];
-      setRows(data ?? []);
-      sessionStorage.setItem(cacheKey, JSON.stringify(data ?? []));
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to load invoices");
-      setRows([]);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (invoiceError) {
+      toast.error(invoiceError instanceof Error ? invoiceError.message : "Unable to load invoices");
     }
-  }, [token, cacheKey]);
+  }, [invoiceError]);
 
   useEffect(() => {
-    rowsRef.current = [];
-    setRows([]);
-    try {
-      const cached = sessionStorage.getItem(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached) as BackendInvoice[];
-        if (Array.isArray(parsed) && parsed.length) {
-          rowsRef.current = parsed;
-          setRows(parsed);
-          setLoading(false);
-        }
-      }
-    } catch {
-      sessionStorage.removeItem(cacheKey);
+    if (typeof window !== "undefined" && invoiceRows) {
+      sessionStorage.setItem(cacheKey, JSON.stringify(invoiceRows));
     }
-    void loadInvoices();
-  }, [cacheKey, loadInvoices]);
+  }, [cacheKey, invoiceRows]);
 
   useEffect(() => {
     if (!token) return;
@@ -195,7 +232,7 @@ function InvoicesPage() {
     if (!lines.length) { setDraftTaxPreview(null); setDraftTaxLoading(false); return; }
     let active = true;
     setDraftTaxLoading(true);
-    void previewSalesTax(token, lines, form.invoice_date)
+    void v1Api.sales.taxPreview(token, lines, form.invoice_date)
       .then((result) => { if (active) setDraftTaxPreview({ subtotal: result.subtotal, tax_amount: result.tax_amount, total_amount: result.total_amount }); })
       .catch((error) => { if (active) { setDraftTaxPreview(null); toast.error(error instanceof Error ? error.message : "Could not calculate invoice tax"); } })
       .finally(() => { if (active) setDraftTaxLoading(false); });
@@ -205,18 +242,22 @@ function InvoicesPage() {
   const openCreate = async () => {
     if (!token) return;
     try {
-      const [cust, catalog] = await Promise.all([fetchCustomers(token), fetchMasterItems(token)]);
-      setCustomers(cust);
-      setItems(catalog);
+      const [cust, catalog] = await Promise.all([
+        v1Api.master.customers(token),
+        v1Api.master.items(token),
+      ]);
+      const invoiceItems = catalog.map(normalizeMasterItem) as BackendMasterItem[];
+      setCustomers(cust.map(normalizeMasterCustomer) as BackendCustomer[]);
+      setItems(invoiceItems);
       setForm({
         customer_id: cust[0]?.id?.toString() || "",
         invoice_date: today(),
         due_date: dueInDays(30),
         lines: [
           {
-            item_id: catalog[0]?.id || "",
+            item_id: invoiceItems[0]?.id || "",
             quantity: "1",
-            unit_price: String(catalog[0]?.standard_cost || ""),
+            unit_price: String(invoiceItems[0]?.standard_cost || ""),
           },
         ],
       });
@@ -227,24 +268,25 @@ function InvoicesPage() {
   };
 
   const submitInvoice = async () => {
-    if (!token || !form.customer_id) {
-      toast.error("Select a customer");
-      return;
-    }
-    const lines = form.lines
-      .filter((l) => l.item_id && Number(l.quantity) > 0)
-      .map((l) => ({
+    if (!token) return;
+    const lines = form.lines.map((l) => ({
         item_id: l.item_id,
         quantity: Number(l.quantity),
-        unit_price: Number(l.unit_price) || 0,
+        unit_price: Number(l.unit_price),
       }));
-    if (!lines.length) {
-      toast.error("Add at least one line with quantity");
+    const validation = invoiceSchema.safeParse({
+      customer_id: form.customer_id,
+      invoice_date: form.invoice_date,
+      due_date: form.due_date,
+      lines,
+    });
+    if (!validation.success) {
+      toast.error(validation.error.issues[0]?.message || "Check invoice details and try again.");
       return;
     }
     setSaving(true);
     try {
-      const result = await createSalesInvoice(token, {
+      const result = await v1Api.sales.createInvoice(token, {
         customer_id: String(form.customer_id),
         invoice_date: form.invoice_date,
         due_date: form.due_date,
@@ -729,7 +771,7 @@ function InvoicesPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        const result = await verifyInvoiceDocument(
+                        const result = await v1Api.sales.verifyInvoice(
                           token,
                           preview.id,
                           verifyHashInput.trim() || undefined,
@@ -873,7 +915,7 @@ function InvoicesPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        await postSalesInvoice(token, preview.id);
+                        await v1Api.sales.postInvoice(token, preview.id);
                         toast.success(`Invoice ${preview.id} posted to the ledger`);
                         await loadInvoices();
                         setPreview(null);
@@ -889,7 +931,7 @@ function InvoicesPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        await downloadInvoicePdf(token, preview.id);
+                        downloadBlob(`invoice-${preview.id}.pdf`, await v1Api.sales.downloadInvoicePdf(token, preview.id));
                         notify(`Invoice ${preview.id} downloaded`, "PDF saved");
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : "Could not generate PDF");
@@ -937,7 +979,7 @@ function InvoicesPage() {
                       onClick={async () => {
                         if (!token) return;
                         try {
-                          await paySalesInvoice(token, preview.id, {
+                          await v1Api.sales.payInvoice(token, preview.internalId || preview.id, {
                             amount: preview.total,
                             payment_date: new Date().toISOString().slice(0, 10),
                             reference_no: preview.etr || undefined,
@@ -960,7 +1002,7 @@ function InvoicesPage() {
                     onClick={async () => {
                       if (!token) return;
                       try {
-                        await downloadReceiptPdf(token, preview.id);
+                        downloadBlob(`receipt-${preview.id}.pdf`, await v1Api.sales.downloadReceiptPdf(token, preview.id));
                         notify(`Receipt for ${preview.id} downloaded`, "PDF saved");
                       } catch (e) {
                         toast.error(

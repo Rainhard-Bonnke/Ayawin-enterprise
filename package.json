@@ -11,8 +11,11 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
+    "test:frontend": "vitest run --config vitest.config.ts",
+    "test:e2e:frontend": "playwright test",
     "lint": "eslint . --rule \"prettier/prettier: off\"",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "ci:phase10": "node scripts/phase10-ci.cjs"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
@@ -53,7 +56,9 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
+    "html2canvas": "^1.4.1",
     "input-otp": "^1.4.2",
+    "jspdf": "^2.5.1",
     "lucide-react": "^0.575.0",
     "nitro": "^3.0.260522-beta",
     "react": "^19.2.0",
@@ -69,12 +74,11 @@
     "vaul": "^1.1.2",
     "vite-tsconfig-paths": "^6.0.2",
     "xlsx": "^0.18.5",
-    "html2canvas": "^1.4.1",
-    "jspdf": "^2.5.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@playwright/test": "^1.65.0",
     "@types/node": "^22.16.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -88,6 +92,7 @@
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^5.1.0"
   }
 }

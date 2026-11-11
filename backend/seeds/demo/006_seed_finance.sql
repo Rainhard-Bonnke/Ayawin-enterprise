@@ -43,7 +43,7 @@ INSERT INTO erp_journals (
   description, status, posted_at, total_debit, total_credit
 )
 SELECT c.id, fp.id, 'JE-2026-0001', 'sales', '2026-05-19'::date, 'INV-2026-0531',
-       'Invoice raised - Mombasa Liquor Distributors', 'posted', NOW(), 1350820, 1350820
+  'Invoice raised - Mombasa Liquor Distributors', 'draft', NULL, 1350820, 1350820
 FROM erp_companies c
 JOIN erp_fiscal_periods fp ON fp.company_id = c.id AND fp.period_no = 5
 JOIN erp_fiscal_years fy ON fy.id = fp.fiscal_year_id AND fy.year_label = 'FY2026'
@@ -67,6 +67,15 @@ WHERE j.journal_no = 'JE-2026-0001'
   AND NOT EXISTS (
     SELECT 1 FROM erp_journal_lines jl WHERE jl.journal_id = j.id AND jl.line_no = v.lno
   );
+
+UPDATE erp_journals j
+SET status = 'posted', posted_at = NOW(), updated_at = NOW()
+FROM erp_companies c
+WHERE j.company_id = c.id
+  AND c.code = 'MARTIN'
+  AND j.journal_no = 'JE-2026-0001'
+  AND j.status = 'draft'
+  AND (SELECT COUNT(*) FROM erp_journal_lines line WHERE line.journal_id = j.id) = 4;
 
 -- GL balances for period 5
 INSERT INTO erp_gl_balances (company_id, fiscal_period_id, account_id, period_debit, period_credit, closing_debit, closing_credit)

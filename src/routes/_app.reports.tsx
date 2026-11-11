@@ -16,7 +16,6 @@ import { useEffect, useMemo, useState } from "react";
 import { QuietNote } from "@/components/QuietNote";
 import { exportWorkbook } from "@/lib/excel";
 import { useAuth } from "@/lib/auth";
-import { fetchReportKpis, fetchReportLibrary, runStandardReport } from "@/lib/api";
 import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +27,7 @@ export const Route = createFileRoute("/_app/reports")({
 });
 
 const groups: Array<{ title: string; items: string[] }> = [];
+const EMPTY_REPORTS: Array<{ code: string; group: string; title: string }> = [];
 
 function ReportsPage() {
   const { token } = useAuth();
@@ -51,10 +51,18 @@ function ReportsPage() {
 
   useEffect(() => {
     if (!token) return;
-    fetchReportLibrary(token)
-      .then(async (rows) => {
-        setLibrary(rows.map((r) => ({ code: r.code, group: r.category, title: r.name })));
-        const liveKpis = await fetchReportKpis(token);
+    Promise.all([
+      v1Api.reports.library(token),
+      v1Api.reports.kpis(token),
+    ])
+      .then(([rows, liveKpis]) => {
+        setLibrary(
+          rows.map((r) => ({
+            code: String((r as Record<string, unknown>).report_code || (r as Record<string, unknown>).code),
+            group: String((r as Record<string, unknown>).category || (r as Record<string, unknown>).module || "General"),
+            title: String((r as Record<string, unknown>).name || (r as Record<string, unknown>).title),
+          })),
+        );
         setKpis(liveKpis);
       })
       .catch((err) => {
@@ -63,7 +71,7 @@ function ReportsPage() {
       });
   }, [token]);
 
-  const catalog = library ?? [];
+  const catalog = library ?? EMPTY_REPORTS;
   const groupOptions = Array.from(new Set(catalog.map((c) => c.group))).sort();
 
   const entries = useMemo(
@@ -92,7 +100,7 @@ function ReportsPage() {
   const runReport = async (report: { code: string; title: string }) => {
     if (!token) return;
     try {
-      const result = await runStandardReport(token, report.code);
+      const result = await v1Api.reports.run(token, report.code);
       setSelectedReport(report);
       setReportRows(result.rows || []);
       toast.success(`${report.title} loaded`);

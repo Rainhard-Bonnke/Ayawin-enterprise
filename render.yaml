@@ -1,17 +1,211 @@
 services:
   - type: web
-    name: martin-enterprise-frontend
-    runtime: static
-    plan: free
-    buildCommand: npm ci && npm run build
-    staticPublishPath: .output/public
-    pullRequestPreviewsEnabled: true
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    name: ayawin-api
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm start
+    healthCheckPath: /ready
+    autoDeploy: true
     envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: APP_BASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: DATABASE_HOST
+        sync: false
+      - key: DATABASE_PORT
+        value: "5432"
+      - key: DATABASE_DB
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
+      - key: PII_ENCRYPTION_KEY
+        sync: false
+      - key: DOC_VERIFY_SECRET
+        sync: false
+      - key: KRA_CLIENT_ID
+        sync: false
+      - key: KRA_CLIENT_SECRET
+        sync: false
+      - key: DARAJA_CONSUMER_KEY
+        sync: false
+      - key: DARAJA_CONSUMER_SECRET
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  - type: web
+    name: ayawin-frontend
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: node .output/server/index.mjs
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
       - key: VITE_API_BASE
         sync: false
-      - key: VITE_API_V1
+      - key: VITE_USE_API_V1
         value: "true"
+      - key: APP_ENV
+        value: production
+
+  - type: worker
+    name: ayawin-etims-worker
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm run worker:etims
+    numInstances: 2
+    restartPolicyType: on-failure
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: DATABASE_HOST
+        sync: false
+      - key: DATABASE_PORT
+        value: "5432"
+      - key: DATABASE_DB
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: KRA_CLIENT_ID
+        sync: false
+      - key: KRA_CLIENT_SECRET
+        sync: false
+
+  - type: worker
+    name: ayawin-mpesa-worker
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm run worker:mpesa
+    numInstances: 2
+    restartPolicyType: on-failure
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: DATABASE_HOST
+        sync: false
+      - key: DATABASE_PORT
+        value: "5432"
+      - key: DATABASE_DB
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: DARAJA_CONSUMER_KEY
+        sync: false
+      - key: DARAJA_CONSUMER_SECRET
+        sync: false
+      - key: DARAJA_SHORTCODE
+        sync: false
+
+  - type: worker
+    name: ayawin-notification-worker
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm run worker:notifications
+    numInstances: 2
+    restartPolicyType: on-failure
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: DATABASE_HOST
+        sync: false
+      - key: DATABASE_PORT
+        value: "5432"
+      - key: DATABASE_DB
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+
+  - type: worker
+    name: ayawin-report-worker
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm run worker:reports
+    numInstances: 1
+    restartPolicyType: on-failure
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: DATABASE_HOST
+        sync: false
+      - key: DATABASE_PORT
+        value: "5432"
+      - key: DATABASE_DB
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+
+  - type: redis
+    name: ayawin-redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+
+  - type: psql
+    name: ayawin-db
+    plan: standard
+    databaseName: ayawin_enterprise
+    user: ayawin
+    postgresMajorVersion: "16"
+    backupRetentionDays: 30
+    storageGB: 50
+
+# Note: object storage for document and backup retention must be provisioned as a separate managed S3-compatible bucket
+# and wired through AWS_* variables above. Keep it private and do not store provider keys in the repository.

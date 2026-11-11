@@ -1,3 +1,5 @@
+import { apiV1Fetch } from "@/lib/api-v1";
+
 const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
 
 type EventPayload = {
@@ -11,20 +13,10 @@ type EventPayload = {
 
 export async function trackEvent(payload: EventPayload) {
   try {
-    const token = localStorage.getItem("ayawin-stock-solution-token");
-    if (!token) return null;
-
-    const response = await fetch(`${apiBase}/api/events/track`, {
+    return await apiV1Fetch<{ ok: boolean; audited: boolean; insight: null; confidence: number }>("/audit/events", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(payload),
     });
-
-    if (!response.ok) return null;
-    return response.json();
   } catch {
     return null;
   }

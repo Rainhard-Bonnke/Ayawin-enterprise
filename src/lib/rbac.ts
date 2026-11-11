@@ -45,8 +45,10 @@ const pathAccess: Record<string, RoleName[]> = {
   "/sales": ["Admin", "Manager", "Sales Rep"],
   "/pos": ["POS Operator"],
   "/customers": ["Admin", "Manager", "Sales Rep", "Accountant"],
+  "/customer-credit-notes": ["Admin", "Manager", "Sales Rep", "Accountant"],
   "/invoices": ["Admin", "Manager", "Accountant", "Sales Rep"],
   "/accounting": ["Admin", "Manager", "Accountant"],
+  "/bank-reconciliation": ["Admin", "Manager", "Accountant"],
   "/inventory": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/inventory-master": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/material-requisitions": ["Admin", "Manager", "Store Manager", "Warehouse"],
@@ -55,6 +57,7 @@ const pathAccess: Record<string, RoleName[]> = {
   "/stock-analysis": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/stock-adjustments": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/driver-stock": ["Admin", "Manager", "Store Manager", "Warehouse", "Driver"],
+  "/inventory-lots": ["Admin", "Manager", "Store Manager", "Warehouse"],
   "/procurement": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
   "/delivery": ["Admin", "Manager", "Driver", "Warehouse"],
   "/route-closures": ["Admin", "Manager", "Driver", "Warehouse", "Sales Rep", "Accountant"],
@@ -101,11 +104,11 @@ export function normalizeRole(role?: string | null): RoleName {
 export function canAccessPath(user: Pick<User, "role"> | null | undefined, path: string) {
   if (!user) return false;
   const role = normalizeRole(user.role);
-  const matchedPath =
-    Object.keys(pathAccess)
-      .filter((candidate) => (candidate === "/" ? path === "/" : path.startsWith(candidate)))
-      .sort((a, b) => b.length - a.length)[0] ?? "/";
+  const matchedPath = Object.keys(pathAccess)
+    .filter((candidate) => (candidate === "/" ? path === "/" : path.startsWith(candidate)))
+    .sort((a, b) => b.length - a.length)[0];
 
+  if (!matchedPath) return false;
   return pathAccess[matchedPath].includes(role);
 }
 

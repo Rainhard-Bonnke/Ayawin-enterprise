@@ -18,21 +18,12 @@ import {
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 import {
-  createSupplierBill,
-  createSupplierPayment,
-  fetchChartOfAccounts,
-  fetchGoodsReceiptDetail,
-  fetchGoodsReceipts,
-  fetchSupplierBills,
-  fetchSupplierPayments,
-  fetchSuppliers,
-  postSupplierBill,
-  postSupplierPayment,
   type BackendSupplier,
   type BackendGoodsReceipt,
   type BackendGoodsReceiptDetail,
   type SupplierBill,
 } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/accounts-payable")({
@@ -81,16 +72,36 @@ function AccountsPayablePage() {
     setLoading(true);
     try {
       const [billRows, supplierRows, accountRows, paymentRows, receiptRows] = await Promise.all([
-        fetchSupplierBills(token),
-        fetchSuppliers(token),
-        fetchChartOfAccounts(token),
-        fetchSupplierPayments(token),
-        fetchGoodsReceipts(token),
+        v1Api.procurement.supplierBills(token),
+        v1Api.master.vendors(token),
+        v1Api.master.chartOfAccounts(token),
+        v1Api.procurement.supplierPayments(token),
+        v1Api.procurement.goodsReceipts(token),
       ]);
-      setBills(billRows);
+      setBills(billRows as SupplierBill[]);
       setPayments(paymentRows);
-      setSuppliers(supplierRows);
-      setReceipts(receiptRows);
+      setSuppliers(supplierRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        kra_pin: row.tax_id || "",
+        contact: row.contact_name,
+        email: row.email,
+        phone: row.phone,
+        payment_terms: null,
+        credit_limit: Number(row.credit_limit || 0),
+        balance: 0,
+      })));
+      setReceipts(receiptRows.map((row) => ({
+        id: String(row.id),
+        grn_number: String(row.grn_number || row.id),
+        po_number: row.po_number ? String(row.po_number) : "",
+        receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : "",
+        status: String(row.status || ""),
+        notes: row.notes ? String(row.notes) : null,
+        vendor_id: row.vendor_id ? String(row.vendor_id) : "",
+        vendor_name: row.vendor_name ? String(row.vendor_name) : "",
+        purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : "",
+      })) as BackendGoodsReceipt[]);
       setAccounts(
         accountRows.filter(
           (account) =>
@@ -149,7 +160,7 @@ function AccountsPayablePage() {
     }
     setReceiptLoading(true);
     try {
-      const detail = await fetchGoodsReceiptDetail(token, receiptId);
+      const detail = await v1Api.procurement.goodsReceipt(token, receiptId) as unknown as BackendGoodsReceiptDetail;
       const inventoryAccount = accounts.find((account) => String(account.account_code) === "1300");
       const fallbackAccount = inventoryAccount || accounts.find((account) => account.account_type === "asset");
       if (!fallbackAccount) throw new Error("Add an active inventory asset account before matching a stock bill");
@@ -179,7 +190,7 @@ function AccountsPayablePage() {
     if (!token) return;
     setSaving(true);
     try {
-      await createSupplierBill(token, {
+      await v1Api.procurement.createSupplierBill(token, {
         vendor_id: vendorId,
         supplier_invoice_no: supplierInvoiceNo,
         bill_date: billDate,
@@ -207,7 +218,7 @@ function AccountsPayablePage() {
   const postBill = async (bill: SupplierBill) => {
     if (!token) return;
     try {
-      await postSupplierBill(token, bill.id);
+      await v1Api.procurement.postSupplierBill(token, bill.id);
       toast.success(`Bill ${bill.bill_no} posted to the General Ledger`);
       await load();
     } catch (error) {
@@ -231,7 +242,7 @@ function AccountsPayablePage() {
     if (!token) return;
     setSaving(true);
     try {
-      const draft = await createSupplierPayment(token, {
+      const draft = await v1Api.procurement.createSupplierPayment(token, {
         vendor_id: paymentVendorId,
         bank_account_id: bankAccountId,
         payment_date: paymentDate,
@@ -256,7 +267,7 @@ function AccountsPayablePage() {
   const postPayment = async (payment: Record<string, unknown>) => {
     if (!token) return;
     try {
-      await postSupplierPayment(token, String(payment.id));
+      await v1Api.procurement.postSupplierPayment(token, String(payment.id));
       toast.success(`Payment ${String(payment.payment_no)} posted to the General Ledger`);
       await load();
     } catch (error) {

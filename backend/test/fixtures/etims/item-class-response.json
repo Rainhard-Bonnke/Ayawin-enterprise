@@ -1,0 +1,17 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20261109080000",
+  "data": {
+    "itemClsList": [
+      {
+        "itemClsCd": "5059690800",
+        "itemClsNm": "Beverages",
+        "itemClsLvl": 5,
+        "taxTyCd": "B",
+        "mjrTgYn": "N",
+        "useYn": "Y"
+      }
+    ]
+  }
+}

@@ -10,8 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { fetchMasterItems, fetchWarehouses, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
-import { v1Api } from "@/lib/api-v1";
+import { type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
@@ -47,11 +47,13 @@ function WarehouseTransfersPage() {
     setLoading(true);
     try {
       const [rows, locations, catalog] = await Promise.all([
-        v1Api.inventory.transfers(token), fetchWarehouses(token), fetchMasterItems(token, "", 2000),
+        v1Api.inventory.transfers(token),
+        v1Api.master.warehouses(token),
+        v1Api.master.items(token, 2000),
       ]);
       setTransfers(rows as Transfer[]);
-      setWarehouses(locations.filter((row) => row.is_active));
-      setItems(catalog.filter((row) => row.is_active && row.is_stock_item));
+      setWarehouses(locations.map(normalizeMasterWarehouse).filter((row) => row.is_active));
+      setItems(catalog.map(normalizeMasterItem).filter((row) => row.is_active && row.is_stock_item));
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to load warehouse transfers"); }
     finally { setLoading(false); }
   }, [token]);

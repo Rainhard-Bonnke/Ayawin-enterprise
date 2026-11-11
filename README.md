@@ -28,6 +28,7 @@ npm run dev:all
 ```
 
 3. Open:
+
 - Frontend: `http://localhost:5173`
 - Backend health: `http://localhost:4000/health`
 
@@ -85,7 +86,7 @@ curl -X POST http://localhost:4000/api/v1/auth/login \
   -d '{"email":"your-admin@example.com","password":"your-configured-password"}'
 ```
 
-Legacy routes (`/api/auth/login`, `/api/products`, etc.) remain for the existing React UI until each module is migrated.
+Legacy `/api/*` business routes have been removed and return `410 Gone`. Use the ERP API under `/api/v1`.
 
 ## Production hosting (Render)
 
@@ -151,3 +152,17 @@ This repo includes a Render blueprint at `render.yaml` for:
 
 - **Platform:** `/api/v1/platform` (webhooks, CSV import wizard, background jobs)
 - **Integrations:** eTIMS stub, M-Pesa STK stub, email/SMS notifications
+
+## Phase 10 — Production Readiness Baseline
+
+See [docs/PHASE-10-PRODUCTION-READINESS.md](docs/PHASE-10-PRODUCTION-READINESS.md) for the operational go-live checklist covering infrastructure, observability, resilience, DR, UAT, and CI gates.
+
+The repo now includes a stronger Render deployment blueprint in [render.yaml](render.yaml) covering:
+
+- separate API and frontend services
+- supervised worker services for eTIMS, M-Pesa, notifications, and reports
+- managed Postgres and Redis
+- environment-specific secret wiring for staging and production
+- private object-storage configuration for documents and backups
+
+> Production deployment remains gated on credentials, provider certification, and signed approvals. The repo intentionally keeps secrets out of source control and requires them to be supplied by the platform secret store.

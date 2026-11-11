@@ -31,6 +31,7 @@ export type User = {
   email: string;
   role: string;
   permissions?: string[];
+  mfa_enabled?: boolean;
 };
 
 const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
@@ -1228,6 +1229,7 @@ export type DashboardSummary = {
   topProducts: Array<{ name: string; units: number }>;
   salesByCategory: Array<{ name: string; value: number }>;
   alerts: Array<{ type: string; severity: string; message: string }>;
+  integrationExceptions: IntegrationException[];
   recentTransactions: Array<{
     id: string;
     date: string;
@@ -1237,6 +1239,40 @@ export type DashboardSummary = {
     status: string;
   }>;
 };
+
+export type IntegrationException = {
+  id: string;
+  type: string;
+  source_id: string;
+  reference: string | null;
+  status: string;
+  attempt_count: number;
+  age_seconds: number;
+  last_error: string | null;
+  manually_retryable: boolean;
+};
+
+export async function fetchIntegrationExceptions(token: string): Promise<IntegrationException[]> {
+  if (isDemoToken(token) || !isV1Enabled()) return [];
+  const result = await apiV1Fetch<{ exceptions: IntegrationException[] }>("/platform/integrations/exceptions", {}, token);
+  return result.exceptions || [];
+}
+
+export async function retryEtimsEvent(token: string, eventId: string) {
+  return apiV1Fetch<{ ok: boolean; event_id: string; status: string }>(
+    `/platform/integrations/etims/events/${encodeURIComponent(eventId)}/retry`,
+    { method: "POST", body: "{}" },
+    token,
+  );
+}
+
+export async function retryEtimsInvoice(token: string, invoiceId: string) {
+  return apiV1Fetch<{ ok: boolean; invoice_id: string; status: string }>(
+    `/platform/integrations/etims/invoices/${encodeURIComponent(invoiceId)}/retry`,
+    { method: "POST", body: "{}" },
+    token,
+  );
+}
 
 export type BackendSalesOrder = {
   id: string;
@@ -1476,13 +1512,17 @@ export async function fetchDashboardSummary(token: string) {
   if (isDemoToken(token)) throw new Error("Demo mode uses local dashboard data");
 
   if (isV1Enabled()) {
-    return apiV1Fetch<DashboardSummary>("/reports/dashboard/summary", {}, token);
+    const [summary, integrationExceptions] = await Promise.all([
+      apiV1Fetch<Omit<DashboardSummary, "integrationExceptions">>("/reports/dashboard/summary", {}, token),
+      fetchIntegrationExceptions(token),
+    ]);
+    return { ...summary, integrationExceptions } as DashboardSummary;
   }
 
   const response = await fetch(buildUrl("/api/dashboard/summary"), {
     headers: { Authorization: `Bearer ${token}` },
   });
-  return handleResponse<DashboardSummary>(response);
+  return { ...(await handleResponse<Omit<DashboardSummary, "integrationExceptions">>(response)), integrationExceptions: [] };
 }
 
 export type BackendPurchaseOrder = {

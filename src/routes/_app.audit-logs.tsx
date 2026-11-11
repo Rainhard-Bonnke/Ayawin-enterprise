@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "@/components/SearchBar";
@@ -12,8 +13,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListPagination } from "@/components/ListPagination";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
-import { fetchAuditLogs, type AuditLogRow } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
+import { queryKeys } from "@/lib/queryKeys";
+
+type AuditLogRow = {
+  id: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+  user_name: string | null;
+  user_email: string | null;
+};
 
 export const Route = createFileRoute("/_app/audit-logs")({
   component: AuditLogsPage,
@@ -21,20 +35,29 @@ export const Route = createFileRoute("/_app/audit-logs")({
 });
 
 function AuditLogsPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [q, setQ] = useState("");
-  const [rows, setRows] = useState<AuditLogRow[]>([]);
   const [page, setPage] = useState(1);
   const pageSize = 10;
-
-  useEffect(() => {
-    if (!token) return;
-    void fetchAuditLogs(token, q, 100)
-      .then(setRows)
-      .catch(() => setRows([]));
-  }, [token, q]);
-
-  const filtered = useMemo(() => rows, [rows]);
+  const auditQuery = useQuery({
+    queryKey: queryKeys.audit.logs(q, user?.id),
+    queryFn: async ({ signal }) => {
+      const result = await v1Api.audit.list(token!, q, 100, signal);
+      return result.map((row): AuditLogRow => ({
+        id: String(row.id),
+        action: String(row.action),
+        entity_type: (row.entity_type as string) || null,
+        entity_id: row.entity_id == null ? null : String(row.entity_id),
+        details: (row.new_values || row.old_values || null) as Record<string, unknown> | null,
+        created_at: String(row.created_at),
+        user_name: (row.user_name as string) || null,
+        user_email: (row.user_email as string) || null,
+      }));
+    },
+    enabled: Boolean(token),
+  });
+  const rows = auditQuery.data ?? [];
+  const filtered = rows;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
@@ -69,7 +92,10 @@ function AuditLogsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paged.map((row) => (
+              {auditQuery.isPending && <TableRow><TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">Loading audit events...</TableCell></TableRow>}
+              {auditQuery.isError && <TableRow><TableCell colSpan={5} className="h-24 text-center text-sm text-destructive">{auditQuery.error instanceof Error ? auditQuery.error.message : "Unable to load audit events."} <Button variant="ghost" size="sm" onClick={() => void auditQuery.refetch()}>Retry</Button></TableCell></TableRow>}
+              {!auditQuery.isPending && !auditQuery.isError && paged.length === 0 && <TableRow><TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">No audit events found.</TableCell></TableRow>}
+              {!auditQuery.isError && paged.map((row) => (
                 <TableRow key={row.id}>
                   <TableCell className="text-xs">
                     {new Date(row.created_at).toLocaleString("en-GB")}

@@ -1,6 +1,7 @@
 const pool = require("../db");
 const inventory = require("./inventoryService");
 const { logAudit } = require("./auditService");
+const etimsEvents = require("./etimsEventService");
 
 async function listTransfers(companyId, limit = 100) {
   const result = await pool.query(
@@ -113,6 +114,12 @@ async function dispatchTransfer({ companyId, fromWarehouseId, toWarehouseId, lin
       action: "inventory_transfer_dispatched",
       newValues: { transfer_no: transferNo, from_warehouse_id: fromWarehouseId, to_warehouse_id: toWarehouseId, line_count: lineNo - 1, status: "in_transit" },
     });
+    const dispatchedLines=await client.query(
+      `SELECT item_id,quantity,unit_cost FROM erp_stock_transfer_lines
+       WHERE company_id=$1 AND transfer_id=$2 AND is_deleted=FALSE ORDER BY line_no`,[companyId,transfer.id]);
+    await etimsEvents.queueEtimsStockMovementInTransaction(client,{companyId,userId:user.id,
+      sourceType:"transfer_dispatch",sourceId:transfer.id,eventType:"transfer_out",occurredDate:new Date().toISOString().slice(0,10),
+      lines:dispatchedLines.rows.map((line)=>({item_id:line.item_id,quantity:Number(line.quantity),unit_cost:Number(line.unit_cost)}))});
     await client.query("COMMIT");
     return { ok: true, id: transfer.id, transfer_no: transferNo, status: "in_transit" };
   } catch (error) {
@@ -263,6 +270,15 @@ async function receiveTransfer({ companyId, transferId, lines, notes, user }) {
       oldValues: { status: transfer.status },
       newValues: { status, receipt_lines: receiptSummary, notes: String(notes || "").trim() || null },
     });
+    if(allComplete){
+      const receivedLines=await client.query(
+        `SELECT item_id,received_quantity AS quantity,unit_cost FROM erp_stock_transfer_lines
+         WHERE company_id=$1 AND transfer_id=$2 AND is_deleted=FALSE AND received_quantity>0 ORDER BY line_no`,
+        [companyId,transfer.id]);
+      if(receivedLines.rowCount)await etimsEvents.queueEtimsStockMovementInTransaction(client,{companyId,userId:user.id,
+        sourceType:"transfer_receipt",sourceId:transfer.id,eventType:"transfer_in",occurredDate:new Date().toISOString().slice(0,10),
+        lines:receivedLines.rows.map((line)=>({item_id:line.item_id,quantity:Number(line.quantity),unit_cost:Number(line.unit_cost)}))});
+    }
     await client.query("COMMIT");
     return { ok: true, id: transfer.id, transfer_no: transfer.transfer_no, status, receipt_lines: receiptSummary };
   } catch (error) {

@@ -1,5 +1,6 @@
 const pool = require("../db");
 const gl = require("./glPostingService");
+const { assertDifferentUser, logAudit } = require("./auditService");
 
 const DEFAULT_PAYE_BANDS = [
   { min: 0, max: 24000, rate: 10 },
@@ -264,7 +265,7 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
         `SELECT * FROM erp_payroll_runs WHERE company_id = $1 AND run_no = $2 FOR UPDATE`,
         [companyId, runNo],
       );
-      if (["approved", "posting", "posted"].includes(runResult.rows[0]?.status)) {
+      if (["approved", "locked", "posting", "posted", "released"].includes(runResult.rows[0]?.status)) {
         throw new Error(
           "This payroll month is approved or already posted and cannot be recalculated.",
         );
@@ -364,12 +365,91 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
   }
 }
 
+async function approvePayrollRun({ companyId, userId, runId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM erp_payroll_runs
+       WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE
+       FOR UPDATE`,
+      [runId, companyId],
+    );
+    const run = result.rows[0];
+    if (!run || run.status !== "calculated") throw new Error("Only a calculated payroll run can be approved");
+    assertDifferentUser(run.created_by, userId);
+    const updated = await client.query(
+      `UPDATE erp_payroll_runs
+       SET status='approved',approved_by=$3,approved_at=NOW(),updated_by=$3,updated_at=NOW()
+       WHERE id=$1 AND company_id=$2
+       RETURNING id,run_no,status,approved_by,approved_at`,
+      [runId, companyId, userId],
+    );
+    await logAudit({
+      companyId,
+      userId,
+      entityType: "erp_payroll_runs",
+      entityId: runId,
+      action: "payroll_run_approved",
+      oldValues: { status: run.status },
+      newValues: { status: "approved", run_no: run.run_no },
+      client,
+    });
+    await client.query("COMMIT");
+    return updated.rows[0];
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function lockPayrollRun({ companyId, userId, runId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM erp_payroll_runs
+       WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE
+       FOR UPDATE`,
+      [runId, companyId],
+    );
+    const run = result.rows[0];
+    if (!run || run.status !== "approved") throw new Error("Only an approved payroll run can be locked");
+    const updated = await client.query(
+      `UPDATE erp_payroll_runs
+       SET status='locked',locked_by=$3,locked_at=NOW(),updated_by=$3,updated_at=NOW()
+       WHERE id=$1 AND company_id=$2
+       RETURNING id,run_no,status,locked_by,locked_at`,
+      [runId, companyId, userId],
+    );
+    await logAudit({
+      companyId,
+      userId,
+      entityType: "erp_payroll_runs",
+      entityId: runId,
+      action: "payroll_run_locked",
+      oldValues: { status: run.status },
+      newValues: { status: "locked", run_no: run.run_no },
+      client,
+    });
+    await client.query("COMMIT");
+    return updated.rows[0];
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function postPayrollToGl({ companyId, userId, runId }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const runResult = await client.query(
-      `SELECT * FROM erp_payroll_runs WHERE id = $1 AND company_id = $2 AND status = 'calculated' FOR UPDATE`,
+      `SELECT * FROM erp_payroll_runs WHERE id = $1 AND company_id = $2 AND status = 'locked' FOR UPDATE`,
       [runId, companyId],
     );
     const run = runResult.rows[0];
@@ -453,6 +533,47 @@ async function postPayrollToGl({ companyId, userId, runId }) {
   } finally { client.release(); }
 }
 
+async function releasePayrollRun({ companyId, userId, runId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM erp_payroll_runs
+       WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE
+       FOR UPDATE`,
+      [runId, companyId],
+    );
+    const run = result.rows[0];
+    if (!run || run.status !== "posted") throw new Error("Only a posted payroll run can be released");
+    assertDifferentUser(run.created_by, userId);
+    assertDifferentUser(run.approved_by, userId);
+    const updated = await client.query(
+      `UPDATE erp_payroll_runs
+       SET status='released',released_by=$3,released_at=NOW(),updated_by=$3,updated_at=NOW()
+       WHERE id=$1 AND company_id=$2
+       RETURNING id,run_no,status,released_by,released_at`,
+      [runId, companyId, userId],
+    );
+    await logAudit({
+      companyId,
+      userId,
+      entityType: "erp_payroll_runs",
+      entityId: runId,
+      action: "payroll_run_released",
+      oldValues: { status: run.status },
+      newValues: { status: "released", run_no: run.run_no },
+      client,
+    });
+    await client.query("COMMIT");
+    return updated.rows[0];
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 
 module.exports = {
   computePayslip,
@@ -462,6 +583,9 @@ module.exports = {
   calculateNssfBreakdown,
   configForPayrollMonth,
   runPayroll,
+  approvePayrollRun,
+  lockPayrollRun,
   postPayrollToGl,
+  releasePayrollRun,
   getPayrollConfig,
 };

@@ -3,6 +3,7 @@ const inventory = require("./inventoryService");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit, assertDifferentUser } = require("./auditService");
+const etimsEvents = require("./etimsEventService");
 
 function normalizeLines(lines) {
   if (!Array.isArray(lines) || lines.length < 1 || lines.length > 500) throw new Error("Add between 1 and 500 count lines");
@@ -148,6 +149,15 @@ async function post({ companyId, id, user, note }) {
       referenceNo: header.adjustment_no, description: `Inventory count adjustment ${header.adjustment_no}`, lines: journalLines });
     await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
     await client.query("UPDATE erp_stock_adjustments SET status = 'posted', posted_at = NOW(), reviewed_by = $3, review_note = $4, journal_id = $5 WHERE id = $1 AND company_id = $2", [id, companyId, user.id, String(note || "").trim().slice(0, 1000) || null, journal.id]);
+    const adjustmentDate=header.adjustment_date;
+    const gains=lines.rows.filter((line)=>Number(line.quantity_delta)>0);
+    const losses=lines.rows.filter((line)=>Number(line.quantity_delta)<0);
+    if(gains.length)await etimsEvents.queueEtimsStockMovementInTransaction(client,{companyId,userId:user.id,
+      sourceType:"stock_adjustment_in",sourceId:id,eventType:"adjustment_in",occurredDate:adjustmentDate,
+      lines:gains.map((line)=>({item_id:line.item_id,quantity:Number(line.quantity_delta),unit_cost:Number(line.unit_cost)}))});
+    if(losses.length)await etimsEvents.queueEtimsStockMovementInTransaction(client,{companyId,userId:user.id,
+      sourceType:"stock_adjustment_out",sourceId:id,eventType:"adjustment_out",occurredDate:adjustmentDate,
+      lines:losses.map((line)=>({item_id:line.item_id,quantity:Math.abs(Number(line.quantity_delta)),unit_cost:Number(line.unit_cost)}))});
     await logAudit({ client, companyId, userId: user.id, entityType: "erp_stock_adjustments", entityId: id, action: "stock_adjustment_posted", newValues: { adjustment_no: header.adjustment_no, line_count: lines.rowCount, journal_id: journal.id, note: note || null } });
     await client.query("COMMIT");
     return get(companyId, id);

@@ -5,6 +5,7 @@ const { ACCOUNT_CODES } = require("./accountCodes");
 const { logAudit, assertDifferentUser } = require("./auditService");
 const { nextDocumentNo } = require("./documentNumberingService");
 const { roundMoney, sumMoney, lineMoney, toMinorUnits } = require("../lib/money");
+const integration = require("./integrationService");
 
 const money = roundMoney;
 const dateShape = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
@@ -324,7 +325,10 @@ async function postCreditNote({ companyId, noteId, user }) {
     const numbered = await client.query("UPDATE erp_customer_credit_notes SET credit_note_no=$3 WHERE id=$1 AND company_id=$2 RETURNING *", [noteId, companyId, legalCreditNoteNo]);
     note = numbered.rows[0];
     const invoiceResult = await client.query(
-      `SELECT * FROM erp_customer_invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`, [note.invoice_id, companyId],
+      `SELECT inv.*,customer.name AS customer_name,customer.tax_id AS customer_tax_id
+       FROM erp_customer_invoices inv JOIN erp_customers customer
+         ON customer.id=inv.customer_id AND customer.company_id=inv.company_id
+       WHERE inv.id=$1 AND inv.company_id=$2 FOR UPDATE OF inv`, [note.invoice_id, companyId],
     );
     const invoice = invoiceResult.rows[0];
     const otherDrafts = await client.query(
@@ -336,12 +340,20 @@ async function postCreditNote({ companyId, noteId, user }) {
       throw new Error("Invoice balance changed; credit note exceeds the receivable still open");
     }
     const lines = await client.query(
-      `SELECT l.*, w.warehouse_id FROM erp_customer_credit_note_lines l
+      `SELECT l.*,w.warehouse_id,item.item_code,item.name AS description,
+          item.etims_item_code,item.etims_item_classification_code,item.etims_item_type_code,
+          item.etims_packaging_unit_code,item.etims_package_quantity,item.etims_quantity_unit_code,
+          item.etims_tax_type_code
+       FROM erp_customer_credit_note_lines l
        JOIN erp_customer_credit_notes n ON n.id = l.credit_note_id AND n.company_id = l.company_id
+       JOIN erp_items item ON item.id=l.item_id AND item.company_id=l.company_id
        JOIN erp_customer_invoices inv ON inv.id = n.invoice_id AND inv.company_id = n.company_id
        JOIN erp_delivery_notes w ON w.id = inv.delivery_note_id AND w.company_id = inv.company_id
        WHERE l.company_id = $1 AND l.credit_note_id = $2 ORDER BY l.created_at, l.id FOR UPDATE OF l`, [companyId, noteId],
     );
+    const etimsSubmission = await integration.enqueueEtimsCreditNoteInTransaction(client, {
+      companyId, userId: user.id, noteId, invoice, note, lines: lines.rows,
+    });
     let returnedCost = 0;
     for (const line of lines.rows) {
       const receipt = await inventory.recordReceipt(client, {
@@ -386,6 +398,9 @@ async function postCreditNote({ companyId, noteId, user }) {
         }
       }
     }
+    if(lines.rowCount)await require("./etimsEventService").queueEtimsStockMovementInTransaction(client,{companyId,userId:user.id,
+      sourceType:"customer_return",sourceId:noteId,eventType:"return",occurredDate:note.credit_date,
+      lines:lines.rows.map((line)=>({item_id:line.item_id,quantity:Number(line.quantity),unit_cost:Number(line.unit_cost)}))});
 
     const accountCodes = [ACCOUNT_CODES.salesRevenue, ACCOUNT_CODES.accountsReceivable];
     if (Number(note.tax_amount) > 0) accountCodes.push(ACCOUNT_CODES.vatOutput);
@@ -450,7 +465,8 @@ async function postCreditNote({ companyId, noteId, user }) {
         inventory_lines: lines.rows.map((line) => ({ item_id: line.item_id, quantity: Number(line.quantity), condition: line.condition, layer_id: line.source_layer_id })) } });
     await client.query("COMMIT");
     return { ok: true, id: noteId, credit_note_no: note.credit_note_no, status: "posted", journal_id: journal.id,
-      refund_journal_id: refundJournalId, total_amount: Number(note.total_amount), refund_amount: Number(note.refund_amount || 0) };
+      refund_journal_id: refundJournalId, total_amount: Number(note.total_amount), refund_amount: Number(note.refund_amount || 0),
+      etims_status: etimsSubmission.status };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

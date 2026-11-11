@@ -9,11 +9,12 @@ import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
+import { bankReconciliationSchema } from "@/lib/schemas/finance";
 import {
-  completeBankReconciliation, createBankReconciliation, fetchBankAccounts,
-  fetchBankCandidates, fetchBankReconciliation, fetchBankReconciliations,
-  matchBankStatementLine, type BankLedgerCandidate, type BankReconciliation,
-} from "@/lib/api";
+  v1Api,
+  type BankLedgerCandidateRecord,
+  type BankReconciliationRecord,
+} from "@/lib/api-v1";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/bank-reconciliation")({
@@ -89,9 +90,9 @@ function parseCSV(text: string): ImportLine[] {
 function BankReconciliationPage() {
   const { token } = useAuth();
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
-  const [sessions, setSessions] = useState<BankReconciliation[]>([]);
-  const [selected, setSelected] = useState<BankReconciliation | null>(null);
-  const [candidates, setCandidates] = useState<BankLedgerCandidate[]>([]);
+  const [sessions, setSessions] = useState<BankReconciliationRecord[]>([]);
+  const [selected, setSelected] = useState<BankReconciliationRecord | null>(null);
+  const [candidates, setCandidates] = useState<BankLedgerCandidateRecord[]>([]);
   const [selectedMatches, setSelectedMatches] = useState<Record<string, string>>({});
   const [accountId, setAccountId] = useState("");
   const [reference, setReference] = useState("");
@@ -108,14 +109,18 @@ function BankReconciliationPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [accountRows, sessionRows] = await Promise.all([fetchBankAccounts(token), fetchBankReconciliations(token)]);
+      const [accountRows, sessionRows] = await Promise.all([
+        v1Api.finance.bankAccounts(token),
+        v1Api.finance.bankReconciliations(token),
+      ]);
       setAccounts(accountRows);
       setSessions(sessionRows);
       if (!accountId && accountRows[0]) setAccountId(accountRows[0].id);
       const targetId = id || selected?.id;
       if (targetId) {
         const [detail, ledgerRows] = await Promise.all([
-          fetchBankReconciliation(token, targetId), fetchBankCandidates(token, targetId),
+          v1Api.finance.bankReconciliation(token, targetId),
+          v1Api.finance.bankCandidates(token, targetId),
         ]);
         setSelected(detail);
         setCandidates(ledgerRows);
@@ -138,7 +143,8 @@ function BankReconciliationPage() {
     setLoading(true);
     try {
       const [detail, ledgerRows] = await Promise.all([
-        fetchBankReconciliation(token, id), fetchBankCandidates(token, id),
+        v1Api.finance.bankReconciliation(token, id),
+        v1Api.finance.bankCandidates(token, id),
       ]);
       setSelected(detail); setCandidates(ledgerRows); setSelectedMatches({});
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to open reconciliation"); }
@@ -147,10 +153,23 @@ function BankReconciliationPage() {
 
   const importStatement = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!token || !importLines.length) return;
+    if (!token) return;
+    const validation = bankReconciliationSchema.safeParse({
+      bankAccountId: accountId,
+      reference,
+      startDate,
+      endDate,
+      openingBalance,
+      closingBalance,
+      lines: importLines,
+    });
+    if (!validation.success) {
+      toast.error(validation.error.issues[0]?.message || "Check the statement details and try again.");
+      return;
+    }
     setSaving(true);
     try {
-      const created = await createBankReconciliation(token, {
+      const created = await v1Api.finance.createBankReconciliation(token, {
         bank_account_id: accountId, statement_reference: reference,
         statement_start: startDate, statement_end: endDate,
         opening_balance: Number(openingBalance), closing_balance: Number(closingBalance),
@@ -163,7 +182,7 @@ function BankReconciliationPage() {
     finally { setSaving(false); }
   };
 
-  const candidatesFor = (line: NonNullable<BankReconciliation["lines"]>[number]) => candidates.filter((candidate) => {
+  const candidatesFor = (line: NonNullable<BankReconciliationRecord["lines"]>[number]) => candidates.filter((candidate) => {
     const bankDebit = Number(line.debit) > 0;
     // Bank debit/outflow maps to a credit on the ERP cash asset account, and vice versa.
     const directionMatches = bankDebit
@@ -178,7 +197,7 @@ function BankReconciliationPage() {
     if (!token || !selected || !selectedMatches[lineId]) return;
     setSaving(true);
     try {
-      await matchBankStatementLine(token, selected.id, lineId, selectedMatches[lineId]);
+      await v1Api.finance.matchBankStatementLine(token, selected.id, lineId, selectedMatches[lineId]);
       await openReconciliation(selected.id);
       toast.success("Statement line matched to the posted bank ledger entry");
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to match statement line"); }
@@ -189,7 +208,7 @@ function BankReconciliationPage() {
     if (!token || !selected) return;
     setSaving(true);
     try {
-      await completeBankReconciliation(token, selected.id);
+      await v1Api.finance.completeBankReconciliation(token, selected.id);
       await reload(selected.id);
       toast.success("Bank reconciliation completed");
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to complete reconciliation"); }

@@ -6,6 +6,9 @@ const poolConfig = process.env.DATABASE_URL
   ? {
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+      max: Number(process.env.PG_POOL_MAX || 20),
+      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+      connectionTimeoutMillis: Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
     }
   : {
       host: process.env.DATABASE_HOST || "localhost",
@@ -14,6 +17,9 @@ const poolConfig = process.env.DATABASE_URL
       password: process.env.DATABASE_PASSWORD,
       database: process.env.DATABASE_DB || "ayawin_enterprise",
       ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+      max: Number(process.env.PG_POOL_MAX || 20),
+      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+      connectionTimeoutMillis: Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
     };
 
 const pool = new Pool(poolConfig);

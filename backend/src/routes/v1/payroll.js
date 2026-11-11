@@ -3,6 +3,7 @@ const pool = require("../../db");
 const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
 const payroll = require("../../services/payrollService");
 const remittances = require("../../services/payrollRemittanceService");
+const { logAudit } = require("../../services/auditService");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -38,9 +39,33 @@ router.post("/runs", requirePermission("hr.create"), async (req, res) => {
   }
 });
 
+router.post("/runs/:id/approve", requirePermission("hr.approve"), async (req, res) => {
+  try {
+    return res.json(await payroll.approvePayrollRun({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      runId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/runs/:id/lock", requirePermission("hr.approve"), async (req, res) => {
+  try {
+    return res.json(await payroll.lockPayrollRun({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      runId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
 router.get("/runs/:id/payslips", requirePermission("hr.view"), async (req, res) => {
   const result = await pool.query(
-    `SELECT ps.*, e.employee_code, e.first_name, e.last_name, e.bank_account_no
+    `SELECT ps.*, e.employee_code, e.first_name, e.last_name
      FROM erp_payslips ps
      JOIN erp_employees e ON e.id = ps.employee_id
      WHERE ps.payroll_run_id = $1 AND ps.company_id = $2
@@ -73,6 +98,62 @@ router.post("/runs/:id/post", requirePermission("hr.approve"), async (req, res) 
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
+});
+
+router.post("/runs/:id/release", requirePermission("hr.approve"), async (req, res) => {
+  try {
+    return res.json(await payroll.releasePayrollRun({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      runId: req.params.id,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/runs/:id/payment-file.csv", requirePermission("hr.export"), async (req, res) => {
+  const result = await pool.query(
+    `SELECT pr.run_no,pr.status,e.employee_code,e.first_name,e.last_name,e.bank_name,e.bank_account_no,ps.net_pay
+     FROM erp_payroll_runs pr
+     JOIN erp_payslips ps ON ps.payroll_run_id=pr.id AND ps.company_id=pr.company_id
+     JOIN erp_employees e ON e.id=ps.employee_id AND e.company_id=pr.company_id
+     WHERE pr.id=$1 AND pr.company_id=$2 AND pr.is_deleted=FALSE
+     ORDER BY e.employee_code`,
+    [req.params.id, req.user.company_id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Payroll run has no payslips" });
+  if (result.rows[0].status !== "released") return res.status(409).json({ error: "Payroll must be released before exporting its payment file" });
+  const missingBank = result.rows.filter((row) => !row.bank_account_no);
+  if (missingBank.length) {
+    return res.status(409).json({ error: `${missingBank.length} employees are missing bank account details` });
+  }
+
+  await logAudit({
+    companyId: req.user.company_id,
+    userId: req.user.id,
+    entityType: "erp_payroll_runs",
+    entityId: req.params.id,
+    action: "payroll_bank_payment_file_exported",
+    newValues: { run_no: result.rows[0].run_no, employee_count: result.rowCount },
+    ipAddress: req.clientIp,
+    userAgent: req.headers["user-agent"],
+  });
+  const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const lines = [
+    ["employee_code", "employee_name", "bank_name", "bank_account_no", "amount_kes", "reference"].map(quote).join(","),
+    ...result.rows.map((row) => [
+      row.employee_code,
+      `${row.first_name} ${row.last_name}`.trim(),
+      row.bank_name,
+      row.bank_account_no,
+      Number(row.net_pay).toFixed(2),
+      row.run_no,
+    ].map(quote).join(",")),
+  ];
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${result.rows[0].run_no}-bank-payments.csv"`);
+  return res.send(lines.join("\r\n"));
 });
 
 router.get("/runs/:id/statutory-report", requirePermission("hr.view"), async (req, res) => {

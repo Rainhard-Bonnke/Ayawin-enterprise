@@ -3,6 +3,7 @@ require("dotenv").config();
 const path = require("path");
 const { runMigrations } = require("../src/migrate");
 const notifications = require("../src/services/notificationOutboxService");
+const { createSettingsNotificationAdapter } = require("../src/services/notificationProvider");
 const pool = require("../src/db");
 
 const pollIntervalMs = Math.max(1000, Number(process.env.NOTIFICATION_POLL_INTERVAL_MS || 5000));
@@ -11,9 +12,7 @@ let stopping = false;
 
 function loadAdapter() {
   const configuredPath = process.env.NOTIFICATION_ADAPTER_MODULE;
-  if (!configuredPath) {
-    throw new Error("NOTIFICATION_ADAPTER_MODULE must point to an email/SMS provider adapter module");
-  }
+  if (!configuredPath) return createSettingsNotificationAdapter();
   const adapterPath = path.isAbsolute(configuredPath)
     ? configuredPath
     : path.resolve(process.cwd(), configuredPath);

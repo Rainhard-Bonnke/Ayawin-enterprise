@@ -13,6 +13,7 @@ import {
   Building2,
   PackagePlus,
   Receipt,
+  RefreshCw,
   ShoppingCart,
   UserCog,
 } from "lucide-react";
@@ -25,7 +26,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
-import { fetchDashboardSummary, type DashboardSummary } from "@/lib/api";
+import { type DashboardSummary } from "@/lib/api";
+import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 import { canAccessPath } from "@/lib/rbac";
 
@@ -85,6 +87,7 @@ function Dashboard() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [retryingExceptionId, setRetryingExceptionId] = useState<string | null>(null);
   useEffect(() => {
     if (!token) return;
     setLoading(true);
@@ -96,11 +99,14 @@ function Dashboard() {
       setLoadError(true);
       toast.error("Dashboard request timed out. Check the API connection and retry.");
     }, 12000);
-    fetchDashboardSummary(token)
-      .then((data) => {
+    Promise.all([
+      v1Api.reports.dashboardSummary(token, AbortSignal.timeout(12000)),
+      v1Api.platform.integrationExceptions(token, 100, AbortSignal.timeout(12000)),
+    ])
+      .then(([data, integrationExceptions]) => {
         if (!active) return;
         window.clearTimeout(timeout);
-        setSummary(data);
+        setSummary({ ...data, integrationExceptions });
         setLoadError(false);
         setLoading(false);
       })
@@ -122,6 +128,7 @@ function Dashboard() {
   const liveTopProducts = summary?.topProducts ?? [];
   const liveSalesByCategory = summary?.salesByCategory ?? [];
   const liveAlerts = summary?.alerts ?? [];
+  const liveIntegrationExceptions = summary?.integrationExceptions ?? [];
   const liveTransactions = summary?.recentTransactions ?? [];
   const todaysSales = summary?.kpis ? Number(summary.kpis.todays_sales) : 0;
   const revenueMtd = summary?.kpis ? Number(summary.kpis.revenue_mtd) : 0;
@@ -129,12 +136,34 @@ function Dashboard() {
   const stockAlerts = liveAlerts.filter((alert) => alert.type === "stock").length;
   const metricValue = (value: string) => (loading ? "Loading" : loadError ? "Unavailable" : value);
   const firstName = user?.full_name?.trim().split(/\s+/)[0] || user?.username || "there";
+  const canRetryIntegrations = user?.permissions?.includes("integrations.retry") ?? user?.role === "Admin";
   const greeting =
     new Date().getHours() < 12
       ? "Good morning"
       : new Date().getHours() < 17
         ? "Good afternoon"
         : "Good evening";
+
+  async function retryIntegrationException(exceptionId: string) {
+    if (!token || retryingExceptionId) return;
+    setRetryingExceptionId(exceptionId);
+    try {
+      const exception=summary?.integrationExceptions.find((item)=>item.id===exceptionId);
+      if(exception?.type==="etims_invoice") await v1Api.platform.retryEtimsInvoice(token,exception.source_id);
+      else await v1Api.platform.retryEtimsEvent(token, exceptionId);
+      setSummary((current) => current ? {
+        ...current,
+        integrationExceptions: current.integrationExceptions.map((exception) => exception.id === exceptionId
+          ? { ...exception, status: "pending", manually_retryable: false, last_error: null }
+          : exception),
+      } : current);
+      toast.success("Integration event queued for retry");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to retry integration event");
+    } finally {
+      setRetryingExceptionId(null);
+    }
+  }
 
   const maxRevenue = Math.max(1, ...liveMonthlyRevenue.map((point) => point.revenue));
   const revenuePoints = liveMonthlyRevenue
@@ -533,6 +562,47 @@ function Dashboard() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   No operational exceptions reported.
                 </p>
+              </div>
+            )}
+            {liveIntegrationExceptions.length > 0 && (
+              <div className="mt-3 border-t border-border pt-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Integration queue</p>
+                  <span className="text-xs tabular-nums text-muted-foreground">{liveIntegrationExceptions.length} open</span>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto">
+                  {liveIntegrationExceptions.map((exception) => {
+                    const retryableType = exception.type === "etims_invoice" || exception.type === "etims_purchase" || exception.type === "etims_stock_movement";
+                    const ageMinutes = Math.floor(exception.age_seconds / 60);
+                    return (
+                      <div key={`${exception.type}-${exception.id}`} className="flex items-start justify-between gap-3 border-b border-border/70 py-2 last:border-0">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="font-medium text-foreground">{exception.type.replaceAll("_", " ")}</span>
+                            <StatusBadge status={exception.status} />
+                            <span className="text-muted-foreground">{ageMinutes < 60 ? `${ageMinutes}m` : `${Math.floor(ageMinutes / 60)}h`}</span>
+                          </div>
+                          <p className="truncate text-xs text-muted-foreground">{exception.reference || exception.source_id}</p>
+                          {exception.last_error && <p className="line-clamp-2 text-xs text-destructive">{exception.last_error}</p>}
+                        </div>
+                        {canRetryIntegrations && retryableType && exception.manually_retryable && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 shrink-0"
+                            disabled={retryingExceptionId !== null}
+                            onClick={() => void retryIntegrationException(exception.id)}
+                            aria-label="Retry integration event"
+                          >
+                            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${retryingExceptionId === exception.id ? "animate-spin" : ""}`} />
+                            Retry
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </CardContent>

@@ -3,6 +3,7 @@ const { recordIssue, getSellableQuantity } = require("./inventoryService");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
 const integration = require("./integrationService");
+const etimsEvents = require("./etimsEventService");
 const { logAudit, assertDifferentUser } = require("./auditService");
 const { nextDocumentNo } = require("./documentNumberingService");
 const { roundMoney, sumMoney, lineMoney } = require("../lib/money");
@@ -612,6 +613,22 @@ async function postDeliveryNote({ companyId, userId, deliveryId, postGl = true, 
        WHERE id = $1`,
       [deliveryId, journalId],
     );
+    const stockItems = await client.query(
+      `SELECT line.item_id,line.quantity,COALESCE(order_line.unit_price,0) AS unit_price
+       FROM erp_delivery_note_lines line
+       LEFT JOIN erp_sales_order_lines order_line ON order_line.id=line.so_line_id AND order_line.company_id=line.company_id
+       WHERE line.company_id=$1 AND line.delivery_note_id=$2`,
+      [companyId, deliveryId],
+    );
+    await etimsEvents.queueEtimsStockMovementInTransaction(client, {
+      companyId,
+      userId,
+      sourceType: "delivery_note",
+      sourceId: deliveryId,
+      eventType: "sale",
+      occurredDate: dn.delivery_date,
+      lines: stockItems.rows.map((line) => ({ item_id: line.item_id, quantity: Number(line.quantity), unit_price: Number(line.unit_price) })),
+    });
     if (ownsClient) await client.query("COMMIT");
 
     return { ok: true, delivery_id: deliveryId, cogs_total: cogsTotal, journal_id: journalId };
@@ -1404,6 +1421,23 @@ async function createCustomerInvoice({
       [customerId, companyId],
     );
     if (!customer.rowCount) throw new Error("Customer does not belong to this company or is inactive");
+    const etimsEnabled = await client.query(
+      `SELECT 1 FROM erp_integration_settings
+       WHERE company_id=$1 AND provider='etims' AND provider_mode IN ('sandbox','production') LIMIT 1`,
+      [companyId],
+    );
+    if (etimsEnabled.rowCount) {
+      for (const line of lines) {
+        const registered = await client.query(
+          `SELECT etims_sync_status FROM erp_items
+           WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE AND is_active=TRUE AND is_saleable=TRUE`,
+          [line.item_id, companyId],
+        );
+        if (!registered.rowCount || registered.rows[0].etims_sync_status !== "synced") {
+          throw new Error("Item must be registered with KRA before invoicing while eTIMS is enabled");
+        }
+      }
+    }
     let subtotal = 0;
     let discountAmount = 0;
     let taxAmount = 0;
