@@ -29,6 +29,19 @@ function readCookie(req, name) {
 }
 
 function isValidCsrfRequest(req) {
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+  const configuredOrigins = (process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const developmentOrigin = process.env.NODE_ENV !== "production" && (
+    /^https?:\/\/localhost:\d+$/.test(origin) ||
+    /^https?:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
+    /^https?:\/\/(?:10\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3})\.\d{1,3}:\d+$/.test(origin) ||
+    /^https:\/\/[^/]+\.trycloudflare\.com$/.test(origin)
+  );
+  if (!origin || (!configuredOrigins.includes(origin) && !developmentOrigin)) return false;
+
   const cookieToken = readCookie(req, CSRF_COOKIE);
   const headerToken = typeof req.headers["x-csrf-token"] === "string"
     ? req.headers["x-csrf-token"]

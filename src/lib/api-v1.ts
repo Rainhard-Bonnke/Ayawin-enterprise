@@ -1,7 +1,4 @@
 const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
-const ACCESS_KEY = "ayawin-erp-access-token";
-const REFRESH_KEY = "ayawin-erp-refresh-token";
-const LEGACY_ACCESS_KEY = "ayawin-stock-solution-erp-token";
 const CSRF_COOKIE = "ayawin_csrf_token";
 
 let accessToken: string | null = null;
@@ -150,17 +147,11 @@ export function getStoredTokens() {
 
 export function storeTokens(access: string) {
   accessToken = access;
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem(LEGACY_ACCESS_KEY);
 }
 
 export function clearTokens() {
   accessToken = null;
   csrfTokenInMemory = null;
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem(LEGACY_ACCESS_KEY);
 }
 
 function readCsrfToken() {

@@ -40,7 +40,8 @@ test("POS operators retain their narrow permissions across refresh", async () =>
       body:JSON.stringify({email:`cashier-${suffix}@example.test`,password})});
     assert.equal(login.status,200);
     assert.equal(login.headers.get("access-control-allow-credentials"), "true");
-    const bootstrap=await fetch(`${base}/auth/csrf`,{headers:{origin:"http://localhost:5173"}});
+    const origin = "http://localhost:5173";
+    const bootstrap=await fetch(`${base}/auth/csrf`,{headers:{origin}});
     assert.equal(bootstrap.status,200);
     assert.equal((await bootstrap.json()).csrf_token.length,43);
     assert.equal(bootstrap.headers.getSetCookie().some((cookie) => /ayawin_csrf_token=.*Path=\//i.test(cookie)),true);
@@ -62,9 +63,9 @@ test("POS operators retain their narrow permissions across refresh", async () =>
     const original=decode(session.access_token);
     assert.equal(original.session_type,"pos");
     const csrf=csrfToken(loginCookies);
-    const csrfRejected=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":"invalid"}});
+    const csrfRejected=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":"invalid",origin}});
     assert.equal(csrfRejected.status,403);
-    const refresh=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":csrf}});
+    const refresh=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":csrf,origin}});
     assert.equal(refresh.status,200);
     const refreshed=await refresh.json();
     assert.equal(Object.hasOwn(refreshed, "refresh_token"), false);
@@ -74,9 +75,9 @@ test("POS operators retain their narrow permissions across refresh", async () =>
     assert.deepEqual([...renewed.permissions].sort(),["master_data.view","sales.create","sales.view"]);
     const mfaSetup=await fetch(`${base}/auth/mfa/setup`,{method:"POST",headers:{Authorization:`Bearer ${session.access_token}`,"Content-Type":"application/json"},body:JSON.stringify({})});
     assert.equal(mfaSetup.status,401);
-    const replay=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":csrf}});
+    const replay=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":csrf,origin}});
     assert.equal(replay.status,401);
-    const familyRevoked=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:refreshedCookies,"x-csrf-token":csrfToken(refreshedCookies)}});
+    const familyRevoked=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:refreshedCookies,"x-csrf-token":csrfToken(refreshedCookies),origin}});
     assert.equal(familyRevoked.status,401);
     const malformed=await fetch(`${base}/finance/journals/not-a-uuid`,{headers:{Authorization:`Bearer ${session.access_token}`}});
     assert.equal(malformed.status,400);
