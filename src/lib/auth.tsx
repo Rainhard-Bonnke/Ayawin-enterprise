@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "./api-types";
 import {
   clearTokens,
@@ -24,6 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const sessionEpoch = useRef(0);
 
   useEffect(() => {
     const unsubscribe = onAccessTokenRefreshed((access) => {
@@ -33,18 +34,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     async function restoreSession() {
+      const epoch = sessionEpoch.current;
       try {
         const access = await v1RestoreSession();
+        if (epoch !== sessionEpoch.current) return;
         if (!access) return;
         const me = await v1Me(access);
+        if (epoch !== sessionEpoch.current) return;
         setToken(access);
         setUser(me);
       } catch {
-        clearTokens();
-        setToken(null);
-        setUser(null);
+        if (epoch === sessionEpoch.current) {
+          clearTokens();
+          setToken(null);
+          setUser(null);
+        }
       } finally {
-        setLoading(false);
+        if (epoch === sessionEpoch.current) setLoading(false);
       }
     }
 
@@ -53,13 +59,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const { token: newToken, user: currentUser } = await v1Login(email, password);
-    setToken(newToken);
-    setUser(currentUser);
-    return currentUser;
+    const epoch = ++sessionEpoch.current;
+    try {
+      const { token: newToken, user: currentUser } = await v1Login(email, password);
+      if (epoch === sessionEpoch.current) {
+        setToken(newToken);
+        setUser(currentUser);
+        setLoading(false);
+      }
+      return currentUser;
+    } catch (error) {
+      if (epoch === sessionEpoch.current) setLoading(false);
+      throw error;
+    }
   };
 
   const logout = async () => {
+    sessionEpoch.current += 1;
     try {
       await v1Logout();
     } catch {
