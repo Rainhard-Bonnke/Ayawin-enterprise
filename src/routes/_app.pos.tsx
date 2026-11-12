@@ -8,25 +8,14 @@ import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 import { canPerformSalesAction } from "@/lib/rbac";
-import {
-  createInvoiceFromSalesOrder,
-  createSalesOrder,
-  confirmSalesOrder,
-  cancelSalesOrder,
-  dispatchSalesOrder,
-  paySalesInvoice,
-  downloadReceiptPdf,
-  printReceiptPdf,
-  type BackendCustomer,
-  type BackendMasterItem,
-  type BackendWarehouse,
-} from "@/lib/api";
+import type { BackendCustomer, BackendMasterItem, BackendWarehouse } from "@/lib/api-types";
 import {
   normalizeMasterCustomer,
   normalizeMasterItem,
   normalizeMasterWarehouse,
   v1Api,
 } from "@/lib/api-v1";
+import { useSalesWorkflow } from "@/features/sales/hooks/useSalesWorkflow";
 import { toast } from "sonner";
 import { posCheckoutSchema } from "@/lib/schemas/sales";
 
@@ -40,6 +29,16 @@ type CartLine = BackendMasterItem & { quantity: number; unit_price: number };
 function PosPage() {
   const navigate = useNavigate();
   const { token, user } = useAuth();
+  const {
+    createInvoiceFromSalesOrder,
+    createSalesOrder,
+    confirmSalesOrder,
+    cancelSalesOrder,
+    dispatchSalesOrder,
+    paySalesInvoice,
+    downloadReceiptPdf,
+    printReceiptPdf,
+  } = useSalesWorkflow();
   const canCheckout = [
     "sales.order.create",
     "sales.delivery.post",

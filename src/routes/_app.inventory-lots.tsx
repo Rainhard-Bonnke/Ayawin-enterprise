@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
-import { type BackendInventoryLot, type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { type BackendInventoryLot, type BackendMasterItem, type BackendWarehouse } from "@/lib/api-types";
 import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 

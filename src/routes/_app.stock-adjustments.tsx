@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { type BackendMasterItem, type BackendWarehouse } from "@/lib/api";
+import { type BackendMasterItem, type BackendWarehouse } from "@/lib/api-types";
 import { normalizeMasterItem, normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";

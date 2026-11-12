@@ -34,7 +34,7 @@ import {
   type BackendTaxRate,
   type BackendSupplier,
   type BackendWarehouse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import {
   apiV1FetchBlob,
   importRows,

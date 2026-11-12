@@ -40,7 +40,7 @@ import { SearchBar } from "@/components/SearchBar";
 import { KES } from "@/lib/format";
 import { customerHealth } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
-import { type BackendCustomer } from "@/lib/api";
+import { type BackendCustomer } from "@/lib/api-types";
 import { normalizeMasterCustomer, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { queryKeys } from "@/lib/queryKeys";

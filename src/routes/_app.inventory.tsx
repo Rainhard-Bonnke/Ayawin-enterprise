@@ -41,7 +41,7 @@ import {
   type BackendInventoryItem,
   type BackendMasterItem,
   type BackendWarehouse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { toast } from "sonner";
 import {
   normalizeMasterItem,
@@ -138,7 +138,7 @@ function InventoryPage() {
   }, [token]);
 
   const loadFindings = async () => {
-    if (!token || token.startsWith("demo:")) return;
+    if (!token) return;
     try {
       setFindings(await v1Api.inventory.intelligenceFindings(token));
     } catch {

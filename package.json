@@ -12,6 +12,7 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "test:frontend": "vitest run --config vitest.config.ts",
+    "test:no-legacy-frontend": "node --test scripts/no-legacy-frontend.test.cjs",
     "test:e2e:frontend": "playwright test",
     "lint": "eslint . --rule \"prettier/prettier: off\"",
     "format": "prettier --write .",

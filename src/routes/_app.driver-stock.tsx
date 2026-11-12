@@ -91,7 +91,7 @@ function DriverStockPage() {
   );
 
   const loadWorkspace = async () => {
-    if (!token || token.startsWith("demo:")) {
+    if (!token) {
       setLoading(false);
       return;
     }

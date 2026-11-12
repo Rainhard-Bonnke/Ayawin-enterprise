@@ -8,7 +8,7 @@ import {
   type BackendCustomer,
   type BackendInvoice,
   type BackendMasterItem,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import {
   normalizeMasterCustomer,
   normalizeMasterItem,

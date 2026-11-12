@@ -54,7 +54,7 @@ function RouteClosuresPage() {
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
 
   const loadWorkspace = useCallback(async () => {
-    if (!token || token.startsWith("demo:")) {
+    if (!token) {
       setLoading(false);
       return;
     }

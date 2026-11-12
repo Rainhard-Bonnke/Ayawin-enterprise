@@ -18,7 +18,7 @@ The frontend build is server-rendered and emits `.output/server/index.mjs`; a st
 
 ## Required configuration
 
-- Set `VITE_API_BASE` to the HTTPS API origin at frontend build time and `VITE_USE_API_V1=true`.
+- Set `VITE_API_BASE` to the HTTPS API origin at frontend build time. Production builds fail if it is missing.
 - Set backend `CORS_ORIGIN` to the exact HTTPS frontend origin; never use `*` with credentialed requests.
 - Configure secure cookies, HTTPS, trusted proxy hops, and secrets independently in each environment.
 - Keep PostgreSQL and Redis off the public internet. Restrict administrative access and rotate service credentials.

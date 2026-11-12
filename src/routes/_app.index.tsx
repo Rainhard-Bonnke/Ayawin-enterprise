@@ -26,7 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
-import { type DashboardSummary } from "@/lib/api";
+import { type DashboardSummary } from "@/lib/api-types";
 import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 import { canAccessPath } from "@/lib/rbac";

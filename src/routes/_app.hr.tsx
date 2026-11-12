@@ -33,7 +33,7 @@ import {
   type PayrollRun,
   type PayslipRow,
   type PayrollRemittance,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
 

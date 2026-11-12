@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { User } from "./api";
+import type { User } from "./api-types";
 import {
   clearTokens,
   onAccessTokenRefreshed,

@@ -1,4 +1,8 @@
-const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
+if (import.meta.env.PROD && !configuredApiBase) {
+  throw new Error("VITE_API_BASE must be configured for production.");
+}
+const apiBase = configuredApiBase ? configuredApiBase.replace(/\/+$/, "") : "";
 const CSRF_COOKIE = "ayawin_csrf_token";
 
 let accessToken: string | null = null;
@@ -181,10 +185,6 @@ export function onAccessTokenRefreshed(listener: (access: string) => void) {
 
 function notifyTokenRefreshed(access: string) {
   tokenRefreshListeners.forEach((listener) => listener(access));
-}
-
-export function isApiSessionToken(token: string | null | undefined) {
-  return Boolean(token);
 }
 
 function buildUrl(path: string) {
@@ -1762,13 +1762,6 @@ export type BackendInventoryLotRecord = {
   quarantined_quantity: number;
   unit_cost: number;
 };
-
-export function isV1Enabled() {
-  if (import.meta.env.VITE_USE_API_V1 === "false") return false;
-  if (apiBase) return true;
-  // Dev without VITE_API_BASE: Vite proxies /api → backend (same as create calls).
-  return import.meta.env.DEV;
-}
 
 export type MasterEntity = "customers" | "vendors" | "items" | "warehouses";
 

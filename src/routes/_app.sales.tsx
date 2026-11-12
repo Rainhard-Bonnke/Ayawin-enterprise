@@ -43,24 +43,21 @@ import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { useAuth } from "@/lib/auth";
 import { canPerformSalesAction } from "@/lib/rbac";
 import { queryKeys } from "@/lib/queryKeys";
-import {
-  createInvoiceFromSalesOrder,
-  dispatchSalesOrder,
-  fetchSalesAnalytics,
-  fetchSalesOrderDetail,
-  type BackendCustomer,
-  type BackendMasterItem,
-  type BackendSalesOrder,
-  type BackendWarehouse,
-  type SalesAnalytics,
-  type SalesOrderDetail,
-} from "@/lib/api";
+import type {
+  BackendCustomer,
+  BackendMasterItem,
+  BackendSalesOrder,
+  BackendWarehouse,
+  SalesAnalytics,
+  SalesOrderDetail,
+} from "@/lib/api-types";
 import {
   normalizeMasterCustomer,
   normalizeMasterItem,
   normalizeMasterWarehouse,
   v1Api,
 } from "@/lib/api-v1";
+import { useSalesWorkflow } from "@/features/sales/hooks/useSalesWorkflow";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { salesOrderSchema } from "@/lib/schemas/sales";
 
@@ -71,6 +68,7 @@ export const Route = createFileRoute("/_app/sales")({
 
 function SalesPage() {
   const { token, user } = useAuth();
+  const { createInvoiceFromSalesOrder, dispatchSalesOrder, fetchSalesAnalytics, fetchSalesOrderDetail } = useSalesWorkflow();
   const canCreateOrder = canPerformSalesAction(user, "sales.order.create");
   const canApproveOrder = canPerformSalesAction(user, "sales.order.approve");
   const canPostDelivery = canPerformSalesAction(user, "sales.delivery.post");

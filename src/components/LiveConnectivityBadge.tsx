@@ -1,11 +1,10 @@
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/lib/auth";
-import { isV1Enabled } from "@/lib/api-v1";
 
 export function LiveConnectivityBadge() {
   const { token } = useAuth();
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-  const liveSession = Boolean(token && !token.startsWith("demo:") && isV1Enabled());
+  const liveSession = Boolean(token);
 
   if (liveSession && online) {
     return (

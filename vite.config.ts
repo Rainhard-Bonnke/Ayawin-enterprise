@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { request as httpRequest } from "node:http";
 import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -11,7 +11,7 @@ const apiProxy = {
   name: "ayawin-api-proxy",
   configureServer(server: import("vite").ViteDevServer) {
     server.middlewares.use((req, res, next) => {
-      if (!req.url?.startsWith("/api/")) return next();
+      if (!req.url?.startsWith("/api/v1/")) return next();
 
       const port = Number(process.env.API_PORT || 4000);
       const upstream = httpRequest(
@@ -43,28 +43,35 @@ const apiProxy = {
   },
 };
 
-export default defineConfig({
-  plugins: [
-    apiProxy,
-    tanstackStart(),
-    nitro(),
-    tanstackRouter({ target: "react", enableRouteGeneration: false }),
-    tailwindcss(),
-    react(),
-    tsconfigPaths(),
-  ],
-  server: {
-    host: true,
-    allowedHosts: true,
-    watch: {
-      ignored: ["**/node_modules/**", "**/.output/**"],
-    },
-    proxy: {
-      "/api": {
-        target: "http://localhost:4000",
-        changeOrigin: true,
-        secure: false,
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  if (command === "build" && mode === "production" && !env.VITE_API_BASE?.trim()) {
+    throw new Error("VITE_API_BASE must be set to the browser-reachable API origin for production builds.");
+  }
+
+  return {
+    plugins: [
+      apiProxy,
+      tanstackStart(),
+      nitro(),
+      tanstackRouter({ target: "react", enableRouteGeneration: false }),
+      tailwindcss(),
+      react(),
+      tsconfigPaths(),
+    ],
+    server: {
+      host: true,
+      allowedHosts: true,
+      watch: {
+        ignored: ["**/node_modules/**", "**/.output/**"],
+      },
+      proxy: {
+        "/api/v1": {
+          target: "http://localhost:4000",
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
-  },
+  };
 });
