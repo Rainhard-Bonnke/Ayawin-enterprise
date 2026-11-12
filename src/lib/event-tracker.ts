@@ -1,7 +1,5 @@
 import { apiV1Fetch } from "@/lib/api-v1";
 
-const apiBase = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
-
 type EventPayload = {
   action: string;
   entityType?: string;
