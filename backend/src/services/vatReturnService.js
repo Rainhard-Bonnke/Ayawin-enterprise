@@ -1,7 +1,7 @@
 const pool = require("../db");
 const { logAudit, assertDifferentUser } = require("./auditService");
 const { roundMoney, sumMoney } = require("../lib/money");
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
 
 const OUTPUT_TREATMENTS = ["standard", "zero_rated", "exempt"];
 
@@ -384,7 +384,7 @@ function returnToCsv(vatReturn) {
   return [...topRows, returnLinesToCsv(vatReturn.lines || [])].join("\r\n");
 }
 
-function returnToXlsx(vatReturn) {
+async function returnToXlsx(vatReturn) {
   const summary = typeof vatReturn.summary === "string" ? JSON.parse(vatReturn.summary) : vatReturn.summary || {};
   const rows = [
     ["VAT3 Working Paper - Not Filed"],
@@ -412,10 +412,10 @@ function returnToXlsx(vatReturn) {
       line.taxable_amount, line.output_vat, line.claimable_input_vat, line.held_input_vat,
       line.non_claimable_input_vat]),
   ];
-  const worksheet = XLSX.utils.aoa_to_sheet(rows);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "VAT3 Working Paper");
-  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("VAT3 Working Paper");
+  rows.forEach((row) => worksheet.addRow(row));
+  return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
 module.exports = {

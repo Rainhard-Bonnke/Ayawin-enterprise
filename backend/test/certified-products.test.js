@@ -2,8 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { readProducts, categoryCode } = require("../scripts/import-certified-products.cjs");
 
-test("certified product workbook has unique SKUs and complete import fields", () => {
-  const { products, categories } = readProducts();
+test("certified product workbook has unique SKUs and complete import fields", async () => {
+  const { products, categories } = await readProducts();
   const skuSet = new Set(products.map((product) => product.item_code));
 
   assert.equal(products.length, 1048);

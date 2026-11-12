@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const path = require("path");
-const xlsx = require("xlsx");
+const ExcelJS = require("exceljs");
 const pool = require("../src/db");
 
 const EXPECTED_HEADERS = [
@@ -31,12 +31,17 @@ function categoryCode(category) {
   return `CAT-${category.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
 }
 
-function readProducts(filePath = SOURCE_FILE) {
-  const workbook = xlsx.readFile(filePath, { raw: true });
-  const sheet = workbook.Sheets["Master Catalogue"];
+async function readProducts(filePath = SOURCE_FILE) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const sheet = workbook.getWorksheet("Master Catalogue");
   if (!sheet) throw new Error('Workbook must contain a "Master Catalogue" sheet');
 
-  const rows = xlsx.utils.sheet_to_json(sheet, { defval: null, raw: true });
+  const [headerValues, ...dataValues] = sheet.getSheetValues().slice(1);
+  const columnHeaders = (headerValues || []).slice(1).map((header) => String(header ?? ""));
+  const rows = dataValues.filter(Boolean).map((values) => Object.fromEntries(
+    columnHeaders.map((header, index) => [header, values[index + 1] ?? null]),
+  ));
   if (!rows.length) throw new Error("The product workbook is empty");
   const headers = Object.keys(rows[0]);
   if (EXPECTED_HEADERS.some((header) => !headers.includes(header))) {
@@ -117,7 +122,7 @@ async function findBlockingItemReferences(client, companyId) {
 }
 
 async function importCertifiedProducts({ dryRun = false, confirm = false } = {}) {
-  const { products, categories } = readProducts();
+  const { products, categories } = await readProducts();
   if (!dryRun && !confirm) {
     throw new Error("Catalog replacement requires --confirm-replace-catalog");
   }

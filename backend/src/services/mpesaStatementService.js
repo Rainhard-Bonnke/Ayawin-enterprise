@@ -1,4 +1,5 @@
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
+const { Readable } = require("node:stream");
 const pool = require("../db");
 const gl = require("./glPostingService");
 const integrationSettings = require("./integrationSettingsService");
@@ -17,11 +18,19 @@ function normalizeHeader(value) {
   return String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-function parseMpesaStatementCsv(csvText) {
+async function parseMpesaStatementCsv(csvText) {
   if (typeof csvText !== "string" || !csvText.trim()) throw new Error("Statement CSV is empty");
-  const workbook = XLSX.read(csvText, { type: "string", raw: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = await workbook.csv.read(Readable.from([csvText]));
+  const headers = sheet.getRow(1).values.slice(1).map((value) => String(value || ""));
+  const rawRows = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    rawRows.push(Object.fromEntries(headers.map((header, index) => [
+      header,
+      row.getCell(index + 1).text || "",
+    ])));
+  });
   if (!rawRows.length || rawRows.length > 10000) throw new Error("Import between 1 and 10,000 M-Pesa statement rows");
   return rawRows.map((raw, index) => {
     const row = Object.fromEntries(Object.entries(raw).map(([key, value]) => [normalizeHeader(key), value]));
@@ -87,7 +96,7 @@ async function postStatementAdjustment(client, { companyId, userId, line, policy
 async function importMpesaStatement({ companyId, userId, statementReference, csvText, fileName = null }) {
   const reference = String(statementReference || "").trim();
   if (!reference) throw new Error("Statement reference is required");
-  const rows = parseMpesaStatementCsv(csvText);
+  const rows = await parseMpesaStatementCsv(csvText);
   const requiresAdjustmentAccounts = rows.some((row) => row.transactionType === "fee" || row.transactionType === "reversal");
   const config = requiresAdjustmentAccounts
     ? await integrationSettings.getProviderRuntimeConfig({ companyId, provider: "mpesa" })

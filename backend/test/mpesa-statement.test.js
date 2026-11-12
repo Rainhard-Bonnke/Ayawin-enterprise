@@ -2,8 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { parseMpesaStatementCsv } = require("../src/services/mpesaStatementService");
 
-test("M-Pesa CSV parser normalizes Safaricom-style headings into reconciliation rows", () => {
-  const rows = parseMpesaStatementCsv([
+test("M-Pesa CSV parser normalizes Safaricom-style headings into reconciliation rows", async () => {
+  const rows = await parseMpesaStatementCsv([
     "Transaction ID,Transaction Date,Transaction Type,Amount,Fee,Reference",
     "QAB123,20261109,payment,1000,0,INV-1",
     ",20261109,fee,25,25,CHARGE-1",
@@ -23,8 +23,8 @@ test("M-Pesa CSV parser normalizes Safaricom-style headings into reconciliation 
   assert.equal(rows[1].feeAmount, 25);
 });
 
-test("M-Pesa CSV parser rejects invalid dates, transaction categories, and amounts", () => {
-  assert.throws(() => parseMpesaStatementCsv("transaction_id,transaction_date,transaction_type,amount\nA,not-a-date,payment,1"), /invalid transaction date/);
-  assert.throws(() => parseMpesaStatementCsv("transaction_date,transaction_type,amount\n20261109,unknown,1"), /must be payment/);
-  assert.throws(() => parseMpesaStatementCsv("transaction_date,transaction_type,amount\n20261109,payment,nope"), /invalid amount/);
+test("M-Pesa CSV parser rejects invalid dates, transaction categories, and amounts", async () => {
+  await assert.rejects(parseMpesaStatementCsv("transaction_id,transaction_date,transaction_type,amount\nA,not-a-date,payment,1"), /invalid transaction date/);
+  await assert.rejects(parseMpesaStatementCsv("transaction_date,transaction_type,amount\n20261109,unknown,1"), /must be payment/);
+  await assert.rejects(parseMpesaStatementCsv("transaction_date,transaction_type,amount\n20261109,payment,nope"), /invalid amount/);
 });

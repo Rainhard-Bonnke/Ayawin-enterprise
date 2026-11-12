@@ -35,7 +35,7 @@ router.get("/returns/:id/export.xlsx", requirePermission("tax.export"), async (r
   if (!vatReturn) return res.status(404).json({ error: "VAT return not found" });
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${vatReturn.return_no}.xlsx"`);
-  return res.send(vatReturns.returnToXlsx(vatReturn));
+  return res.send(await vatReturns.returnToXlsx(vatReturn));
 });
 
 router.get("/returns/:id", requirePermission("tax.view"), async (req, res) => {

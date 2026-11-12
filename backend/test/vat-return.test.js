@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const ExcelJS = require("exceljs");
 const {
   buildReturnSummary,
   buildReturnLines,
@@ -54,8 +55,8 @@ test("VAT3 source lines retain document identifiers and export as escaped CSV", 
   assert.match(csv, /customer_invoice/);
 });
 
-test("VAT3 XLSX export produces a workbook buffer with summary and source rows", () => {
-  const buffer = returnToXlsx({
+test("VAT3 XLSX export produces a workbook buffer with summary and source rows", async () => {
+  const buffer = await returnToXlsx({
     return_no: "VAT3-2026-11",
     period_start: "2026-11-01",
     period_end: "2026-11-30",
@@ -75,6 +76,12 @@ test("VAT3 XLSX export produces a workbook buffer with summary and source rows",
 
   assert.equal(Buffer.isBuffer(buffer), true);
   assert.equal(buffer.subarray(0, 2).toString(), "PK");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  assert.equal(workbook.worksheets[0].getCell("A1").value, "VAT3 Working Paper - Not Filed");
+  assert.equal(workbook.worksheets[0].getCell("A2").value, "Return");
+  assert.equal(workbook.worksheets[0].getCell("B2").value, "VAT3-2026-11");
+  assert.equal(workbook.worksheets[0].getCell("A19").value, "Source document lines");
 });
 
 test("VAT3 CSV filing worksheet includes return summary before source drill-down", () => {

@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
 const PDFDocument = require("pdfkit");
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
 const { CronExpressionParser } = require("cron-parser");
 const pool = require("../db");
 const reporting = require("./reportingService");
@@ -43,9 +43,14 @@ async function buildScheduledReportBuffer({ format, reportName, rows }) {
   if (!Array.isArray(rows)) throw new Error("Scheduled report rows must be an array");
   if (format === "csv") return Buffer.from(reporting.rowsToCsv(rows), "utf8");
   if (format === "xlsx") {
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Report");
-    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Report");
+    const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+    if (headers.length) {
+      worksheet.addRow(headers);
+      rows.forEach((row) => worksheet.addRow(headers.map((header) => row[header] ?? null)));
+    }
+    return Buffer.from(await workbook.xlsx.writeBuffer());
   }
   if (format === "pdf") return createPdfBuffer({ reportName, rows });
   throw new Error("Scheduled report format must be csv, xlsx, or pdf");
