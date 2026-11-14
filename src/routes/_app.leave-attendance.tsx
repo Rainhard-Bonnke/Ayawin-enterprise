@@ -16,6 +16,17 @@ const load = (token: string, signal?: AbortSignal): Promise<RegisterRow[]> =>
   v1Api.hr.leaveApplications(token, signal);
 
 export const Route = createFileRoute("/_app/leave-attendance")({
-  component: () => <ResourceRegisterPage title="Leave & attendance" description="Review employee leave requests and their approval status." columns={columns} load={load} queryKey={queryKeys.hr.leaveApplications()} actionLabel="Open employee records" actionTo="/hr" countLabel="Leave requests" />,
+  component: () => (
+    <ResourceRegisterPage
+      title="Leave & attendance"
+      description="Review employee leave requests and their approval status."
+      columns={columns}
+      load={load}
+      queryKey={queryKeys.hr.leaveApplications()}
+      actionLabel="Open employee records"
+      actionTo="/hr"
+      countLabel="Leave requests"
+    />
+  ),
   head: () => ({ meta: [{ title: "Leave & Attendance - Ayawin Stock Solution" }] }),
 });

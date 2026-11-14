@@ -8,6 +8,7 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",
+    serviceWorkers: "block",
   },
   projects: [
     {
@@ -16,9 +17,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4173",
+    command: "npm run build && node .output/server/index.mjs",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: { HOST: "127.0.0.1", PORT: "4173", VITE_API_BASE: "http://127.0.0.1:4173" },
   },
 });

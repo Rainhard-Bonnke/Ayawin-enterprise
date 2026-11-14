@@ -43,3 +43,19 @@ test("computePayslip net is less than gross", () => {
   assert.ok(slip.net_pay < slip.gross_pay);
   assert.ok(slip.paye >= 0);
 });
+
+test("computePayslip includes NHIF in the deduction set and net-pay calculation", () => {
+  const slip = computePayslip(
+    { basic_salary: 95000 },
+    { basic_salary: 95000 },
+    {
+      paye_bands: bands,
+      nssf_ceiling: 4320,
+      housing_levy_rate: 1.5,
+    },
+  );
+
+  assert.equal(slip.nhif, 1600);
+  assert.ok(slip.deductions_detail.some((item) => item.code === "NHIF" && item.amount === 1600));
+  assert.ok(slip.net_pay <= slip.gross_pay);
+});

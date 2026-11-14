@@ -10,11 +10,38 @@ const customerReceipts = require("../../services/customerReceiptService");
 const { parsePagination } = require("../../lib/queryHelper");
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
-const { buildInvoiceVerificationHash, isFinalEtimsInvoice } = require("../../services/documentVerificationService");
+const {
+  buildInvoiceVerificationHash,
+  buildInvoiceIssuerDetails,
+  isFinalEtimsInvoice,
+} = require("../../services/documentVerificationService");
+const { logAudit } = require("../../services/auditService");
 
 const router = express.Router();
 const AYAWIN_PDF_LOGO = path.resolve(__dirname, "../../../../public/ayawin-wordmark.png");
 router.use(authenticateErp);
+
+async function getInvoiceIssuerDetails(companyId, issuerSnapshot = null) {
+  if (issuerSnapshot) return issuerSnapshot;
+  const result = await pool.query(
+    `SELECT c.name, c.legal_name, c.tax_registration_no, c.base_currency_code,
+            branch.address_line1, branch.address_line2, branch.city, branch.country_code,
+            branch.phone, branch.email
+     FROM erp_companies c
+     LEFT JOIN LATERAL (
+       SELECT b.address_line1, b.address_line2, b.city, b.country_code, b.phone, b.email
+       FROM erp_branches b
+       WHERE b.company_id = c.id AND b.is_head_office = TRUE
+         AND b.is_active = TRUE AND b.is_deleted = FALSE
+       ORDER BY b.created_at, b.id
+       LIMIT 1
+     ) branch ON TRUE
+     WHERE c.id = $1 AND c.is_active = TRUE AND c.is_deleted = FALSE`,
+    [companyId],
+  );
+  if (!result.rowCount) throw new Error("Invoice issuer company was not found");
+  return buildInvoiceIssuerDetails(result.rows[0], result.rows[0]);
+}
 
 async function requireSalesApprovalOrOwnPosOrder(req, res, next) {
   if (req.user?.permissions?.includes("sales.order.approve") || req.user?.role === "Admin") return next();
@@ -26,6 +53,27 @@ async function requireSalesApprovalOrOwnPosOrder(req, res, next) {
     if (owned.rowCount) return next();
   }
   return res.status(403).json({ error: "Forbidden", required: ["sales.order.approve"] });
+}
+
+async function requireOwnPosOrder(req, res, next) {
+  if (req.user?.session_type !== "pos") return next();
+  let orderId = req.params.id || req.body?.sales_order_id;
+  if (req.path.startsWith("/pick-lists/")) {
+    const pickList = await pool.query(
+      `SELECT sales_order_id FROM erp_sales_pick_lists
+       WHERE id=$1 AND company_id=$2 AND is_deleted=FALSE`,
+      [req.params.id, req.user.company_id],
+    );
+    orderId = pickList.rows[0]?.sales_order_id;
+  }
+  if (!orderId) return res.status(403).json({ error: "POS sessions can only fulfill their own sales orders" });
+  const owned = await pool.query(
+    `SELECT 1 FROM erp_sales_orders
+     WHERE id=$1 AND company_id=$2 AND created_by=$3 AND is_deleted=FALSE`,
+    [orderId, req.user.company_id, req.user.id],
+  );
+  if (!owned.rowCount) return res.status(403).json({ error: "POS sessions can only fulfill their own sales orders" });
+  return next();
 }
 
 router.post("/atp-check", requirePermission("sales.view"), async (req, res) => {
@@ -104,6 +152,12 @@ router.post("/orders", requirePermission("sales.order.create"), async (req, res)
       error: "each line requires item_id, positive quantity, and non-negative unit_price",
     });
   }
+  const salesRepId = req.body.sales_rep_id || req.user.id;
+  if (String(salesRepId) !== String(req.user.id)
+      && !req.user.permissions?.includes("sales.target.manage")
+      && req.user?.role !== "Admin") {
+    return res.status(403).json({ error: "Only sales managers can assign an order to another representative" });
+  }
   try {
     const order = await sales.createSalesOrder({
       companyId: req.user.company_id,
@@ -115,6 +169,7 @@ router.post("/orders", requirePermission("sales.order.create"), async (req, res)
       orderDate: req.body.order_date,
       requiredDate: req.body.required_date,
       notes: req.body.notes,
+      salesRepId,
       permissions: req.user.permissions,
     });
     return res.status(201).json(order);
@@ -167,7 +222,41 @@ router.post("/orders/:id/cancel", requireSalesApprovalOrOwnPosOrder, async (req,
   }
 });
 
-router.post("/deliveries", requirePermission("sales.delivery.post"), async (req, res) => {
+router.post("/orders/:id/pick-list", requirePermission("sales.delivery.post"), requireOwnPosOrder, async (req, res) => {
+  try {
+    const pickList = await sales.createSalesPickList({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      salesOrderId: req.params.id,
+    });
+    return res.status(201).json(pickList);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/pick-lists/:id", requirePermission("sales.view"), async (req, res) => {
+  try {
+    return res.json(await sales.getSalesPickList({ companyId: req.user.company_id, pickListId: req.params.id }));
+  } catch (error) {
+    return res.status(404).json({ error: error.message });
+  }
+});
+
+router.post("/pick-lists/:id/confirm", requirePermission("sales.delivery.post"), requireOwnPosOrder, async (req, res) => {
+  try {
+    return res.json(await sales.recordSalesPicks({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      pickListId: req.params.id,
+      lines: req.body?.lines,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/deliveries", requirePermission("sales.delivery.post"), requireOwnPosOrder, async (req, res) => {
   try {
     const result = await sales.createAndPostDelivery({
       companyId: req.user.company_id,
@@ -178,6 +267,7 @@ router.post("/deliveries", requirePermission("sales.delivery.post"), async (req,
         so_line_id, item_id, quantity,
       })) : req.body.lines,
       deliveryDate: req.body.delivery_date,
+      pickListId: req.body.pick_list_id || null,
     });
     return res.status(201).json(result);
   } catch (err) {
@@ -205,6 +295,95 @@ router.post("/deliveries/:id/proof", requireAnyPermission("sales.create", "fleet
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
+});
+
+router.post(
+  "/deliveries/:id/proof/attachments",
+  express.raw({ type: "application/octet-stream", limit: "5mb" }),
+  requireAnyPermission("sales.create", "fleet.count"),
+  async (req, res) => {
+    const data = req.body;
+    if (!Buffer.isBuffer(data) || data.length === 0 || data.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Choose a proof file no larger than 5 MB" });
+    }
+    const contentType = String(req.headers["x-file-content-type"] || "").toLowerCase();
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+    if (!allowedTypes.has(contentType)) {
+      return res.status(400).json({ error: "Proof files must be JPEG, PNG, WebP or PDF" });
+    }
+    const isJpeg = data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+    const isPng = data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const isWebp = data.length >= 12 && data.toString("ascii", 0, 4) === "RIFF" && data.toString("ascii", 8, 12) === "WEBP";
+    const isPdf = data.length >= 5 && data.toString("ascii", 0, 5) === "%PDF-";
+    if (!(contentType === "image/jpeg" && isJpeg) && !(contentType === "image/png" && isPng)
+      && !(contentType === "image/webp" && isWebp) && !(contentType === "application/pdf" && isPdf)) {
+      return res.status(400).json({ error: "File content does not match its declared type" });
+    }
+
+    let submittedName = String(req.headers["x-file-name"] || "delivery-proof");
+    try { submittedName = decodeURIComponent(submittedName); } catch { /* keep a safe fallback name below */ }
+    const fileName = submittedName
+      .replace(/[\\/\r\n\0]/g, "_").replace(/[<>:"|?*]/g, "_").trim().slice(0, 180) || "delivery-proof";
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const delivery = await client.query(
+        "SELECT id FROM erp_delivery_notes WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
+        [req.params.id, req.user.company_id],
+      );
+      if (!delivery.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Delivery note not found" });
+      }
+      const existing = await client.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(byte_size), 0)::bigint AS bytes
+         FROM erp_delivery_proof_attachments WHERE company_id = $1 AND delivery_note_id = $2`,
+        [req.user.company_id, req.params.id],
+      );
+      if (Number(existing.rows[0].count) >= 10 || Number(existing.rows[0].bytes) + data.length > 25 * 1024 * 1024) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "This delivery has reached its proof attachment limit" });
+      }
+      const digest = require("crypto").createHash("sha256").update(data).digest("hex");
+      const inserted = await client.query(
+        `INSERT INTO erp_delivery_proof_attachments
+         (company_id, delivery_note_id, file_name, content_type, byte_size, sha256, file_data, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         RETURNING id, file_name, content_type, byte_size, sha256, created_at, created_by`,
+        [req.user.company_id, req.params.id, fileName, contentType, data.length, digest, data, req.user.id],
+      );
+      await logAudit({
+        client, companyId: req.user.company_id, userId: req.user.id,
+        entityType: "erp_delivery_notes", entityId: req.params.id,
+        action: "delivery_proof_attachment_added",
+        newValues: { attachment_id: inserted.rows[0].id, file_name: fileName, content_type: contentType, byte_size: data.length, sha256: digest },
+      });
+      await client.query("COMMIT");
+      return res.status(201).json(inserted.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: error.message || "Unable to save proof attachment" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+router.get("/deliveries/:id/proof/attachments/:attachmentId", requireAnyPermission("sales.view", "fleet.view"), async (req, res) => {
+  const result = await pool.query(
+    `SELECT a.file_name, a.content_type, a.file_data
+     FROM erp_delivery_proof_attachments a
+     JOIN erp_delivery_notes d ON d.id = a.delivery_note_id AND d.company_id = a.company_id
+     WHERE a.id = $1 AND a.delivery_note_id = $2 AND a.company_id = $3 AND d.is_deleted = FALSE`,
+    [req.params.attachmentId, req.params.id, req.user.company_id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Delivery proof attachment not found" });
+  const file = result.rows[0];
+  res.setHeader("Content-Type", file.content_type);
+  res.setHeader("Content-Disposition", `attachment; filename="${file.file_name.replace(/["\r\n]/g, "_")}"`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, no-store");
+  return res.send(file.file_data);
 });
 
 router.get("/routes/reconciliation", requireAnyPermission("sales.view", "fleet.view"), async (req, res) => {
@@ -279,6 +458,43 @@ router.get("/deliveries", requirePermission("sales.view"), async (req, res) => {
     [req.user.company_id],
   );
   return res.json(result.rows);
+});
+
+router.get("/deliveries/:id/proof", requirePermission("sales.view"), async (req, res) => {
+  const result = await pool.query(
+    `SELECT d.id, d.delivery_no, d.status, d.delivery_date, d.route_code,
+            d.proof_status, d.customer_confirmed, d.delivered_at, d.proof_note,
+            d.signature_url, d.driver_user_id, d.vehicle_warehouse_id,
+            so.order_no, c.name AS customer_name,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'delivery_line_id', dl.id, 'item_id', dl.item_id,
+                'item_name', i.name, 'quantity', dl.quantity,
+                'delivered_quantity', dl.delivered_quantity,
+                'short_quantity', dl.short_quantity,
+                'damaged_quantity', dl.damaged_quantity,
+                'customer_accepted_quantity', dl.customer_accepted_quantity
+              ) ORDER BY dl.line_no)
+              FROM erp_delivery_note_lines dl
+              JOIN erp_items i ON i.id = dl.item_id
+              WHERE dl.delivery_note_id = d.id AND dl.company_id = d.company_id AND dl.is_deleted = FALSE
+            ), '[]'::json) AS lines,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', a.id, 'file_name', a.file_name, 'content_type', a.content_type,
+                'byte_size', a.byte_size, 'sha256', a.sha256, 'created_at', a.created_at
+              ) ORDER BY a.created_at)
+              FROM erp_delivery_proof_attachments a
+              WHERE a.delivery_note_id = d.id AND a.company_id = d.company_id
+            ), '[]'::json) AS attachments
+     FROM erp_delivery_notes d
+     JOIN erp_sales_orders so ON so.id = d.sales_order_id
+     JOIN erp_customers c ON c.id = so.customer_id
+     WHERE d.id = $1 AND d.company_id = $2 AND d.is_deleted = FALSE`,
+    [req.params.id, req.user.company_id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Delivery note not found" });
+  return res.json(result.rows[0]);
 });
 
 router.post("/invoices", requirePermission("sales.invoice.create"), async (req, res) => {
@@ -447,6 +663,18 @@ router.post("/receivables/collection-activities/:id/complete", requirePermission
   } catch (error) { return res.status(400).json({ error: error.message || "Unable to complete collection follow-up" }); }
 });
 
+router.post("/receivables/dunning/reminders", requirePermission("sales.create"), async (req, res) => {
+  try {
+    return res.json(await arCollections.queueDunningReminders({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      asOfDate: req.body?.as_of || new Date().toISOString().slice(0, 10),
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to queue dunning reminders" });
+  }
+});
+
 router.post("/invoices/:id/pay", requirePermission("sales.receipt.create"), async (req, res) => {
   const amount = Number(req.body?.amount || 0);
   if (!amount || amount <= 0) {
@@ -543,7 +771,7 @@ router.get("/customers/:id/statement.pdf", requirePermission("sales.view"), asyn
 
 async function renderInvoicePdfBuffer({
   invoice,
-  companyName = "Ayawin Enterprise ERP",
+  issuer,
   receipt = false,
 }) {
   return new Promise((resolve, reject) => {
@@ -555,6 +783,7 @@ async function renderInvoicePdfBuffer({
 
     (async () => {
       const title = receipt ? "PAYMENT RECEIPT" : "TAX INVOICE";
+      const currencyCode = String(invoice.currency_code || issuer.base_currency_code || "KES").trim().toUpperCase();
       const legacyVerifyHash = receipt ? buildInvoiceVerificationHash(invoice) : null;
       const verifyBase = (process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
       const verifyUrl = receipt
@@ -567,8 +796,11 @@ async function renderInvoicePdfBuffer({
         doc.image(AYAWIN_PDF_LOGO, 40, 34, { width: 190, height: 54, fit: [190, 54] });
         doc.y = 96;
       }
-      doc.fontSize(18).font("Helvetica-Bold").text(companyName);
-      doc.fontSize(10).font("Helvetica").text("Nairobi, Kenya");
+      doc.fontSize(18).font("Helvetica-Bold").text(issuer.trading_name);
+      doc.fontSize(10).font("Helvetica-Bold").text(issuer.legal_name);
+      doc.fontSize(9).font("Helvetica").text(`KRA PIN: ${issuer.tax_registration_no}`);
+      doc.text(`Address: ${issuer.address}`);
+      doc.text(`Phone: ${issuer.phone}  Email: ${issuer.email}`);
       doc.moveDown(0.5);
       doc.fontSize(14).font("Helvetica-Bold").text(title, { align: "right" });
       doc.fontSize(10).font("Helvetica").text(`${invoice.invoice_no}`, { align: "right" });
@@ -584,7 +816,7 @@ async function renderInvoicePdfBuffer({
       doc.text(`Invoice date: ${String(invoice.invoice_date || "").slice(0, 10)}`);
       doc.text(`Due date: ${String(invoice.due_date || "").slice(0, 10)}`);
       if (receipt)
-        doc.text(`Amount paid: KES ${Number(invoice.amount_paid || 0).toLocaleString()}`);
+        doc.text(`Amount paid: ${currencyCode} ${Number(invoice.amount_paid || 0).toLocaleString()}`);
       doc.moveDown();
 
       if (invoice.lines?.length) {
@@ -618,15 +850,15 @@ async function renderInvoicePdfBuffer({
       doc
         .font("Helvetica-Bold")
         .text("Subtotal", 40, doc.y, { continued: true })
-        .text(`KES ${Number(invoice.subtotal || 0).toLocaleString()}`, { align: "right" });
+        .text(`${currencyCode} ${Number(invoice.subtotal || 0).toLocaleString()}`, { align: "right" });
       doc
         .font("Helvetica")
         .text("VAT", 40, doc.y, { continued: true })
-        .text(`KES ${Number(invoice.tax_amount || 0).toLocaleString()}`, { align: "right" });
+        .text(`${currencyCode} ${Number(invoice.tax_amount || 0).toLocaleString()}`, { align: "right" });
       doc
         .font("Helvetica-Bold")
         .text("Total", 40, doc.y, { continued: true })
-        .text(`KES ${Number(invoice.total_amount || 0).toLocaleString()}`, { align: "right" });
+        .text(`${currencyCode} ${Number(invoice.total_amount || 0).toLocaleString()}`, { align: "right" });
       doc.moveDown(1.5);
 
       doc.image(qrDataUrl, 40, doc.y, { width: 72, height: 72 });
@@ -664,7 +896,11 @@ router.get("/invoices/:invoiceNo/pdf", requirePermission("sales.view"), async (r
      WHERE il.company_id = $1 AND il.invoice_id = $2 AND il.is_deleted = FALSE ORDER BY il.line_no`,
     [req.user.company_id, result.rows[0].id],
   );
-  const buffer = await renderInvoicePdfBuffer({ invoice: { ...result.rows[0], lines: lines.rows } });
+  const issuer = await getInvoiceIssuerDetails(req.user.company_id, result.rows[0].issuer_snapshot);
+  const buffer = await renderInvoicePdfBuffer({
+    invoice: { ...result.rows[0], lines: lines.rows },
+    issuer,
+  });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="invoice-${invoiceNo}.pdf"`);
   return res.send(buffer);
@@ -694,7 +930,8 @@ router.get(
       [req.user.company_id, invoice.id],
     );
     invoice.lines = lines.rows;
-    const buffer = await renderInvoicePdfBuffer({ invoice, receipt: true });
+    const issuer = await getInvoiceIssuerDetails(req.user.company_id, invoice.issuer_snapshot);
+    const buffer = await renderInvoicePdfBuffer({ invoice, issuer, receipt: true });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="receipt-${invoiceNo}.pdf"`);
     return res.send(buffer);

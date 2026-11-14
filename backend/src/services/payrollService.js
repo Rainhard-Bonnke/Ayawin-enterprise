@@ -148,6 +148,7 @@ function computePayslip(employee, contract, config, extras = {}) {
   const housingLevy = calculateHousingLevy(grossPay, Number(config.housing_levy_rate || 1.5));
   const housingLevyEmployer = housingLevy;
 
+  const nhif = calculateNhif(grossPay, extras.nhif_brackets || config.nhif_brackets || DEFAULT_NHIF);
   const pensionDeduction = Math.max(0, Number(extras.pension_deduction ?? 0));
   const pensionTaxDeduction = Math.min(30000, nssf + pensionDeduction);
   const medicalFundDeduction = Math.min(
@@ -166,7 +167,8 @@ function computePayslip(employee, contract, config, extras = {}) {
         medicalFundDeduction -
         mortgageInterestDeduction -
         shif -
-        housingLevy,
+        housingLevy -
+        nhif,
     ),
   );
   const taxBeforeRelief = calculatePaye(taxableIncome, config.paye_bands || DEFAULT_PAYE_BANDS);
@@ -189,15 +191,17 @@ function computePayslip(employee, contract, config, extras = {}) {
   const sacco = round2(extras.sacco ?? 0);
   const loan = round2(extras.loan ?? 0);
   const other = round2(extras.other ?? 0);
+  const leaveDeduction = round2(Math.max(0, Number(extras.leave_deduction ?? 0)));
+  const otherAndLeaveDeductions = round2(other + leaveDeduction);
 
-  const totalDeductions = round2(paye + shif + nssf + housingLevy + helb + sacco + loan + other);
+  const totalDeductions = round2(paye + shif + nssf + nhif + housingLevy + helb + sacco + loan + otherAndLeaveDeductions);
   const netPay = round2(grossPay - totalDeductions);
   const employerCost = round2(grossPay + nssfEmployer.total + housingLevyEmployer);
 
   return {
     gross_pay: grossPay,
     paye,
-    nhif: 0,
+    nhif,
     shif,
     nssf,
     nssf_tier1: nssfEmployee.tier1,
@@ -212,7 +216,8 @@ function computePayslip(employee, contract, config, extras = {}) {
     helb,
     sacco,
     loan_deduction: loan,
-    other_deductions: other,
+    other_deductions: otherAndLeaveDeductions,
+    leave_deduction: leaveDeduction,
     net_pay: netPay,
     earnings_detail: [
       { code: "BASIC", amount: basic },
@@ -226,21 +231,33 @@ function computePayslip(employee, contract, config, extras = {}) {
       { code: "SHIF", amount: shif },
       { code: "NSSF_TIER_I", amount: nssfEmployee.tier1 },
       { code: "NSSF_TIER_II", amount: nssfEmployee.tier2 },
+      { code: "NHIF", amount: nhif },
       { code: "HOUSING_LEVY", amount: housingLevy },
       { code: "HELB", amount: helb },
       { code: "SACCO", amount: sacco },
       { code: "LOAN", amount: loan },
+      { code: "LEAVE", amount: leaveDeduction },
       { code: "OTHER", amount: other },
     ].filter((d) => d.amount > 0),
   };
 }
 
 async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {} }) {
-  const monthDate = payrollMonth || new Date().toISOString().slice(0, 7) + "-01";
+  const requestedMonth = payrollMonth || new Date().toISOString().slice(0, 7);
+  const monthDate = /^\d{4}-\d{2}$/.test(String(requestedMonth))
+    ? `${requestedMonth}-01`
+    : requestedMonth;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(monthDate))
+      || Number.isNaN(Date.parse(`${monthDate}T00:00:00.000Z`))) {
+    throw new Error("Payroll month must be a valid YYYY-MM or YYYY-MM-DD date");
+  }
   const config = await getPayrollConfig(companyId, monthDate);
 
   const employees = await pool.query(
-    `SELECT DISTINCT ON (e.id) e.*, ec.basic_salary, ec.house_allowance, ec.transport_allowance
+    `SELECT DISTINCT ON (e.id) e.*,
+            ec.basic_salary AS contract_basic_salary,
+            ec.house_allowance AS contract_house_allowance,
+            ec.transport_allowance AS contract_transport_allowance
      FROM erp_employees e
      LEFT JOIN erp_employee_contracts ec ON ec.employee_id = e.id AND ec.status = 'active'
      WHERE e.company_id = $1 AND e.is_active = TRUE AND e.is_deleted = FALSE
@@ -280,14 +297,65 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
 
     await client.query("DELETE FROM erp_payslips WHERE payroll_run_id = $1", [run.id]);
 
+    const leaveRows = await client.query(
+      `SELECT application.employee_id,application.days_requested,
+              application.start_date::text AS start_date,application.end_date::text AS end_date,
+              rule.payroll_deduction_percent,rule.effective_from::text AS rule_effective_from
+       FROM erp_leave_applications application
+       JOIN LATERAL (
+         SELECT payroll_deduction_percent,effective_from
+         FROM erp_payroll_leave_rules
+         WHERE company_id=application.company_id AND leave_type_id=application.leave_type_id
+           AND is_active=TRUE AND effective_from <= application.start_date
+         ORDER BY effective_from DESC LIMIT 1
+       ) rule ON TRUE
+       WHERE application.company_id=$1 AND application.status='approved' AND application.is_deleted=FALSE
+         AND application.start_date < ($3::date + INTERVAL '1 month')
+         AND application.end_date >= $2::date`,
+      [companyId, `${monthDate.slice(0, 7)}-01`, `${monthDate.slice(0, 7)}-01`],
+    );
+    const monthStart = new Date(`${monthDate.slice(0, 7)}-01T00:00:00.000Z`);
+    const nextMonthStart = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+    const monthDays = (nextMonthStart.getTime() - monthStart.getTime()) / 86400000;
+    const leaveDeductionsByEmployee = new Map();
+    for (const leave of leaveRows.rows) {
+      const start = new Date(`${leave.start_date}T00:00:00.000Z`);
+      const end = new Date(`${leave.end_date}T00:00:00.000Z`);
+      const overlapStart = Math.max(start.getTime(), monthStart.getTime());
+      const overlapEnd = Math.min(end.getTime(), nextMonthStart.getTime() - 86400000);
+      const requestedSpan = (end.getTime() - start.getTime()) / 86400000 + 1;
+      const overlapDays = (overlapEnd - overlapStart) / 86400000 + 1;
+      const proratedDays = Number(leave.days_requested) * overlapDays / requestedSpan;
+      const details = leaveDeductionsByEmployee.get(leave.employee_id) || [];
+      details.push({
+        days: proratedDays,
+        deduction_percent: Number(leave.payroll_deduction_percent),
+        rule_effective_from: leave.rule_effective_from,
+      });
+      leaveDeductionsByEmployee.set(leave.employee_id, details);
+    }
+
     let totalGross = 0;
     let totalDed = 0;
     let totalNet = 0;
     let totalEmployerCost = 0;
 
     for (const emp of employees.rows) {
-      const extras = employeeExtras[emp.id] || {};
-      const slip = computePayslip(emp, emp, config, extras);
+      const leaveRules = leaveDeductionsByEmployee.get(emp.id) || [];
+      const contract = {
+        basic_salary: emp.contract_basic_salary,
+        house_allowance: emp.contract_house_allowance,
+        transport_allowance: emp.contract_transport_allowance,
+      };
+      const dailyGross = Number(contract.basic_salary ?? emp.basic_salary ?? 0)
+        + Number(contract.house_allowance ?? emp.house_allowance ?? 0)
+        + Number(contract.transport_allowance ?? emp.transport_allowance ?? 0);
+      const leaveDeduction = round2(leaveRules.reduce(
+        (sum, leave) => sum + (dailyGross / monthDays) * leave.days * leave.deduction_percent / 100,
+        0,
+      ));
+      const extras = { ...(employeeExtras[emp.id] || {}), leave_deduction: leaveDeduction };
+      const slip = computePayslip(emp, contract, config, extras);
 
       await client.query(
         `INSERT INTO erp_payslips (
@@ -332,6 +400,11 @@ async function runPayroll({ companyId, userId, payrollMonth, employeeExtras = {}
             nssf_employer_rate: Number(config.nssf_employer_rate ?? 6),
             housing_levy_rate: Number(config.housing_levy_rate ?? 1.5),
             paye_bands: config.paye_bands || DEFAULT_PAYE_BANDS,
+            leave_rule_deductions: leaveRules.map((leave) => ({
+              days: round2(leave.days),
+              deduction_percent: leave.deduction_percent,
+              effective_from: leave.rule_effective_from,
+            })),
           }),
         ],
       );

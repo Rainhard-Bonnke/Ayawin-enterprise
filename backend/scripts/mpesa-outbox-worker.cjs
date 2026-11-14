@@ -37,7 +37,7 @@ function loadAdapter() {
 async function run() {
   const adapter = loadAdapter();
   await runMigrations();
-  console.log("M-Pesa worker started; callbacks are treated as notifications until provider verification succeeds.");
+  console.log(JSON.stringify({ event: "worker_health", worker: "mpesa-outbox", status: "ready", pid: process.pid, poll_interval_ms: pollIntervalMs }));
 
   while (!stopping) {
     try {
@@ -53,6 +53,7 @@ async function run() {
   }
 
   await pool.end();
+  console.log(JSON.stringify({ event: "worker_health", worker: "mpesa-outbox", status: "stopped", pid: process.pid }));
 }
 
 process.on("SIGINT", () => { stopping = true; });

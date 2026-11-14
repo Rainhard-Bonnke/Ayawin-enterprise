@@ -1,19 +1,25 @@
 const DOCUMENT_SEQUENCE_TABLES = {
   sales_order: { table: "erp_sales_orders", column: "order_no" },
+  quotation: { table: "erp_quotations", column: "quote_no" },
+  pick_list: { table: "erp_sales_pick_lists", column: "pick_no" },
   delivery_note: { table: "erp_delivery_notes", column: "delivery_no" },
   customer_invoice: { table: "erp_customer_invoices", column: "invoice_no" },
   customer_credit_note: { table: "erp_customer_credit_notes", column: "credit_note_no" },
   customer_receipt: { table: "erp_customer_receipts", column: "receipt_no" },
+  leave_application: { table: "erp_leave_applications", column: "application_no" },
   journal: { table: "erp_journals", column: "journal_no" },
 };
 
 function normalizeSequenceType(docType) {
   const mapping = {
     erp_sales_orders: "sales_order",
+    erp_quotations: "quotation",
+    erp_sales_pick_lists: "pick_list",
     erp_delivery_notes: "delivery_note",
     erp_customer_invoices: "customer_invoice",
     erp_customer_credit_notes: "customer_credit_note",
     erp_customer_receipts: "customer_receipt",
+    erp_leave_applications: "leave_application",
     erp_journals: "journal",
   };
   return mapping[docType] || docType;

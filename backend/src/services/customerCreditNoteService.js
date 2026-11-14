@@ -177,7 +177,10 @@ async function createDraft({ companyId, user, invoiceId, creditDate, reason, lin
     if (!invoice || invoice.delivery_status !== "posted" || !["posted", "partial", "overdue", "paid", "credited"].includes(invoice.status)) {
       throw new Error("Select a posted invoice linked to a posted delivery note");
     }
-    if (String(noteDate) < String(invoice.invoice_date)) throw new Error("Credit note date cannot predate the original invoice");
+    const invoiceDate = invoice.invoice_date instanceof Date
+      ? invoice.invoice_date.toISOString().slice(0, 10)
+      : String(invoice.invoice_date).slice(0, 10);
+    if (String(noteDate) < invoiceDate) throw new Error("Credit note date cannot predate the original invoice");
     const statute = await client.query(
       `SELECT $1::date <= ($2::date + INTERVAL '6 months')::date AS within_six_months,
               $1::date >= $3::date AND $1::date <= ($3::date + INTERVAL '30 days')::date AS within_dispute_window`,

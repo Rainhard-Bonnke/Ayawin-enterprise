@@ -46,7 +46,7 @@ function loadAdapter() {
 async function run() {
   const adapter = loadAdapter();
   await runMigrations();
-  console.log("eTIMS outbox worker started; provider acceptance is recorded only from adapter confirmation.");
+  console.log(JSON.stringify({ event: "worker_health", worker: "etims-outbox", status: "ready", pid: process.pid, poll_interval_ms: pollIntervalMs }));
 
   while (!stopping) {
     try {
@@ -65,6 +65,7 @@ async function run() {
   }
 
   await pool.end();
+  console.log(JSON.stringify({ event: "worker_health", worker: "etims-outbox", status: "stopped", pid: process.pid }));
 }
 
 process.on("SIGINT", () => { stopping = true; });

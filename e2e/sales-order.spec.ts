@@ -24,7 +24,12 @@ test("Sales Rep creates a draft order and cannot approve it", async ({ page }) =
     if (path === "/auth/csrf") {
       await route.fulfill({ json: { csrf_token: "uat-csrf-token" } });
     } else if (path === "/auth/refresh" && method === "POST") {
-      await route.fulfill({ json: { access_token: token, csrf_token: "uat-csrf-token" } });
+      await route.fulfill({ status: 401, json: { error: "No refresh session" } });
+    } else if (path === "/auth/login" && method === "POST") {
+      await route.fulfill({ json: { access_token: token, csrf_token: "uat-csrf-token", user: {
+        id: "uat-sales-rep", email: "sales.rep@example.test", username: "sales.rep",
+        role_name: "Sales Rep", permissions: ["sales.order.create"],
+      } } });
     } else if (path === "/auth/me") {
       await route.fulfill({
         json: {
@@ -59,10 +64,11 @@ test("Sales Rep creates a draft order and cannot approve it", async ({ page }) =
     }
   });
 
-  const authenticatedUser = page.waitForResponse((response) => response.url().includes("/api/v1/auth/me"));
   await page.goto("/login");
-  await authenticatedUser;
-  await page.goto("/sales");
+  await page.getByLabel("Email or username").fill("sales.rep@example.test");
+  await page.getByLabel("Password").fill("uat-password");
+  await page.getByRole("button", { name: "Sign In" }).click();
+  await page.getByRole("link", { name: "Sales orders", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Sales & Orders" })).toBeVisible();
   const newOrderButton = page.getByRole("button", { name: "New Sales Order" });
   await newOrderButton.click();

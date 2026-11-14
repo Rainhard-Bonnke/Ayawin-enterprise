@@ -377,11 +377,15 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
   assert.equal(Number(receipt.rows[0].amount), Number(paidInvoice.rows[0].total_amount));
 
   const verifySource = await pool.query(
-    `SELECT company_id, invoice_no, customer_id, invoice_date, total_amount, status
+    `SELECT company_id, invoice_no, customer_id, invoice_date, total_amount, status,
+            issuer_snapshot, issuer_snapshot_at
      FROM erp_customer_invoices
      WHERE id = $1`,
     [inv.rows[0].id],
   );
+  assert.equal(verifySource.rows[0].issuer_snapshot.version, 1);
+  assert.ok(verifySource.rows[0].issuer_snapshot.legal_name);
+  assert.ok(verifySource.rows[0].issuer_snapshot_at);
   const verificationHash = buildInvoiceVerificationHash(verifySource.rows[0]);
   assert.match(verificationHash, /^[a-f0-9]{64}$/);
 
@@ -390,6 +394,19 @@ test("E2E sales flow: SO confirm -> delivery -> invoice -> payment", async (t) =
     total_amount: Number(verifySource.rows[0].total_amount) + 1,
   });
   assert.notEqual(tamperedHash, verificationHash);
+
+  const tamperedIssuerHash = buildInvoiceVerificationHash({
+    ...verifySource.rows[0],
+    issuer_snapshot: { ...verifySource.rows[0].issuer_snapshot, legal_name: "Tampered Issuer" },
+  });
+  assert.notEqual(tamperedIssuerHash, verificationHash);
+
+  await assert.rejects(pool.query(
+    `UPDATE erp_customer_invoices
+     SET issuer_snapshot = jsonb_set(issuer_snapshot, '{legal_name}', '"Tampered Issuer"'::jsonb)
+     WHERE id = $1`,
+    [inv.rows[0].id],
+  ), /issuer snapshot is immutable/i);
 });
 
 test("E2E route close: proof exception -> rejection -> corrected proof -> collection match -> approval", async () => {

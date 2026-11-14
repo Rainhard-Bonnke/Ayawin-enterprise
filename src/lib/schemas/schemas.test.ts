@@ -74,14 +74,16 @@ describe("invoiceSchema", () => {
 
 describe("salesOrderSchema", () => {
   it("accepts a valid sales order draft", () => {
-    expect(salesOrderSchema.safeParse({
-      customer_id: "customer-1",
-      warehouse_id: "warehouse-1",
-      order_date: "2026-10-01",
-      required_date: "2026-10-05",
-      notes: "Customer call confirmed",
-      lines: [{ item_id: "item-1", quantity: 2, unit_price: 150 }],
-    }).success).toBe(true);
+    expect(
+      salesOrderSchema.safeParse({
+        customer_id: "customer-1",
+        warehouse_id: "warehouse-1",
+        order_date: "2026-10-01",
+        required_date: "2026-10-05",
+        notes: "Customer call confirmed",
+        lines: [{ item_id: "item-1", quantity: 2, unit_price: 150 }],
+      }).success,
+    ).toBe(true);
   });
 
   it("rejects missing warehouse or a required date before the order date", () => {
@@ -100,15 +102,17 @@ describe("posCheckoutSchema", () => {
   it.each(["cash", "card", "mobile_money", "credit"])(
     "accepts the POS payment method %s",
     (payment_method) => {
-      expect(posCheckoutSchema.safeParse({
-        customer_id: "customer-1",
-        warehouse_id: "warehouse-1",
-        order_date: "2026-10-01",
-        required_date: "2026-10-01",
-        payment_method,
-        amount_received: 25,
-        lines: [{ item_id: "item-1", quantity: 1, unit_price: 25 }],
-      }).success).toBe(true);
+      expect(
+        posCheckoutSchema.safeParse({
+          customer_id: "customer-1",
+          warehouse_id: "warehouse-1",
+          order_date: "2026-10-01",
+          required_date: "2026-10-01",
+          payment_method,
+          amount_received: 25,
+          lines: [{ item_id: "item-1", quantity: 1, unit_price: 25 }],
+        }).success,
+      ).toBe(true);
     },
   );
 });

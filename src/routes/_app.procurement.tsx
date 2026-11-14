@@ -48,6 +48,9 @@ import {
 } from "@/lib/api-types";
 import { masterCreate, masterDelete, masterUpdate, v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useAction, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 
 type SupplierFormState = {
   name: string;
@@ -58,6 +61,24 @@ type SupplierFormState = {
   payment_terms: string;
   credit_limit: string;
   balance: string;
+};
+
+type ReceivingLine = {
+  po_line_id: string;
+  item_id: string;
+  item_code: string;
+  item_name: string;
+  ordered_quantity: number;
+  received_before: number;
+  remaining_quantity: number;
+  unit_cost: number;
+  lot_tracking_enabled: boolean;
+  expiry_tracking_enabled: boolean;
+  receive_quantity: string;
+  batch_no: string;
+  expiry_date: string;
+  inspection_status: "accept" | "quarantine" | "reject";
+  inspection_reason: string;
 };
 
 const emptySupplierForm = (): SupplierFormState => ({
@@ -80,51 +101,16 @@ function Procurement() {
   const { token } = useAuth();
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "purchase-orders");
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState("all");
-  const [sort, setSort] = useState("date");
-  const [page, setPage] = useState(1);
-  const [ordersLoading, setOrdersLoading] = useState(true);
-  const [orders, setOrders] = useState<BackendPurchaseOrder[]>([]);
-  const [suppliersLoading, setSuppliersLoading] = useState(true);
-  const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
-  const [receipts, setReceipts] = useState<BackendGoodsReceipt[]>([]);
-  const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
-  const [supplierSaving, setSupplierSaving] = useState(false);
-  const [supplierEditing, setSupplierEditing] = useState<BackendSupplier | null>(null);
-  const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm());
-
-  const pageSize = 5;
-
-  const loadSuppliers = useCallback(async () => {
-    if (!token) return;
-    setSuppliersLoading(true);
-    try {
-      const rows = await v1Api.master.vendors(token);
-      setSuppliers(rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        kra_pin: row.tax_id || "",
-        contact: row.contact_name,
-        email: row.email,
-        phone: row.phone,
-        payment_terms: null,
-        credit_limit: Number(row.credit_limit || 0),
-        balance: 0,
-      })));
-    } catch {
-      setSuppliers([]);
-      toast.error("Unable to load suppliers");
-    } finally {
-      setSuppliersLoading(false);
-    }
-  }, [token]);
-
-  const loadOrders = useCallback(async () => {
-    if (!token) return;
-    setOrdersLoading(true);
-    try {
-      const rows = await v1Api.procurement.purchaseOrders(token);
+  const [q, setQ] = useUrlSearchParam("q", "");
+  const [status, setStatus] = useUrlSearchParam("status", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "date");
+  const [pageValue, setPageValue] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageValue) || 1);
+  const setPage = (next: number) => setPageValue(String(Math.max(1, next)));
+  const ordersQuery = useList(
+    queryKeys.procurement.orders(),
+    async ({ signal }) => {
+      const rows = await v1Api.procurement.purchaseOrders(token!, signal);
       const statusMap: Record<string, BackendPurchaseOrder["status"]> = {
         draft: "Draft",
         submitted: "Sent",
@@ -135,7 +121,7 @@ function Procurement() {
         closed: "Received",
         cancelled: "Cancelled",
       };
-      setOrders(rows.map((row) => {
+      return rows.map((row) => {
         const status = String(row.status || "draft").toLowerCase();
         return {
           id: String(row.po_number || row.id),
@@ -147,36 +133,102 @@ function Procurement() {
           total: Number(row.total_amount || 0),
           status: statusMap[status] || "Draft",
         };
+      });
+    },
+    { enabled: Boolean(token) },
+  );
+  const supplierQuery = useList(
+    queryKeys.suppliers.list(),
+    async ({ signal }) => {
+      const rows = await v1Api.master.vendors(token!, signal);
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        kra_pin: row.tax_id || "",
+        contact: row.contact_name,
+        email: row.email,
+        phone: row.phone,
+        payment_terms: null,
+        credit_limit: Number(row.credit_limit || 0),
+        balance: 0,
       }));
-    } catch (err) {
-      setOrders([]);
-      toast.error(err instanceof Error ? err.message : "Unable to load purchase orders");
-    } finally {
-      setOrdersLoading(false);
-    }
-  }, [token]);
+    },
+    { enabled: Boolean(token) && tab === "suppliers" },
+  );
+  const receiptsQuery = useList(
+    queryKeys.procurement.goodsReceipts(),
+    async ({ signal }) => {
+      const rows = await v1Api.procurement.goodsReceipts(token!, signal);
+      return rows.map((row) => ({
+        id: String(row.id),
+        grn_number: String(row.grn_number || row.id),
+        po_number: row.po_number ? String(row.po_number) : undefined,
+        receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : undefined,
+        status: row.status ? String(row.status) : undefined,
+        notes: row.notes ? String(row.notes) : null,
+        vendor_id: row.vendor_id ? String(row.vendor_id) : undefined,
+        vendor_name: row.vendor_name ? String(row.vendor_name) : undefined,
+        purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : undefined,
+      }));
+    },
+    { enabled: Boolean(token) && tab === "receipts" },
+  );
+  const approveOrderAction = useAction({
+    mutationFn: (id: string) => v1Api.procurement.approvePurchaseOrder(token!, id),
+    invalidate: [queryKeys.procurement.orders()],
+  });
+  const receiveOrderAction = useAction({
+    mutationFn: (input: {
+      purchaseOrderId: string;
+      receivedDate: string;
+      notes: string;
+      lines: ReceivingLine[];
+    }) =>
+      v1Api.procurement.receivePurchaseOrder(token!, input.purchaseOrderId, {
+        received_date: input.receivedDate,
+        notes: input.notes,
+        lines: input.lines
+          .filter((line) => Number(line.receive_quantity) > 0)
+          .map((line) => ({
+            po_line_id: line.po_line_id,
+            item_id: line.item_id,
+            quantity: Number(line.receive_quantity),
+            unit_cost: line.unit_cost,
+            batch_no: line.batch_no.trim() || undefined,
+            expiry_date: line.expiry_date || undefined,
+            inspection_status: line.inspection_status,
+            inspection_reason: line.inspection_reason.trim() || undefined,
+          })),
+      }),
+    invalidate: [
+      queryKeys.procurement.orders(),
+      queryKeys.procurement.goodsReceipts(),
+      queryKeys.inventory.workspace(),
+    ],
+  });
+  const orders = ordersQuery.data ?? EMPTY_ARRAY;
+  const suppliers = supplierQuery.data ?? EMPTY_ARRAY;
+  const receipts = receiptsQuery.data ?? [];
+  const ordersLoading = ordersQuery.isPending;
+  const suppliersLoading = supplierQuery.isPending;
+  const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
+  const [supplierSaving, setSupplierSaving] = useState(false);
+  const [supplierEditing, setSupplierEditing] = useState<BackendSupplier | null>(null);
+  const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm());
+  const [receivingOrder, setReceivingOrder] = useState<Record<string, unknown> | null>(null);
+  const [receivingLines, setReceivingLines] = useState<ReceivingLine[]>([]);
+  const [receivedDate, setReceivedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [receiptNotes, setReceiptNotes] = useState("");
+  const [receiptSaving, setReceiptSaving] = useState(false);
 
-  useEffect(() => {
-    void loadOrders();
-  }, [loadOrders]);
+  const pageSize = 5;
 
-  useEffect(() => {
-    if (tab === "suppliers") void loadSuppliers();
-    if (tab === "receipts" && token)
-      void v1Api.procurement.goodsReceipts(token)
-        .then((rows) => setReceipts(rows.map((row) => ({
-          id: String(row.id),
-          grn_number: String(row.grn_number || row.id),
-          po_number: row.po_number ? String(row.po_number) : undefined,
-          receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : undefined,
-          status: row.status ? String(row.status) : undefined,
-          notes: row.notes ? String(row.notes) : null,
-          vendor_id: row.vendor_id ? String(row.vendor_id) : undefined,
-          vendor_name: row.vendor_name ? String(row.vendor_name) : undefined,
-          purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : undefined,
-        }))))
-        .catch(() => setReceipts([]));
-  }, [tab, token, loadSuppliers]);
+  const loadSuppliers = async () => {
+    await supplierQuery.refetch();
+  };
+  const loadOrders = async () => {
+    await ordersQuery.refetch();
+  };
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
@@ -219,7 +271,10 @@ function Procurement() {
   const totalPages = Math.max(1, Math.ceil(orderRows.length / pageSize));
   const pagedOrders = orderRows.slice((page - 1) * pageSize, page * pageSize);
 
-  const setOrderStatus = async (row: BackendPurchaseOrder, nextStatus: BackendPurchaseOrder["status"]) => {
+  const setOrderStatus = async (
+    row: BackendPurchaseOrder,
+    nextStatus: BackendPurchaseOrder["status"],
+  ) => {
     if (!token) return;
     const internalId = row.internal_id;
     if (!internalId) {
@@ -228,8 +283,9 @@ function Procurement() {
     }
 
     try {
-      if (nextStatus !== "Approved") throw new Error("This action is not supported by the live purchase-order workflow.");
-      await v1Api.procurement.approvePurchaseOrder(token, String(internalId));
+      if (nextStatus !== "Approved")
+        throw new Error("This action is not supported by the live purchase-order workflow.");
+      await approveOrderAction.mutateAsync(String(internalId));
       toast.success(`Status set to ${nextStatus}`);
       setPage(1);
       await loadOrders();
@@ -247,11 +303,80 @@ function Procurement() {
     }
 
     try {
-      const result = await v1Api.procurement.receivePurchaseOrder(token, String(internalId));
+      const purchaseOrder = await v1Api.procurement.purchaseOrder(token, String(internalId));
+      const lines = (purchaseOrder.lines || [])
+        .map((line) => {
+          const ordered = Number(line.quantity || 0);
+          const received = Number(line.qty_received || 0);
+          return {
+            po_line_id: String(line.id),
+            item_id: String(line.item_id),
+            item_code: String(line.item_code || ""),
+            item_name: String(line.item_name || ""),
+            ordered_quantity: ordered,
+            received_before: received,
+            remaining_quantity: Math.max(0, ordered - received),
+            unit_cost: Number(line.unit_cost || 0),
+            lot_tracking_enabled: line.lot_tracking_enabled === true,
+            expiry_tracking_enabled: line.expiry_tracking_enabled === true,
+            receive_quantity: String(Math.max(0, ordered - received)),
+            batch_no: "",
+            expiry_date: "",
+            inspection_status: "accept",
+            inspection_reason: "",
+          } satisfies ReceivingLine;
+        })
+        .filter((line) => line.remaining_quantity > 0);
+      if (!lines.length)
+        throw new Error("This purchase order has no outstanding quantities to receive.");
+      setReceivingOrder(purchaseOrder);
+      setReceivingLines(lines);
+      setReceivedDate(new Date().toISOString().slice(0, 10));
+      setReceiptNotes("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to load purchase-order lines");
+    }
+  };
+
+  const submitReceipt = async () => {
+    if (!token || !receivingOrder) return;
+    const receiving = receivingLines.filter((line) => Number(line.receive_quantity) > 0);
+    if (!receiving.length)
+      return toast.error("Enter a positive received quantity on at least one line.");
+    for (const line of receiving) {
+      const quantity = Number(line.receive_quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > line.remaining_quantity) {
+        return toast.error(
+          `${line.item_code} quantity must be positive and no more than the outstanding PO quantity.`,
+        );
+      }
+      if (line.lot_tracking_enabled && !line.batch_no.trim()) {
+        return toast.error(`${line.item_code} requires a batch number.`);
+      }
+      if ((line.lot_tracking_enabled || line.expiry_tracking_enabled) && !line.expiry_date) {
+        return toast.error(`${line.item_code} requires an expiry date.`);
+      }
+      if (line.inspection_status !== "accept" && !line.inspection_reason.trim()) {
+        return toast.error(
+          `${line.item_code} needs an inspection reason when quarantined or rejected.`,
+        );
+      }
+    }
+    setReceiptSaving(true);
+    try {
+      const result = await receiveOrderAction.mutateAsync({
+        purchaseOrderId: String(receivingOrder.id),
+        receivedDate,
+        notes: receiptNotes.trim(),
+        lines: receiving,
+      });
       toast.success(`GRN created: ${String(result.grn_number || result.id || "posted")}`);
+      setReceivingOrder(null);
       await loadOrders();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to receive order");
+    } finally {
+      setReceiptSaving(false);
     }
   };
 
@@ -614,20 +739,14 @@ function Procurement() {
                                 Approve
                               </Button>
                             </ConfirmActionDialog>
-                            <ConfirmActionDialog
-                              title="Receive purchase order?"
-                              description="Creates a GRN and posts stock-in movements to inventory."
-                              confirmLabel="Receive"
-                              onConfirm={() => void receiveOrder(p)}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={!p.internal_id || !["Sent", "Approved"].includes(p.status)}
+                              onClick={() => void receiveOrder(p)}
                             >
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={p.status !== "Sent" && p.status !== "Approved"}
-                              >
-                                Receive
-                              </Button>
-                            </ConfirmActionDialog>
+                              Receive
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -809,6 +928,199 @@ function Procurement() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={Boolean(receivingOrder)}
+        onOpenChange={(open) => {
+          if (!open && !receiptSaving) setReceivingOrder(null);
+        }}
+      >
+        <DialogContent className="max-w-6xl">
+          {receivingOrder && (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  Receive purchase order {String(receivingOrder.po_number || "")}
+                </DialogTitle>
+                <DialogDescription>
+                  Enter actual received quantities. Partial receipts are allowed; excess over the
+                  approved order is blocked.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="grn-received-date">Received date</Label>
+                  <Input
+                    id="grn-received-date"
+                    type="date"
+                    value={receivedDate}
+                    onChange={(event) => setReceivedDate(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="grn-notes">Inspection / discrepancy notes</Label>
+                  <Input
+                    id="grn-notes"
+                    value={receiptNotes}
+                    onChange={(event) => setReceiptNotes(event.target.value)}
+                    maxLength={1000}
+                    placeholder="Short, damaged, rejected, or other inspection notes"
+                  />
+                </div>
+              </div>
+              <div className="max-h-[55vh] overflow-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-right">Ordered</TableHead>
+                      <TableHead className="text-right">Received</TableHead>
+                      <TableHead className="text-right">Open</TableHead>
+                      <TableHead>Receive now</TableHead>
+                      <TableHead>Inspection</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Batch</TableHead>
+                      <TableHead>Expiry</TableHead>
+                      <TableHead className="text-right">PO unit cost</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {receivingLines.map((line, index) => (
+                      <TableRow key={line.po_line_id}>
+                        <TableCell className="min-w-44 font-medium">
+                          {line.item_code}
+                          <div className="text-xs text-muted-foreground">{line.item_name}</div>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {line.ordered_quantity}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {line.received_before}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {line.remaining_quantity}
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            aria-label={`Receive quantity ${line.item_code}`}
+                            type="number"
+                            min="0"
+                            max={line.remaining_quantity}
+                            step="0.0001"
+                            value={line.receive_quantity}
+                            onChange={(event) =>
+                              setReceivingLines((current) =>
+                                current.map((entry, entryIndex) =>
+                                  entryIndex === index
+                                    ? { ...entry, receive_quantity: event.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <select
+                            aria-label={`Inspection ${line.item_code}`}
+                            className="h-10 rounded-md border border-input bg-background px-2 text-sm"
+                            value={line.inspection_status}
+                            onChange={(event) =>
+                              setReceivingLines((current) =>
+                                current.map((entry, entryIndex) =>
+                                  entryIndex === index
+                                    ? {
+                                        ...entry,
+                                        inspection_status: event.target
+                                          .value as ReceivingLine["inspection_status"],
+                                      }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="accept">Accept</option>
+                            <option value="quarantine">Quarantine</option>
+                            <option value="reject">Reject</option>
+                          </select>
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            aria-label={`Inspection reason ${line.item_code}`}
+                            value={line.inspection_reason}
+                            onChange={(event) =>
+                              setReceivingLines((current) =>
+                                current.map((entry, entryIndex) =>
+                                  entryIndex === index
+                                    ? { ...entry, inspection_reason: event.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                            placeholder={
+                              line.inspection_status === "accept" ? "Optional" : "Required"
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            aria-label={`Batch ${line.item_code}`}
+                            value={line.batch_no}
+                            onChange={(event) =>
+                              setReceivingLines((current) =>
+                                current.map((entry, entryIndex) =>
+                                  entryIndex === index
+                                    ? { ...entry, batch_no: event.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                            placeholder={line.lot_tracking_enabled ? "Required" : "Optional"}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            aria-label={`Expiry ${line.item_code}`}
+                            type="date"
+                            value={line.expiry_date}
+                            onChange={(event) =>
+                              setReceivingLines((current) =>
+                                current.map((entry, entryIndex) =>
+                                  entryIndex === index
+                                    ? { ...entry, expiry_date: event.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {KES(line.unit_cost)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Items flagged for lot or expiry tracking require valid lot details. This receipt
+                uses the approved PO cost; price variances need a separate review workflow.
+              </p>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  disabled={receiptSaving}
+                  onClick={() => setReceivingOrder(null)}
+                >
+                  Cancel
+                </Button>
+                <Button disabled={receiptSaving} onClick={() => void submitReceipt()}>
+                  {receiptSaving ? "Posting GRN…" : "Post goods receipt"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={supplierDialogOpen} onOpenChange={setSupplierDialogOpen}>
         <DialogContent className="max-w-2xl">

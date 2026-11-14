@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,6 +39,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/lib/auth";
 import { normalizeApiUser, v1Api, type ApiUser } from "@/lib/api-v1";
 import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 import { trackEvent } from "@/lib/event-tracker";
 import { describeNetworkScope, describeSessionDevice } from "@/lib/security";
 import { toast } from "sonner";
@@ -61,10 +62,12 @@ const EMPTY_USERS: ApiUser[] = [];
 
 function UsersPage() {
   const { token, user } = useAuth();
-  const [q, setQ] = useState("");
-  const [role, setRole] = useState("all");
-  const [sort, setSort] = useState("name");
-  const [page, setPage] = useState(1);
+  const [q, setQ] = useUrlSearchParam("q", "");
+  const [role, setRole] = useUrlSearchParam("role", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "name");
+  const [pageValue, setPageValue] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageValue) || 1);
+  const setPage = (next: number) => setPageValue(String(Math.max(1, next)));
   const [inviteOpen, setInviteOpen] = useState(false);
   const [invite, setInvite] = useState({
     username: "",
@@ -74,11 +77,6 @@ function UsersPage() {
     phone: "",
     password: "",
   });
-  const [roleOptions, setRoleOptions] = useState<Array<{ id: string; name: string }>>([]);
-  const [roleRows, setRoleRows] = useState<Array<{ id: string; name: string; permissions: string[] }>>([]);
-  const [permissionRows, setPermissionRows] = useState<Array<{ id: string; code: string; module: string; action: string }>>([]);
-  const [roleDataLoading, setRoleDataLoading] = useState(true);
-  const [roleDataError, setRoleDataError] = useState<string | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string>("");
   const [draftPermissions, setDraftPermissions] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -92,85 +90,66 @@ function UsersPage() {
   const [mfaOtp, setMfaOtp] = useState("");
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [mfaSaving, setMfaSaving] = useState(false);
-  const [allowlistRows, setAllowlistRows] = useState<Array<{
-    id: string;
-    cidr: string;
-    description?: string | null;
-    role_name?: string | null;
-    user_name?: string | null;
-  }>>([]);
   const [allowlistForm, setAllowlistForm] = useState({ cidr: "", description: "", role_id: "" });
   const [allowlistSaving, setAllowlistSaving] = useState(false);
-  const [sessionRows, setSessionRows] = useState<Array<{
-    id: string;
-    full_name: string;
-    email: string;
-    username: string;
-    session_type?: string | null;
-    device_info?: string | null;
-    ip_address?: string | null;
-    created_at?: string | null;
-  }>>([]);
   const pageSize = 5;
-  const usersQuery = useQuery({
-    queryKey: [...queryKeys.users.list(), user?.id],
-    queryFn: async ({ signal }) =>
-      (await v1Api.users.list(token!, "", signal)).map(normalizeApiUser),
-    enabled: Boolean(token),
-  });
+  const usersQuery = useList(
+    [...queryKeys.users.list(), user?.id],
+    async ({ signal }) => (await v1Api.users.list(token!, "", signal)).map(normalizeApiUser),
+    { enabled: Boolean(token) },
+  );
   const rows: ApiUser[] = usersQuery.data ?? EMPTY_USERS;
   const loading = usersQuery.isPending;
-
-  const loadRoleData = useCallback(async () => {
-    if (!token) return;
-    setRoleDataLoading(true);
-    setRoleDataError(null);
-    try {
+  const rolesQuery = useList(
+    queryKeys.users.roles(user?.id),
+    async ({ signal }) => {
       const [roles, permissions] = await Promise.all([
-        v1Api.roles.list(token),
-        v1Api.roles.permissions(token),
+        v1Api.roles.list(token!, signal),
+        v1Api.roles.permissions(token!, signal),
       ]);
-      setRoleRows(roles);
-      setRoleOptions(roles.map(({ id, name }) => ({ id, name })));
-      setPermissionRows(permissions);
-      setSelectedRoleId((current) =>
-        roles.length && (!current || !roles.some((role) => role.id === current))
-          ? roles[0].id
-          : current,
-      );
-      setInvite((current) =>
-        roles.length && !roles.some((role) => role.name === current.role)
-          ? { ...current, role: roles[0].name }
-          : current,
-      );
-    } catch (error) {
-      setRoleDataError(error instanceof Error ? error.message : "Unable to load roles and permissions.");
-    } finally {
-      setRoleDataLoading(false);
-    }
-  }, [token]);
-
+      return { roles, permissions };
+    },
+    { enabled: Boolean(token) },
+  );
+  const roleRows = rolesQuery.data?.roles ?? EMPTY_ARRAY;
+  const roleOptions = roleRows.map(({ id, name }) => ({ id, name }));
+  const permissionRows = rolesQuery.data?.permissions ?? EMPTY_ARRAY;
+  const roleDataLoading = rolesQuery.isPending;
+  const roleDataError = rolesQuery.error?.message ?? null;
+  const securityQuery = useList(
+    queryKeys.users.security(user?.id),
+    async ({ signal }) => {
+      const [allowlistRows, sessionRows] = await Promise.all([
+        v1Api.users.listIpWhitelist(token!, signal),
+        v1Api.users.listSessions(token!, signal),
+      ]);
+      return { allowlistRows, sessionRows };
+    },
+    { enabled: Boolean(token) },
+  );
+  const allowlistRows = securityQuery.data?.allowlistRows ?? [];
+  const sessionRows = securityQuery.data?.sessionRows ?? [];
   useEffect(() => {
-    void loadRoleData();
-  }, [loadRoleData]);
+    setSelectedRoleId((current) =>
+      roleRows.length && (!current || !roleRows.some((row) => row.id === current))
+        ? roleRows[0].id
+        : current,
+    );
+    setInvite((current) =>
+      roleRows.length && !roleRows.some((row) => row.name === current.role)
+        ? { ...current, role: roleRows[0].name }
+        : current,
+    );
+  }, [roleRows]);
 
+  const refetchRoles = rolesQuery.refetch;
+  const refetchSecurity = securityQuery.refetch;
+  const loadRoleData = useCallback(async () => {
+    if (token) return refetchRoles();
+  }, [token, refetchRoles]);
   const loadSecurity = useCallback(async () => {
-    if (!token) return;
-    try {
-      const [allowlist, sessions] = await Promise.all([
-        v1Api.users.listIpWhitelist(token),
-        v1Api.users.listSessions(token),
-      ]);
-      setAllowlistRows(allowlist);
-      setSessionRows(sessions);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to load security data");
-    }
-  }, [token]);
-
-  useEffect(() => {
-    void loadSecurity();
-  }, [loadSecurity]);
+    if (token) return refetchSecurity();
+  }, [token, refetchSecurity]);
 
   useEffect(() => {
     const activeRole = roleRows.find((role) => role.id === selectedRoleId);
@@ -193,7 +172,10 @@ function UsersPage() {
       const module = permission.module || "General";
       const moduleRows = groups.get(module) ?? [];
       moduleRows.push({ id: permission.id, code: permission.code, action: permission.action });
-      groups.set(module, moduleRows.sort((a, b) => a.code.localeCompare(b.code)));
+      groups.set(
+        module,
+        moduleRows.sort((a, b) => a.code.localeCompare(b.code)),
+      );
     }
     return Array.from(groups.entries()).map(([module, rows]) => ({ module, rows }));
   }, [permissionRows]);
@@ -223,9 +205,7 @@ function UsersPage() {
         name: newRoleName.trim(),
         description: newRoleDescription.trim() || undefined,
       });
-      const refreshedRoles = await v1Api.roles.list(token);
-      setRoleRows(refreshedRoles);
-      setRoleOptions(refreshedRoles.map(({ id, name }) => ({ id, name })));
+      const refreshedRoles = (await rolesQuery.refetch()).data?.roles ?? [];
       const created = refreshedRoles.find((role) => role.name === newRoleName.trim());
       if (created) setSelectedRoleId(created.id);
       setNewRoleName("");
@@ -482,7 +462,12 @@ function UsersPage() {
 
           {!mfaEnabled && !mfaSetup && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Current password" value={mfaPassword} onChange={setMfaPassword} type="password" />
+              <Field
+                label="Current password"
+                value={mfaPassword}
+                onChange={setMfaPassword}
+                type="password"
+              />
               <div className="flex items-end">
                 <Button onClick={setupMfa} disabled={mfaSaving || !mfaPassword}>
                   {mfaSaving ? "Starting..." : "Set up MFA"}
@@ -495,11 +480,18 @@ function UsersPage() {
             <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Authenticator setup key</Label>
-                <code className="block break-all rounded-md bg-muted p-3 text-sm">{mfaSetup.secret}</code>
+                <code className="block break-all rounded-md bg-muted p-3 text-sm">
+                  {mfaSetup.secret}
+                </code>
                 <p className="break-all text-xs text-muted-foreground">{mfaSetup.otpauth_url}</p>
               </div>
               <div className="flex flex-col justify-end gap-2">
-                <Field label="6-digit verification code" value={mfaOtp} onChange={setMfaOtp} inputMode="numeric" />
+                <Field
+                  label="6-digit verification code"
+                  value={mfaOtp}
+                  onChange={setMfaOtp}
+                  inputMode="numeric"
+                />
                 <Button onClick={verifyMfa} disabled={mfaSaving || !mfaOtp.trim()}>
                   {mfaSaving ? "Verifying..." : "Verify and enable"}
                 </Button>
@@ -514,7 +506,8 @@ function UsersPage() {
             <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4" role="status">
               <div className="font-semibold">Save your recovery codes now</div>
               <p className="mb-3 text-sm text-muted-foreground">
-                Each code can be used once. They will not be shown again after you dismiss this panel.
+                Each code can be used once. They will not be shown again after you dismiss this
+                panel.
               </p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {recoveryCodes.map((code) => (
@@ -568,7 +561,10 @@ function UsersPage() {
               </Select>
             </div>
             <div className="flex items-end">
-              <Button onClick={() => void createIpWhitelistRule()} disabled={allowlistSaving || !allowlistForm.cidr.trim()}>
+              <Button
+                onClick={() => void createIpWhitelistRule()}
+                disabled={allowlistSaving || !allowlistForm.cidr.trim()}
+              >
                 {allowlistSaving ? "Saving…" : "Add rule"}
               </Button>
             </div>
@@ -581,7 +577,10 @@ function UsersPage() {
               </div>
             )}
             {allowlistRows.map((rule) => (
-              <div key={rule.id} className="flex items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3">
+              <div
+                key={rule.id}
+                className="flex items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3"
+              >
                 <div className="min-w-0">
                   <div className="truncate font-medium">{describeNetworkScope(rule)}</div>
                   {rule.description && (
@@ -629,7 +628,10 @@ function UsersPage() {
               </div>
             )}
             {sessionRows.map((session) => (
-              <div key={session.id} className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div
+                key={session.id}
+                className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
                 <div className="min-w-0">
                   <div className="font-medium">{session.full_name || session.username}</div>
                   <div className="text-xs text-muted-foreground">{session.email}</div>
@@ -639,7 +641,11 @@ function UsersPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">{session.session_type || "user"}</Badge>
-                  <Button variant="outline" size="sm" onClick={() => void revokeSession(session.id)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void revokeSession(session.id)}
+                  >
                     Revoke
                   </Button>
                 </div>
@@ -702,8 +708,12 @@ function UsersPage() {
               {usersQuery.isError ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
-                    {usersQuery.error instanceof Error ? usersQuery.error.message : "Failed to load users"}
-                    <Button variant="ghost" size="sm" onClick={() => void usersQuery.refetch()}>Retry</Button>
+                    {usersQuery.error instanceof Error
+                      ? usersQuery.error.message
+                      : "Failed to load users"}
+                    <Button variant="ghost" size="sm" onClick={() => void usersQuery.refetch()}>
+                      Retry
+                    </Button>
                   </TableCell>
                 </TableRow>
               ) : loading ? (
@@ -802,7 +812,9 @@ function UsersPage() {
               <DialogContent className="max-w-md">
                 <DialogHeader>
                   <DialogTitle>Create new role</DialogTitle>
-                  <DialogDescription>Define a role and assign permissions after creation.</DialogDescription>
+                  <DialogDescription>
+                    Define a role and assign permissions after creation.
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-2">
                   <div className="space-y-1.5">
@@ -811,11 +823,16 @@ function UsersPage() {
                   </div>
                   <div className="space-y-1.5">
                     <Label>Description</Label>
-                    <Input value={newRoleDescription} onChange={(e) => setNewRoleDescription(e.target.value)} />
+                    <Input
+                      value={newRoleDescription}
+                      onChange={(e) => setNewRoleDescription(e.target.value)}
+                    />
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setRoleDialogOpen(false)}>Cancel</Button>
+                  <Button variant="outline" onClick={() => setRoleDialogOpen(false)}>
+                    Cancel
+                  </Button>
                   <Button onClick={createRole} disabled={saving || !newRoleName.trim()}>
                     {saving ? "Creating…" : "Create role"}
                   </Button>
@@ -847,22 +864,25 @@ function UsersPage() {
                   No roles loaded.
                 </div>
               )}
-              {!roleDataError && roleRows.map((role) => (
-                <button
-                  key={role.id}
-                  type="button"
-                  onClick={() => setSelectedRoleId(role.id)}
-                  className={[
-                    "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors",
-                    selectedRoleId === role.id
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border bg-background hover:bg-muted",
-                  ].join(" ")}
-                >
-                  <span className="font-medium">{role.name}</span>
-                  <span className="text-xs text-muted-foreground">{role.permissions?.length ?? 0}</span>
-                </button>
-              ))}
+              {!roleDataError &&
+                roleRows.map((role) => (
+                  <button
+                    key={role.id}
+                    type="button"
+                    onClick={() => setSelectedRoleId(role.id)}
+                    className={[
+                      "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+                      selectedRoleId === role.id
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-background hover:bg-muted",
+                    ].join(" ")}
+                  >
+                    <span className="font-medium">{role.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {role.permissions?.length ?? 0}
+                    </span>
+                  </button>
+                ))}
             </div>
 
             <div className="rounded-xl border p-3">
@@ -898,7 +918,10 @@ function UsersPage() {
                           {rows.map((permission) => {
                             const checked = draftPermissions.has(permission.code);
                             return (
-                              <label key={permission.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-transparent px-2 py-1.5 hover:border-border hover:bg-muted/50">
+                              <label
+                                key={permission.id}
+                                className="flex cursor-pointer items-start gap-3 rounded-md border border-transparent px-2 py-1.5 hover:border-border hover:bg-muted/50"
+                              >
                                 <Checkbox
                                   checked={checked}
                                   onCheckedChange={() =>
@@ -911,8 +934,12 @@ function UsersPage() {
                                   }
                                 />
                                 <div className="min-w-0">
-                                  <div className="text-sm font-medium capitalize">{permission.action}</div>
-                                  <div className="text-xs text-muted-foreground">{permission.code}</div>
+                                  <div className="text-sm font-medium capitalize">
+                                    {permission.action}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {permission.code}
+                                  </div>
                                 </div>
                               </label>
                             );

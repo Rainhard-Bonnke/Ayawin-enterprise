@@ -27,7 +27,7 @@ function loadAdapter() {
 async function run() {
   const adapter = loadAdapter();
   await runMigrations();
-  console.log("Notification outbox worker started; a message is marked sent only after provider confirmation.");
+  console.log(JSON.stringify({ event: "worker_health", worker: "notification-outbox", status: "ready", pid: process.pid, poll_interval_ms: pollIntervalMs }));
 
   while (!stopping) {
     try {
@@ -40,6 +40,7 @@ async function run() {
   }
 
   await pool.end();
+  console.log(JSON.stringify({ event: "worker_health", worker: "notification-outbox", status: "stopped", pid: process.pid }));
 }
 
 process.on("SIGINT", () => { stopping = true; });

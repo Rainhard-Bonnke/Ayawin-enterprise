@@ -1,14 +1,120 @@
 const pool = require("../db");
 
+function isCalendarDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function normalizeCashBookFilters({ accountId = null, startDate, endDate, limit = 1000 } = {}) {
+  if (!isCalendarDate(startDate) || !isCalendarDate(endDate) || endDate < startDate) {
+    throw new Error("Choose a valid cash book date range");
+  }
+
+  const normalizedAccountId = String(accountId || "").trim() || null;
+  if (
+    normalizedAccountId &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      normalizedAccountId,
+    )
+  ) {
+    throw new Error("Choose a valid cash or bank account");
+  }
+
+  const rowLimit = Number(limit);
+  if (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 5000) {
+    throw new Error("Cash book row limit must be between 1 and 5,000");
+  }
+
+  return {
+    accountId: normalizedAccountId,
+    startDate,
+    endDate,
+    limit: rowLimit,
+  };
+}
+
+async function listCashBook(companyId, filters = {}, database = pool) {
+  const normalized = normalizeCashBookFilters(filters);
+  const accountsResult = await database.query(
+    `SELECT a.id, a.account_code, a.account_name, a.currency_code,
+            COALESCE(SUM(jl.debit - jl.credit) FILTER (WHERE j.id IS NOT NULL), 0) AS opening_balance
+     FROM erp_chart_of_accounts a
+     LEFT JOIN erp_journal_lines jl ON jl.account_id = a.id AND jl.company_id = a.company_id
+     LEFT JOIN erp_journals j ON j.id = jl.journal_id AND j.company_id = jl.company_id
+       AND j.status = 'posted' AND j.is_deleted = FALSE AND j.entry_date < $3::date
+     WHERE a.company_id = $1 AND a.account_type = 'asset' AND a.account_code LIKE '11%'
+       AND a.is_active = TRUE AND a.is_deleted = FALSE AND a.is_postable = TRUE
+       AND ($2::uuid IS NULL OR a.id = $2::uuid)
+     GROUP BY a.id
+     ORDER BY a.account_code`,
+    [companyId, normalized.accountId, normalized.startDate],
+  );
+
+  if (normalized.accountId && !accountsResult.rowCount) {
+    throw new Error("Cash or bank account not found");
+  }
+
+  const linesResult = await database.query(
+    `WITH selected_accounts AS (
+       SELECT id, account_code, account_name, currency_code
+       FROM erp_chart_of_accounts
+       WHERE company_id = $1 AND account_type = 'asset' AND account_code LIKE '11%'
+         AND is_active = TRUE AND is_deleted = FALSE AND is_postable = TRUE
+         AND ($2::uuid IS NULL OR id = $2::uuid)
+     ), opening_balances AS (
+       SELECT jl.account_id, COALESCE(SUM(jl.debit - jl.credit), 0) AS opening_balance
+       FROM erp_journal_lines jl
+       JOIN erp_journals j ON j.id = jl.journal_id AND j.company_id = jl.company_id
+       JOIN selected_accounts a ON a.id = jl.account_id
+       WHERE jl.company_id = $1 AND j.status = 'posted' AND j.is_deleted = FALSE
+         AND j.entry_date < $3::date
+       GROUP BY jl.account_id
+     ), period_lines AS (
+       SELECT a.id AS account_id, a.account_code, a.account_name, a.currency_code,
+              j.id AS journal_id, j.journal_no, j.entry_date, j.reference_no,
+              COALESCE(jl.description, j.description) AS description,
+              jl.line_no, jl.debit, jl.credit
+       FROM erp_journal_lines jl
+       JOIN erp_journals j ON j.id = jl.journal_id AND j.company_id = jl.company_id
+       JOIN selected_accounts a ON a.id = jl.account_id
+       WHERE jl.company_id = $1 AND j.status = 'posted' AND j.is_deleted = FALSE
+         AND j.entry_date BETWEEN $3::date AND $4::date
+     )
+     SELECT p.*,
+            COALESCE(o.opening_balance, 0) AS opening_balance,
+            COALESCE(o.opening_balance, 0) + SUM(p.debit - p.credit) OVER (
+              PARTITION BY p.account_id
+              ORDER BY p.entry_date, p.journal_no, p.line_no
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS running_balance
+     FROM period_lines p
+     LEFT JOIN opening_balances o ON o.account_id = p.account_id
+     ORDER BY p.entry_date, p.account_code, p.journal_no, p.line_no
+     LIMIT $5`,
+    [companyId, normalized.accountId, normalized.startDate, normalized.endDate, normalized.limit],
+  );
+
+  return { accounts: accountsResult.rows, lines: linesResult.rows, filters: normalized };
+}
+
 function normalizeStatementLine(line, index, startDate, endDate) {
   const date = String(line.transaction_date || "").slice(0, 10);
   const debit = Number(line.debit || 0);
   const credit = Number(line.credit || 0);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < startDate || date > endDate) {
+  if (!isCalendarDate(date)) {
+    throw new Error(`Statement line ${index + 1} has an invalid calendar date`);
+  }
+  if (date < startDate || date > endDate) {
     throw new Error(`Statement line ${index + 1} has a date outside the statement period`);
   }
-  if (!Number.isFinite(debit) || !Number.isFinite(credit)
-    || debit < 0 || credit < 0 || (debit > 0) === (credit > 0)) {
+  if (
+    !Number.isFinite(debit) ||
+    !Number.isFinite(credit) ||
+    debit < 0 ||
+    credit < 0 ||
+    debit > 0 === credit > 0
+  ) {
     throw new Error(`Statement line ${index + 1} must have one positive debit or credit amount`);
   }
   const description = String(line.description || "").trim();
@@ -23,20 +129,42 @@ function normalizeStatementLine(line, index, startDate, endDate) {
   };
 }
 
-async function createReconciliation({ companyId, userId, bankAccountId, statementReference, statementStart, statementEnd, openingBalance, closingBalance, lines }) {
+async function createReconciliation({
+  companyId,
+  userId,
+  bankAccountId,
+  statementReference,
+  statementStart,
+  statementEnd,
+  openingBalance,
+  closingBalance,
+  lines,
+}) {
   if (!statementReference?.trim()) throw new Error("Statement reference is required");
-  if (!Array.isArray(lines) || !lines.length || lines.length > 5000) throw new Error("Import between 1 and 5,000 statement lines");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(statementStart || "")
-    || !/^\d{4}-\d{2}-\d{2}$/.test(statementEnd || "") || statementEnd < statementStart) {
+  if (!Array.isArray(lines) || !lines.length || lines.length > 5000)
+    throw new Error("Import between 1 and 5,000 statement lines");
+  if (
+    !isCalendarDate(statementStart) ||
+    !isCalendarDate(statementEnd) ||
+    statementEnd < statementStart
+  ) {
     throw new Error("Choose a valid statement date range");
   }
   const opening = Number(openingBalance);
   const closing = Number(closingBalance);
-  if (!Number.isFinite(opening) || !Number.isFinite(closing)) throw new Error("Opening and closing balances must be numeric");
-  const normalized = lines.map((line, index) => normalizeStatementLine(line, index, statementStart, statementEnd));
-  const calculatedClosing = Math.round((opening + normalized.reduce((sum, line) => sum + line.credit - line.debit, 0)) * 100) / 100;
+  if (!Number.isFinite(opening) || !Number.isFinite(closing))
+    throw new Error("Opening and closing balances must be numeric");
+  const normalized = lines.map((line, index) =>
+    normalizeStatementLine(line, index, statementStart, statementEnd),
+  );
+  const calculatedClosing =
+    Math.round(
+      (opening + normalized.reduce((sum, line) => sum + line.credit - line.debit, 0)) * 100,
+    ) / 100;
   if (Math.abs(calculatedClosing - closing) > 0.01) {
-    throw new Error(`Statement lines calculate to ${calculatedClosing.toFixed(2)}, which does not match the closing balance ${closing.toFixed(2)}`);
+    throw new Error(
+      `Statement lines calculate to ${calculatedClosing.toFixed(2)}, which does not match the closing balance ${closing.toFixed(2)}`,
+    );
   }
 
   const client = await pool.connect();
@@ -48,13 +176,39 @@ async function createReconciliation({ companyId, userId, bankAccountId, statemen
          AND is_active = TRUE AND is_deleted = FALSE AND is_postable = TRUE FOR UPDATE`,
       [bankAccountId, companyId],
     );
-    if (!account.rowCount) throw new Error("Choose an active postable bank or cash account (account code starting 11)");
+    if (!account.rowCount)
+      throw new Error("Choose an active postable bank or cash account (account code starting 11)");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      companyId,
+      bankAccountId,
+    ]);
+    const overlapping = await client.query(
+      `SELECT id, statement_reference FROM erp_bank_reconciliations
+       WHERE company_id = $1 AND bank_account_id = $2
+         AND statement_start <= $4::date AND statement_end >= $3::date
+       LIMIT 1 FOR UPDATE`,
+      [companyId, bankAccountId, statementStart, statementEnd],
+    );
+    if (overlapping.rowCount) {
+      throw new Error(
+        `Statement period overlaps existing reconciliation ${overlapping.rows[0].statement_reference}`,
+      );
+    }
     const result = await client.query(
       `INSERT INTO erp_bank_reconciliations
        (company_id, bank_account_id, statement_reference, statement_start, statement_end,
         opening_balance, closing_balance, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [companyId, bankAccountId, statementReference.trim(), statementStart, statementEnd, opening, closing, userId],
+      [
+        companyId,
+        bankAccountId,
+        statementReference.trim(),
+        statementStart,
+        statementEnd,
+        opening,
+        closing,
+        userId,
+      ],
     );
     const reconciliation = result.rows[0];
     for (const line of normalized) {
@@ -62,7 +216,16 @@ async function createReconciliation({ companyId, userId, bankAccountId, statemen
         `INSERT INTO erp_bank_reconciliation_lines
          (company_id, reconciliation_id, line_no, transaction_date, reference, description, debit, credit)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [companyId, reconciliation.id, line.lineNo, line.transactionDate, line.reference, line.description, line.debit, line.credit],
+        [
+          companyId,
+          reconciliation.id,
+          line.lineNo,
+          line.transactionDate,
+          line.reference,
+          line.description,
+          line.debit,
+          line.credit,
+        ],
       );
     }
     await client.query("COMMIT");
@@ -150,7 +313,8 @@ async function matchStatementLine({ companyId, userId, reconciliationId, lineId,
        WHERE id = $1 AND reconciliation_id = $2 AND company_id = $3 AND journal_line_id IS NULL FOR UPDATE`,
       [lineId, reconciliationId, companyId],
     );
-    if (!reconciliation.rowCount || !statementLine.rowCount) throw new Error("Statement or line is not open for matching");
+    if (!reconciliation.rowCount || !statementLine.rowCount)
+      throw new Error("Statement or line is not open for matching");
     const bankLine = statementLine.rows[0];
     const source = await client.query(
       `SELECT jl.id, jl.debit, jl.credit, j.entry_date
@@ -161,14 +325,24 @@ async function matchStatementLine({ companyId, userId, reconciliationId, lineId,
          AND j.entry_date BETWEEN $4::date - 14 AND $5::date + 14
          AND NOT EXISTS (SELECT 1 FROM erp_bank_reconciliation_lines x WHERE x.journal_line_id = jl.id)
        FOR UPDATE OF jl`,
-      [journalLineId, companyId, reconciliation.rows[0].bank_account_id, bankLine.transaction_date, bankLine.transaction_date],
+      [
+        journalLineId,
+        companyId,
+        reconciliation.rows[0].bank_account_id,
+        bankLine.transaction_date,
+        bankLine.transaction_date,
+      ],
     );
     const candidate = source.rows[0];
-    if (!candidate) throw new Error("That bank transaction is unavailable, already reconciled, or outside the matching date window");
+    if (!candidate)
+      throw new Error(
+        "That bank transaction is unavailable, already reconciled, or outside the matching date window",
+      );
     // Bank statement debit means cash left the bank; in the ERP asset ledger that is a credit.
-    const directionMatches = Number(bankLine.debit) > 0
-      ? Number(candidate.credit) > 0 && Number(candidate.debit) === 0
-      : Number(candidate.debit) > 0 && Number(candidate.credit) === 0;
+    const directionMatches =
+      Number(bankLine.debit) > 0
+        ? Number(candidate.credit) > 0 && Number(candidate.debit) === 0
+        : Number(candidate.debit) > 0 && Number(candidate.credit) === 0;
     const statementAmount = Number(bankLine.debit || bankLine.credit);
     const ledgerAmount = Number(candidate.debit || candidate.credit);
     if (!directionMatches || Math.abs(statementAmount - ledgerAmount) > 0.01) {
@@ -209,9 +383,12 @@ async function completeReconciliation({ companyId, userId, reconciliationId }) {
       [reconciliationId, companyId],
     );
     const summary = totals.rows[0];
-    const calculated = Math.round((Number(header.rows[0].opening_balance) + Number(summary.movement)) * 100) / 100;
+    const calculated =
+      Math.round((Number(header.rows[0].opening_balance) + Number(summary.movement)) * 100) / 100;
     if (!summary.line_count || Number(summary.line_count) !== Number(summary.matched_count)) {
-      throw new Error("Match every statement line to a posted bank ledger entry before completing reconciliation");
+      throw new Error(
+        "Match every statement line to a posted bank ledger entry before completing reconciliation",
+      );
     }
     if (Math.abs(calculated - Number(header.rows[0].closing_balance)) > 0.01) {
       throw new Error("Statement closing balance no longer agrees with its imported transactions");
@@ -231,4 +408,14 @@ async function completeReconciliation({ companyId, userId, reconciliationId }) {
   }
 }
 
-module.exports = { createReconciliation, listReconciliations, getReconciliation, listCandidates, matchStatementLine, completeReconciliation };
+module.exports = {
+  normalizeCashBookFilters,
+  listCashBook,
+  normalizeStatementLine,
+  createReconciliation,
+  listReconciliations,
+  getReconciliation,
+  listCandidates,
+  matchStatementLine,
+  completeReconciliation,
+};

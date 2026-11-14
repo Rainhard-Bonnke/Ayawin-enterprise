@@ -157,6 +157,14 @@ router.get("/reorder-alerts", requirePermission("procurement.view"), async (req,
   return res.json(rows);
 });
 
+router.get("/reorder-suggestions", requirePermission("procurement.view"), async (req, res) => {
+  try {
+    return res.json(await inventory.getReorderSuggestions(req.user.company_id, req.query.limit || 200));
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unable to calculate replenishment suggestions" });
+  }
+});
+
 router.get("/analysis", requirePermission("procurement.view"), async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 365);
   const warehouseId = String(req.query.warehouse_id || "");
@@ -442,6 +450,29 @@ router.post("/fleet/stocktakes/:stocktakeId/review", requirePermission("fleet.ap
     return res.json(session);
   } catch (err) {
     return res.status(err.message === "Submitted stock count not found" ? 404 : 400).json({ error: err.message });
+  }
+});
+
+router.post("/fleet/stocktakes/:stocktakeId/recount", requirePermission("fleet.count"), async (req, res) => {
+  try {
+    const session = await stocktakes.reopenStocktakeForRecount({
+      companyId: req.user.company_id,
+      stocktakeId: req.params.stocktakeId,
+      user: req.user,
+    });
+    await logAudit({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      entityType: "erp_stocktake_sessions",
+      entityId: session.id,
+      action: "stocktake_reopened_for_recount",
+      newValues: { status: session.status, snapshot_at: session.snapshot_at },
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+    return res.json(session);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Unable to reopen stock count" });
   }
 });
 

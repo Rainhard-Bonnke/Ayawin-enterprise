@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { ACCOUNT_CODES } = require("./accountCodes");
+const { roundMoney } = require("../lib/money");
 
 async function getStockOnHand(companyId, { warehouseId, itemId, q = "", limit = 100 } = {}) {
   const params = [companyId];
@@ -410,6 +411,79 @@ async function getReorderAlerts(companyId, limit = 100) {
   return result.rows;
 }
 
+async function getReorderSuggestions(companyId, limit = 200) {
+  const result = await pool.query(
+    `WITH demand AS (
+       SELECT company_id, warehouse_id, item_id,
+              COALESCE(SUM(ABS(quantity)),0) / 90.0 AS average_daily_usage
+       FROM erp_stock_ledger
+       WHERE company_id=$1 AND movement_type IN ('issue','sale')
+         AND movement_date >= CURRENT_DATE - INTERVAL '90 days'
+       GROUP BY company_id, warehouse_id, item_id
+     ), stock AS (
+       SELECT s.company_id, s.warehouse_id, s.item_id, s.quantity, s.avg_unit_cost,
+              CASE WHEN i.lot_tracking_enabled THEN COALESCE((
+                SELECT SUM(l.quantity-l.quarantined_quantity) FROM erp_inventory_lots l
+                WHERE l.company_id=s.company_id AND l.warehouse_id=s.warehouse_id AND l.item_id=s.item_id
+                  AND l.expiry_date >= CURRENT_DATE),0)
+              ELSE GREATEST(0,s.quantity-COALESCE((SELECT q.quantity FROM erp_inventory_quarantine_balances q
+                WHERE q.company_id=s.company_id AND q.warehouse_id=s.warehouse_id AND q.item_id=s.item_id),0)) END AS sellable_quantity,
+              COALESCE((SELECT SUM(r.reserved_quantity-r.fulfilled_quantity-r.released_quantity)
+                FROM erp_sales_order_reservations r WHERE r.company_id=s.company_id AND r.warehouse_id=s.warehouse_id
+                  AND r.item_id=s.item_id AND r.status='active'),0) AS reserved_quantity
+       FROM erp_stock_on_hand s JOIN erp_items i ON i.id=s.item_id AND i.company_id=s.company_id
+       WHERE s.company_id=$1 AND s.is_deleted=FALSE AND i.is_deleted=FALSE AND i.is_active=TRUE
+     ), supply AS (
+       SELECT po.company_id, warehouse.id AS warehouse_id, pol.item_id,
+              SUM(GREATEST(pol.quantity-pol.qty_received,0)) AS on_order_quantity
+       FROM erp_purchase_order_lines pol
+       JOIN erp_purchase_orders po ON po.id=pol.purchase_order_id AND po.company_id=pol.company_id
+       JOIN erp_warehouses warehouse ON warehouse.company_id=po.company_id
+         AND (po.warehouse_id=warehouse.id OR po.warehouse_id IS NULL)
+       WHERE po.company_id=$1 AND po.status IN ('approved','sent','partial')
+         AND po.is_deleted=FALSE AND pol.is_deleted=FALSE
+       GROUP BY po.company_id,warehouse.id,pol.item_id
+     )
+     SELECT item.id AS item_id, item.item_code, item.name AS item_name,
+            warehouse.id AS warehouse_id, warehouse.name AS warehouse_name,
+            item.minimum_stock, item.maximum_stock, item.reorder_point, item.supplier_lead_time_days,
+            item.preferred_vendor_id, vendor.name AS preferred_vendor_name,
+            COALESCE(stock.quantity,0) AS on_hand_quantity,
+            COALESCE(stock.sellable_quantity,0) AS sellable_quantity,
+            COALESCE(stock.reserved_quantity,0) AS reserved_quantity,
+            GREATEST(COALESCE(stock.sellable_quantity,0)-COALESCE(stock.reserved_quantity,0),0) AS available_quantity,
+            COALESCE(supply.on_order_quantity,0) AS on_order_quantity,
+            COALESCE(demand.average_daily_usage,0) AS average_daily_usage,
+            COALESCE(item.maximum_stock,
+              GREATEST(item.minimum_stock + COALESCE(demand.average_daily_usage,0)*item.supplier_lead_time_days,
+                       item.minimum_stock*2,item.reorder_point)) AS target_quantity,
+            GREATEST(COALESCE(item.maximum_stock,
+              GREATEST(item.minimum_stock + COALESCE(demand.average_daily_usage,0)*item.supplier_lead_time_days,
+                       item.minimum_stock*2,item.reorder_point))
+              - GREATEST(COALESCE(stock.sellable_quantity,0)-COALESCE(stock.reserved_quantity,0),0)
+              - COALESCE(supply.on_order_quantity,0),0) AS suggested_quantity,
+            COALESCE(stock.avg_unit_cost,0) AS estimated_unit_cost
+     FROM erp_items item
+     JOIN erp_warehouses warehouse ON warehouse.company_id=item.company_id AND warehouse.is_active=TRUE AND warehouse.is_deleted=FALSE
+     LEFT JOIN stock ON stock.company_id=item.company_id AND stock.item_id=item.id AND stock.warehouse_id=warehouse.id
+     LEFT JOIN demand ON demand.company_id=item.company_id AND demand.item_id=item.id AND demand.warehouse_id=warehouse.id
+    LEFT JOIN supply ON supply.company_id=item.company_id AND supply.item_id=item.id AND supply.warehouse_id=warehouse.id
+     LEFT JOIN erp_vendors vendor ON vendor.id=item.preferred_vendor_id AND vendor.company_id=item.company_id AND vendor.is_deleted=FALSE
+     WHERE item.company_id=$1 AND item.is_active=TRUE AND item.is_deleted=FALSE
+       AND GREATEST(item.minimum_stock,item.reorder_point)>0
+       AND (stock.item_id IS NOT NULL OR demand.item_id IS NOT NULL OR supply.item_id IS NOT NULL)
+       AND GREATEST(COALESCE(stock.sellable_quantity,0)-COALESCE(stock.reserved_quantity,0),0)
+           + COALESCE(supply.on_order_quantity,0) < GREATEST(item.minimum_stock,item.reorder_point)
+       AND GREATEST(COALESCE(item.maximum_stock,GREATEST(item.minimum_stock + COALESCE(demand.average_daily_usage,0)*item.supplier_lead_time_days,
+           item.minimum_stock*2,item.reorder_point))
+           - GREATEST(COALESCE(stock.sellable_quantity,0)-COALESCE(stock.reserved_quantity,0),0)
+           - COALESCE(supply.on_order_quantity,0),0)>0
+     ORDER BY warehouse.name,item.item_code LIMIT $2`,
+    [companyId, Math.min(Number(limit) || 200, 1000)],
+  );
+  return result.rows;
+}
+
 async function getValuationReconciliation(companyId, asOf) {
   const [stockResult, transitResult, glResult] = await Promise.all([
     pool.query(
@@ -449,19 +523,19 @@ async function getValuationReconciliation(companyId, asOf) {
   ]);
   const transitByItem = new Map(transitResult.rows.map((row) => [row.item_id, Number(row.in_transit_value || 0)]));
   const items = stockResult.rows.map((row) => {
-    const onHand = Number(row.stock_value || 0);
-    const inTransit = transitByItem.get(row.item_id) || 0;
+    const onHand = roundMoney(Number(row.stock_value || 0));
+    const inTransit = roundMoney(transitByItem.get(row.item_id) || 0);
     return { item_id: row.item_id, item_code: row.item_code, item_name: row.item_name,
-      on_hand_value: onHand, in_transit_value: inTransit, stock_value: onHand + inTransit };
+      on_hand_value: onHand, in_transit_value: inTransit, stock_value: roundMoney(onHand + inTransit) };
   });
-  const stockValue = items.reduce((sum, item) => sum + item.stock_value, 0);
-  const glValue = Number(glResult.rows[0]?.gl_value || 0);
+  const stockValue = roundMoney(items.reduce((sum, item) => sum + item.stock_value, 0));
+  const glValue = roundMoney(Number(glResult.rows[0]?.gl_value || 0));
   return {
     as_of: asOf,
     inventory_account: glResult.rows[0]?.account_code || ACCOUNT_CODES.inventory,
     stock_value: stockValue,
     gl_value: glValue,
-    variance: stockValue - glValue,
+    variance: roundMoney(stockValue - glValue),
     items,
     unposted_movement_types: [
       { reference_type: "material_issue", reason: "Material consumption changes stock but currently has no linked GL journal; expense account policy is not configured." },
@@ -472,4 +546,4 @@ async function getValuationReconciliation(companyId, asOf) {
 }
 
 module.exports = { getStockOnHand, getLotBalances, getSellableQuantity, recordReceipt, recordIssue,
-  adjustLotLayerQuarantine, consumeQuarantinedLotLayers, getReorderAlerts, getValuationReconciliation };
+  adjustLotLayerQuarantine, consumeQuarantinedLotLayers, getReorderAlerts, getReorderSuggestions, getValuationReconciliation };

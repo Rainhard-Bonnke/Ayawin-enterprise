@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Controller, useForm, type FieldError, type UseFormRegisterReturn } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowUpDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,17 +17,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListPagination } from "@/components/ListPagination";
+import { MoneyText } from "@/components/MoneyText";
+import { FormDialog } from "@/components/FormDialog";
 import { QuietNote } from "@/components/QuietNote";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -44,24 +38,13 @@ import { type BackendCustomer } from "@/lib/api-types";
 import { normalizeMasterCustomer, v1Api } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAction, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 import { trackEvent } from "@/lib/event-tracker";
+import { customerFormSchema, type CustomerFormValues } from "@/schemas/customers";
 import { toast } from "sonner";
 
-type CustomerFormState = {
-  name: string;
-  kra_pin: string;
-  contact: string;
-  email: string;
-  address: string;
-  location: string;
-  type: string;
-  segment: string;
-  credit_limit: string;
-  payment_terms: string;
-  balance: string;
-};
-
-const emptyForm = (): CustomerFormState => ({
+const emptyForm = (): CustomerFormValues => ({
   name: "",
   kra_pin: "",
   contact: "",
@@ -70,9 +53,8 @@ const emptyForm = (): CustomerFormState => ({
   location: "",
   type: "Bar/Restaurant",
   segment: "Bar/Restaurant",
-  credit_limit: "0",
+  credit_limit: "0.00",
   payment_terms: "Net 30",
-  balance: "0",
 });
 
 const segmentOptions = ["Bar/Restaurant", "Wholesaler", "Retailer", "Distributor", "Supermarket"];
@@ -85,20 +67,51 @@ export const Route = createFileRoute("/_app/customers")({
 
 function CustomersPage() {
   const { token, user } = useAuth();
-  const [q, setQ] = useState("");
-  const [segment, setSegment] = useState("all");
-  const [sort, setSort] = useState("name");
-  const [page, setPage] = useState(1);
+  const [q, setQ] = useUrlSearchParam("q", "");
+  const [segment, setSegment] = useUrlSearchParam("segment", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "name");
+  const [pageValue, setPageValue] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageValue) || 1);
+  const setPage = (next: number) => setPageValue(String(Math.max(1, next)));
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<BackendCustomer | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<CustomerFormState>(emptyForm());
+  const {
+    register,
+    control,
+    reset,
+    setValue,
+    setError,
+    clearErrors,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<CustomerFormValues>({
+    resolver: zodResolver(customerFormSchema),
+    defaultValues: emptyForm(),
+  });
+  const saving = isSubmitting;
   const pageSize = 5;
-  const customersQuery = useQuery({
-    queryKey: [...queryKeys.customers.list(), user?.id],
-    queryFn: async ({ signal }) =>
+  const customersQuery = useList(
+    [...queryKeys.customers.list(), user?.id],
+    async ({ signal }) =>
       (await v1Api.master.customers(token!, "", signal)).map(normalizeMasterCustomer),
-    enabled: Boolean(token),
+    { enabled: Boolean(token) },
+  );
+  const createCustomerAction = useAction({
+    mutationFn: (payload: Parameters<typeof v1Api.master.createCustomer>[1]) =>
+      v1Api.master.createCustomer(token!, payload),
+    invalidate: [queryKeys.customers.list()],
+  });
+  const updateCustomerAction = useAction({
+    mutationFn: (input: {
+      id: string | number;
+      payload: Parameters<typeof v1Api.master.updateCustomer>[2];
+    }) => v1Api.master.updateCustomer(token!, input.id, input.payload),
+    invalidate: [queryKeys.customers.list()],
+  });
+  const deleteCustomerAction = useAction({
+    mutationFn: (id: Parameters<typeof v1Api.master.deleteCustomer>[1]) =>
+      v1Api.master.deleteCustomer(token!, id),
+    invalidate: [queryKeys.customers.list()],
   });
   const rows: BackendCustomer[] = customersQuery.data ?? EMPTY_CUSTOMERS;
   const loading = customersQuery.isPending;
@@ -135,7 +148,7 @@ function CustomersPage() {
   const metrics = useMemo(() => {
     const creditExposure = rows.reduce((sum, row) => sum + Number(row.balance || 0), 0);
     const atRisk = rows.filter((row) => {
-      const health = customerHealth(row.name);
+      const health = customerHealth(Number(row.balance || 0), Number(row.credit_limit || 0));
       return health.tone === "warning" || health.tone === "destructive";
     }).length;
 
@@ -149,13 +162,14 @@ function CustomersPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm(emptyForm());
+    reset(emptyForm());
+    clearErrors();
     setDialogOpen(true);
   };
 
   const openEdit = (customer: BackendCustomer) => {
     setEditing(customer);
-    setForm({
+    reset({
       name: customer.name,
       kra_pin: customer.kra_pin,
       contact: customer.contact ?? "",
@@ -164,38 +178,32 @@ function CustomersPage() {
       location: customer.location ?? "",
       type: customer.type ?? customer.segment ?? "Bar/Restaurant",
       segment: customer.segment ?? customer.type ?? "Bar/Restaurant",
-      credit_limit: String(customer.credit_limit ?? 0),
+      credit_limit: Number(customer.credit_limit ?? 0).toFixed(2),
       payment_terms: customer.payment_terms ?? "Net 30",
-      balance: String(customer.balance ?? 0),
     });
+    clearErrors();
     setDialogOpen(true);
   };
 
-  const saveCustomer = async () => {
+  const saveCustomer = async (values: CustomerFormValues) => {
     if (!token) return;
-    if (!form.name.trim() || !form.kra_pin.trim()) {
-      toast.error("Customer name and KRA PIN are required");
-      return;
-    }
-
     const payload = {
-      name: form.name.trim(),
-      kra_pin: form.kra_pin.trim(),
-      contact: form.contact.trim(),
-      email: form.email.trim(),
-      address: form.address.trim(),
-      location: form.location.trim(),
-      type: form.type.trim(),
-      segment: form.segment.trim(),
-      credit_limit: Number(form.credit_limit || 0),
-      payment_terms: form.payment_terms.trim(),
-      balance: Number(form.balance || 0),
+      name: values.name,
+      kra_pin: values.kra_pin,
+      contact: values.contact,
+      email: values.email,
+      address: values.address,
+      location: values.location,
+      type: values.type,
+      segment: values.segment,
+      credit_limit: Number(values.credit_limit),
+      payment_terms: values.payment_terms,
     };
 
-    setSaving(true);
+    clearErrors();
     try {
       if (editing) {
-        const updated = await v1Api.master.updateCustomer(token, editing.id, payload);
+        const updated = await updateCustomerAction.mutateAsync({ id: editing.id, payload });
         void trackEvent({
           action: "customer_updated",
           entityType: "customer",
@@ -206,7 +214,7 @@ function CustomersPage() {
         });
         toast.success(`Customer ${updated.name} updated`);
       } else {
-        const created = await v1Api.master.createCustomer(token, payload);
+        const created = await createCustomerAction.mutateAsync(payload);
         void trackEvent({
           action: "customer_created",
           entityType: "customer",
@@ -219,19 +227,30 @@ function CustomersPage() {
       }
 
       setDialogOpen(false);
+      reset(emptyForm());
       setPage(1);
       await loadCustomers();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to save customer");
-    } finally {
-      setSaving(false);
+      const message = error instanceof Error ? error.message : "Unable to save customer";
+      const lowerMessage = message.toLowerCase();
+      const field =
+        lowerMessage.includes("pin") || lowerMessage.includes("tax")
+          ? "kra_pin"
+          : lowerMessage.includes("phone")
+            ? "contact"
+            : lowerMessage.includes("email")
+              ? "email"
+              : null;
+      if (field) setError(field, { type: "server", message });
+      else setError("root.server", { type: "server", message });
+      toast.error(message);
     }
   };
 
   const removeCustomer = async (customer: BackendCustomer) => {
     if (!token) return;
     try {
-      await v1Api.master.deleteCustomer(token, customer.id);
+      await deleteCustomerAction.mutateAsync(customer.id);
       void trackEvent({
         action: "customer_deleted",
         entityType: "customer",
@@ -357,7 +376,7 @@ function CustomersPage() {
                 <TableHead>KRA PIN</TableHead>
                 <TableHead>Location</TableHead>
                 <TableHead>Terms</TableHead>
-                <TableHead className="w-[200px]">Credit Utilisation</TableHead>
+                <TableHead className="w-50">Credit Utilisation</TableHead>
                 <TableHead className="text-right">Balance</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -366,8 +385,12 @@ function CustomersPage() {
               {customersQuery.isError ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-sm text-destructive">
-                    {customersQuery.error instanceof Error ? customersQuery.error.message : "Unable to load customers"}
-                    <Button variant="ghost" size="sm" onClick={() => void customersQuery.refetch()}>Retry</Button>
+                    {customersQuery.error instanceof Error
+                      ? customersQuery.error.message
+                      : "Unable to load customers"}
+                    <Button variant="ghost" size="sm" onClick={() => void customersQuery.refetch()}>
+                      Retry
+                    </Button>
                   </TableCell>
                 </TableRow>
               ) : loading ? (
@@ -385,7 +408,10 @@ function CustomersPage() {
                   const balance = Number(customer.balance || 0);
                   const utilisation =
                     limit > 0 ? Math.min(100, Math.round((balance / limit) * 100)) : 0;
-                  const health = customerHealth(customer.name);
+                  const health = customerHealth(
+                    Number(customer.balance || 0),
+                    Number(customer.credit_limit || 0),
+                  );
 
                   return (
                     <TableRow key={customer.id}>
@@ -428,13 +454,15 @@ function CustomersPage() {
                           }
                         />
                         <div className="mt-1 text-[10px] text-muted-foreground">
-                          {utilisation}% of {KES(limit)}
+                          {utilisation}% of <MoneyText value={customer.credit_limit} />
                         </div>
                         <div className="mt-1 text-[10px] text-muted-foreground">
                           {health.label} profile
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-semibold">{KES(balance)}</TableCell>
+                      <TableCell className="text-right font-semibold">
+                        <MoneyText value={customer.balance} />
+                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
                           <Button variant="ghost" size="sm" onClick={() => openEdit(customer)}>
@@ -485,112 +513,112 @@ function CustomersPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editing ? "Edit Customer" : "New Customer"}</DialogTitle>
-            <DialogDescription>
-              Maintain customer credit controls, KRA details and payment terms.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-2 sm:grid-cols-2">
-            <Field
-              label="Customer Name"
-              value={form.name}
-              onChange={(value) => setForm((prev) => ({ ...prev, name: value }))}
+      <FormDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        title={editing ? "Edit Customer" : "New Customer"}
+        description="Maintain customer credit controls, KRA details and payment terms."
+        submitLabel={editing ? "Save Changes" : "Create Customer"}
+        submittingLabel="Saving..."
+        isSubmitting={saving}
+        onSubmit={handleSubmit(saveCustomer)}
+      >
+        <div className="grid gap-4 py-2 sm:grid-cols-2">
+          <Field label="Customer Name" registration={register("name")} error={errors.name} />
+          <Field label="KRA PIN" registration={register("kra_pin")} error={errors.kra_pin} />
+          <Field
+            label="Contact"
+            type="tel"
+            registration={register("contact")}
+            error={errors.contact}
+          />
+          <Field label="Email" type="email" registration={register("email")} error={errors.email} />
+          <Field label="Address" registration={register("address")} error={errors.address} />
+          <Field label="Location" registration={register("location")} error={errors.location} />
+          <div className="space-y-1.5">
+            <Label htmlFor="customer-segment">Segment</Label>
+            <Controller
+              control={control}
+              name="segment"
+              render={({ field }) => (
+                <Select
+                  value={field.value}
+                  onValueChange={(value) => {
+                    field.onChange(value);
+                    setValue("type", value, { shouldValidate: true });
+                  }}
+                >
+                  <SelectTrigger id="customer-segment" aria-invalid={Boolean(errors.segment)}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {segmentOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             />
-            <Field
-              label="KRA PIN"
-              value={form.kra_pin}
-              onChange={(value) => setForm((prev) => ({ ...prev, kra_pin: value }))}
-            />
-            <Field
-              label="Contact"
-              value={form.contact}
-              onChange={(value) => setForm((prev) => ({ ...prev, contact: value }))}
-            />
-            <Field
-              label="Email"
-              value={form.email}
-              onChange={(value) => setForm((prev) => ({ ...prev, email: value }))}
-            />
-            <Field
-              label="Address"
-              value={form.address}
-              onChange={(value) => setForm((prev) => ({ ...prev, address: value }))}
-            />
-            <Field
-              label="Location"
-              value={form.location}
-              onChange={(value) => setForm((prev) => ({ ...prev, location: value }))}
-            />
-            <div className="space-y-1.5">
-              <Label>Segment</Label>
-              <Select
-                value={form.segment}
-                onValueChange={(value) =>
-                  setForm((prev) => ({ ...prev, segment: value, type: value }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {segmentOptions.map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Field
-              label="Payment Terms"
-              value={form.payment_terms}
-              onChange={(value) => setForm((prev) => ({ ...prev, payment_terms: value }))}
-            />
-            <Field
-              label="Credit Limit"
-              type="number"
-              value={form.credit_limit}
-              onChange={(value) => setForm((prev) => ({ ...prev, credit_limit: value }))}
-            />
-            <Field
-              label="Balance"
-              type="number"
-              value={form.balance}
-              onChange={(value) => setForm((prev) => ({ ...prev, balance: value }))}
-            />
+            {errors.segment && (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.segment.message}
+              </p>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
-              Cancel
-            </Button>
-            <Button onClick={saveCustomer} disabled={saving}>
-              {saving ? "Saving..." : editing ? "Save Changes" : "Create Customer"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <Field
+            label="Payment Terms"
+            registration={register("payment_terms")}
+            error={errors.payment_terms}
+          />
+          <Field
+            label="Credit Limit"
+            inputMode="decimal"
+            registration={register("credit_limit")}
+            error={errors.credit_limit}
+          />
+        </div>
+        {errors.root?.server && (
+          <p role="alert" className="text-sm text-destructive">
+            {errors.root.server.message}
+          </p>
+        )}
+      </FormDialog>
     </div>
   );
 }
 
 function Field({
   label,
-  value,
-  onChange,
+  registration,
+  error,
   type = "text",
+  inputMode,
 }: {
   label: string;
-  value: string;
-  onChange: (value: string) => void;
+  registration: UseFormRegisterReturn;
+  error?: FieldError;
   type?: string;
+  inputMode?: "decimal" | "email" | "numeric" | "tel" | "text";
 }) {
+  const errorId = `${registration.name}-error`;
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <Label htmlFor={registration.name}>{label}</Label>
+      <Input
+        id={registration.name}
+        type={type}
+        inputMode={inputMode}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? errorId : undefined}
+        {...registration}
+      />
+      {error && (
+        <p id={errorId} role="alert" className="text-xs text-destructive">
+          {error.message}
+        </p>
+      )}
     </div>
   );
 }

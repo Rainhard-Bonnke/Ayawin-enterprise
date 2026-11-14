@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { PageHeader } from "@/components/PageHeader";
+import { AttachmentPanel } from "@/components/AttachmentPanel";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtDate } from "@/lib/format";
@@ -24,13 +25,25 @@ import {
 import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { Badge } from "@/components/ui/badge";
-import { deliveryRouteHint } from "@/lib/smartSignals";
 import { exportWorkbook } from "@/lib/excel";
 import { trackEvent } from "@/lib/event-tracker";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { useAction, useList } from "@/lib/queryHooks";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/_app/delivery")({
   component: DeliveryPage,
@@ -38,28 +51,49 @@ export const Route = createFileRoute("/_app/delivery")({
 });
 
 function DeliveryPage() {
-  const { token } = useAuth();
-  const [deliveries, setDeliveries] = useState<Array<{
+  const { token, user } = useAuth();
+  type ProofLine = {
+    delivery_line_id: string;
+    item_id: string;
+    item_name: string;
+    quantity: number;
+    delivered_quantity: number;
+    short_quantity: number;
+    damaged_quantity: number;
+    customer_accepted_quantity: number;
+  };
+  type ProofRecord = {
     id: string;
     delivery_no: string;
-    order_no?: string;
-    delivery_date?: string;
-    status?: string;
-    driver_name?: string | null;
-    vehicle_no?: string | null;
-    route?: string | null;
-  }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState("all");
-  const [sort, setSort] = useState("date");
-  const [page, setPage] = useState(1);
-  const pageSize = 5;
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    void v1Api.sales.deliveries(token, controller.signal)
-      .then((rows) => setDeliveries(rows.map((row) => ({
+    order_no: string;
+    customer_name: string;
+    status: string;
+    route_code?: string | null;
+    proof_status: string;
+    customer_confirmed: boolean;
+    proof_note?: string | null;
+    lines: ProofLine[];
+    attachments: Array<{
+      id: string;
+      file_name: string;
+      content_type: string;
+      byte_size: number;
+      sha256: string;
+      created_at: string;
+    }>;
+  };
+  const [proofRecord, setProofRecord] = useState<ProofRecord | null>(null);
+  const [proofLines, setProofLines] = useState<ProofLine[]>([]);
+  const [proofNote, setProofNote] = useState("");
+  const [routeCode, setRouteCode] = useState("");
+  const [customerConfirmed, setCustomerConfirmed] = useState(false);
+  const [proofLoading, setProofLoading] = useState(false);
+  const [proofSaving, setProofSaving] = useState(false);
+  const [attachmentSaving, setAttachmentSaving] = useState(false);
+  const deliveriesQuery = useList(
+    queryKeys.deliveries.list(user?.id),
+    async ({ signal }) =>
+      (await v1Api.sales.deliveries(token!, signal)).map((row) => ({
         ...row,
         id: String(row.id),
         delivery_no: String(row.delivery_no || row.id),
@@ -69,15 +103,23 @@ function DeliveryPage() {
         driver_name: row.driver_name ? String(row.driver_name) : null,
         vehicle_no: row.vehicle_no ? String(row.vehicle_no) : null,
         route: row.route ? String(row.route) : null,
-      }))))
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        toast.error(err instanceof Error ? err.message : "Unable to load deliveries");
-        setDeliveries([]);
-      })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [token]);
+      })),
+    { enabled: Boolean(token) },
+  );
+  const deliveries = deliveriesQuery.data ?? [];
+  const loading = deliveriesQuery.isPending || deliveriesQuery.isFetching;
+  const saveProofAction = useAction({
+    mutationFn: (input: { deliveryId: string; body: Record<string, unknown> }) =>
+      v1Api.sales.recordDeliveryProof(token!, input.deliveryId, input.body),
+    invalidate: [queryKeys.deliveries.list(user?.id)],
+  });
+  const [q, setQ] = useUrlSearchParam("q");
+  const [status, setStatus] = useUrlSearchParam("status", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "date");
+  const [pageText, setPageText] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageText) || 1);
+  const setPage = (next: number) => setPageText(String(next));
+  const pageSize = 5;
   const filtered = deliveries
     .filter(
       (d) =>
@@ -90,7 +132,40 @@ function DeliveryPage() {
     });
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
-  const routeHints = deliveryRouteHint();
+  const routeHints = Array.from(
+    new Set(deliveries.map((delivery) => delivery.route).filter(Boolean)),
+  ).slice(0, 3) as string[];
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const activeDeliveries = deliveries.filter(
+    (delivery) =>
+      !["delivered", "cancelled", "failed"].includes(String(delivery.status).toLowerCase()),
+  );
+  const deliveryMetrics = [
+    {
+      label: "In Transit",
+      value: deliveries.filter((delivery) => String(delivery.status).toLowerCase() === "in transit")
+        .length,
+    },
+    {
+      label: "Delivered Today",
+      value: deliveries.filter(
+        (delivery) =>
+          String(delivery.status).toLowerCase() === "delivered" &&
+          delivery.delivery_date === todayKey,
+      ).length,
+    },
+    {
+      label: "Pending",
+      value: deliveries.filter((delivery) =>
+        ["pending", "draft"].includes(String(delivery.status).toLowerCase()),
+      ).length,
+    },
+    {
+      label: "Active Vehicles",
+      value: new Set(activeDeliveries.map((delivery) => delivery.vehicle_no).filter(Boolean)).size,
+    },
+  ];
   const exportDeliveries = () => {
     void trackEvent({
       action: "delivery_export_xlsx",
@@ -116,11 +191,109 @@ function DeliveryPage() {
     ]);
   };
 
+  const openProof = async (delivery: (typeof deliveries)[number]) => {
+    if (!token) return;
+    setProofLoading(true);
+    try {
+      const record = await v1Api.sales.deliveryProof(token, delivery.id);
+      setProofRecord(record);
+      setProofLines(
+        record.lines.map((line) => ({
+          ...line,
+          delivered_quantity: Number(line.delivered_quantity || line.quantity),
+          short_quantity: Number(line.short_quantity || 0),
+          damaged_quantity: Number(line.damaged_quantity || 0),
+          customer_accepted_quantity: Number(line.customer_accepted_quantity || line.quantity),
+        })),
+      );
+      setProofNote(record.proof_note || "");
+      setRouteCode(record.route_code || delivery.route || "");
+      setCustomerConfirmed(Boolean(record.customer_confirmed));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to load delivery proof");
+    } finally {
+      setProofLoading(false);
+    }
+  };
+
+  const saveProof = async () => {
+    if (!token || !proofRecord) return;
+    setProofSaving(true);
+    try {
+      await saveProofAction.mutateAsync({
+        deliveryId: proofRecord.id,
+        body: {
+          route_code: routeCode.trim() || undefined,
+          customer_confirmed: customerConfirmed,
+          delivered_at: customerConfirmed ? new Date().toISOString() : undefined,
+          proof_note: proofNote.trim() || undefined,
+          lines: proofLines.map(
+            ({
+              delivery_line_id,
+              delivered_quantity,
+              short_quantity,
+              damaged_quantity,
+              customer_accepted_quantity,
+            }) => ({
+              delivery_line_id,
+              delivered_quantity,
+              short_quantity,
+              damaged_quantity,
+              customer_accepted_quantity,
+            }),
+          ),
+        },
+      });
+      toast.success("Delivery proof recorded");
+      setProofRecord(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to record delivery proof");
+    } finally {
+      setProofSaving(false);
+    }
+  };
+
+  const uploadProofAttachment = async (file?: File) => {
+    if (!token || !proofRecord || !file) return;
+    setAttachmentSaving(true);
+    try {
+      await v1Api.sales.uploadDeliveryProofAttachment(token, proofRecord.id, file);
+      const refreshed = await v1Api.sales.deliveryProof(token, proofRecord.id);
+      setProofRecord(refreshed);
+      toast.success("Proof attachment saved securely");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to save proof attachment");
+    } finally {
+      setAttachmentSaving(false);
+    }
+  };
+
+  const downloadProofAttachment = async (
+    attachment: NonNullable<ProofRecord["attachments"]>[number],
+  ) => {
+    if (!token || !proofRecord) return;
+    try {
+      const blob = await v1Api.sales.downloadDeliveryProofAttachment(
+        token,
+        proofRecord.id,
+        attachment.id,
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = attachment.file_name;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to download proof attachment");
+    }
+  };
+
   return (
     <div>
       <PageHeader
         title="Delivery & Logistics"
-        description="Driver assignments, route planning, proof of delivery and vehicle tracking."
+        description="Delivery dispatch, route details and customer proof of delivery."
         actions={
           <>
             <Button variant="outline" onClick={exportDeliveries}>
@@ -146,17 +319,23 @@ function DeliveryPage() {
         }
       />
 
+      {deliveriesQuery.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {deliveriesQuery.error.message}{" "}
+          <Button variant="ghost" size="sm" onClick={() => void deliveriesQuery.refetch()}>
+            Retry
+          </Button>
+        </p>
+      )}
+
       <div className="mb-4 grid gap-3 sm:grid-cols-4">
-        {[
-          { l: "In Transit", v: "1" },
-          { l: "Delivered Today", v: "3" },
-          { l: "Pending", v: "1" },
-          { l: "Active Vehicles", v: "2" },
-        ].map((k) => (
-          <Card key={k.l}>
+        {deliveryMetrics.map((metric) => (
+          <Card key={metric.label}>
             <CardContent className="p-4">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">{k.l}</div>
-              <div className="mt-1 text-2xl font-bold">{k.v}</div>
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                {metric.label}
+              </div>
+              <div className="mt-1 text-2xl font-bold">{loading ? "—" : metric.value}</div>
             </CardContent>
           </Card>
         ))}
@@ -272,16 +451,7 @@ function DeliveryPage() {
                           variant="ghost"
                           size="sm"
                           className="h-7 text-xs"
-                          onClick={() => {
-                            void trackEvent({
-                              action: "delivery_pod_viewed",
-                              entityType: "delivery",
-                              entityId: d.id,
-                              details: { order: d.order_no },
-                              scenario: "delivery",
-                              context: { delivery: d },
-                            });
-                          }}
+                          onClick={() => void openProof(d)}
                         >
                           View
                         </Button>
@@ -290,19 +460,10 @@ function DeliveryPage() {
                           variant="ghost"
                           size="sm"
                           className="h-7 text-xs"
-                          onClick={() => {
-                            void trackEvent({
-                              action: "delivery_pod_upload_opened",
-                              entityType: "delivery",
-                              entityId: d.id,
-                              details: { order: d.order_no },
-                              scenario: "delivery",
-                              context: { delivery: d },
-                            });
-                          }}
+                          onClick={() => void openProof(d)}
                         >
                           <Upload className="mr-1 h-3 w-3" />
-                          Upload
+                          Record proof
                         </Button>
                       )}
                     </TableCell>
@@ -330,6 +491,119 @@ function DeliveryPage() {
           />
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(proofRecord) || proofLoading}
+        onOpenChange={(open) => {
+          if (!open && !proofSaving) setProofRecord(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Proof of delivery</DialogTitle>
+            <DialogDescription>
+              {proofRecord
+                ? `${proofRecord.delivery_no} · ${proofRecord.customer_name} · Order ${proofRecord.order_no}`
+                : "Loading delivery details…"}
+            </DialogDescription>
+          </DialogHeader>
+          {proofRecord && (
+            <div className="grid gap-4">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="grid gap-1 text-sm">
+                  Route code
+                  <Input value={routeCode} onChange={(event) => setRouteCode(event.target.value)} />
+                </label>
+                <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={customerConfirmed}
+                    onChange={(event) => setCustomerConfirmed(event.target.checked)}
+                  />
+                  Customer confirmed receipt
+                </label>
+              </div>
+              <div className="overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead>Sent</TableHead>
+                      <TableHead>Delivered</TableHead>
+                      <TableHead>Short</TableHead>
+                      <TableHead>Damaged</TableHead>
+                      <TableHead>Accepted</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {proofLines.map((line, index) => (
+                      <TableRow key={line.delivery_line_id}>
+                        <TableCell className="min-w-36">{line.item_name}</TableCell>
+                        <TableCell>{line.quantity}</TableCell>
+                        {(
+                          [
+                            "delivered_quantity",
+                            "short_quantity",
+                            "damaged_quantity",
+                            "customer_accepted_quantity",
+                          ] as const
+                        ).map((field) => (
+                          <TableCell key={field} className="min-w-24">
+                            <Input
+                              aria-label={`${line.item_name} ${field.replaceAll("_", " ")}`}
+                              type="number"
+                              min="0"
+                              max={line.quantity}
+                              step="0.01"
+                              value={line[field]}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                setProofLines((current) =>
+                                  current.map((entry, row) =>
+                                    row === index
+                                      ? { ...entry, [field]: Number.isFinite(value) ? value : 0 }
+                                      : entry,
+                                  ),
+                                );
+                              }}
+                            />
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <label className="grid gap-1 text-sm">
+                Delivery notes / discrepancy details
+                <Textarea
+                  value={proofNote}
+                  onChange={(event) => setProofNote(event.target.value)}
+                  placeholder="Record shortages, damages or customer comments"
+                />
+              </label>
+              <AttachmentPanel
+                title="Signed documents and delivery photos"
+                description="JPEG, PNG, WebP or PDF · up to 5 MB each · maximum 10 files per delivery"
+                attachments={proofRecord.attachments}
+                uploading={attachmentSaving}
+                onUpload={(file) => void uploadProofAttachment(file)}
+                onDownload={(attachment) => void downloadProofAttachment(attachment)}
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProofRecord(null)} disabled={proofSaving}>
+              Close
+            </Button>
+            {proofRecord && (
+              <Button onClick={() => void saveProof()} disabled={proofSaving}>
+                {proofSaving ? "Saving…" : "Save proof"}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

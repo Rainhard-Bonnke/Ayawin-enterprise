@@ -11,10 +11,13 @@ type EventPayload = {
 
 export async function trackEvent(payload: EventPayload) {
   try {
-    return await apiV1Fetch<{ ok: boolean; audited: boolean; insight: null; confidence: number }>("/audit/events", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    return await apiV1Fetch<{ ok: boolean; audited: boolean; insight: null; confidence: number }>(
+      "/audit/events",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    );
   } catch {
     return null;
   }

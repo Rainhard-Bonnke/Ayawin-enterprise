@@ -28,6 +28,7 @@ export type MasterVendor = {
   email: string | null;
   phone: string | null;
   credit_limit: number | string | null;
+  tax_residency?: "resident" | "non_resident" | null;
 };
 
 export type ApiUser = {
@@ -104,10 +105,7 @@ export function normalizeMasterItem(row: Record<string, unknown>) {
     etims_quantity_unit_code: (row.etims_quantity_unit_code as string | null) ?? null,
     etims_tax_type_code: (row.etims_tax_type_code as string | null) ?? null,
     etims_sync_status: String(row.etims_sync_status || "unmapped") as
-      | "unmapped"
-      | "pending"
-      | "synced"
-      | "failed",
+      "unmapped" | "pending" | "synced" | "failed",
   };
 }
 
@@ -191,6 +189,12 @@ function buildUrl(path: string) {
   return `${apiBase}/api/v1${path}`;
 }
 
+function addIdempotencyKey(method: string | undefined, headers: Headers) {
+  if (method?.toUpperCase() === "POST" && !headers.has("Idempotency-Key")) {
+    headers.set("Idempotency-Key", globalThis.crypto.randomUUID());
+  }
+}
+
 async function parseError(response: Response) {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
@@ -261,6 +265,7 @@ export async function apiV1Fetch<T>(
 
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
+  addIdempotencyKey(init.method, headers);
 
   const request = (bearer: string | null) => {
     const h = new Headers(headers);
@@ -269,7 +274,11 @@ export async function apiV1Fetch<T>(
       const csrfToken = readCsrfToken();
       if (csrfToken) h.set("X-CSRF-Token", csrfToken);
     }
-    return fetch(buildUrl(path), { ...init, credentials: init.credentials ?? "include", headers: h });
+    return fetch(buildUrl(path), {
+      ...init,
+      credentials: init.credentials ?? "include",
+      headers: h,
+    });
   };
 
   let response = await request(access);
@@ -300,10 +309,15 @@ export async function apiV1FetchBlob(
 ): Promise<Blob> {
   const access = resolveApiToken(token);
   const headers = new Headers(init.headers);
+  addIdempotencyKey(init.method, headers);
   const request = (bearer: string | null) => {
     const h = new Headers(headers);
     if (bearer) h.set("Authorization", `Bearer ${bearer}`);
-    return fetch(buildUrl(path), { ...init, credentials: init.credentials ?? "include", headers: h });
+    return fetch(buildUrl(path), {
+      ...init,
+      credentials: init.credentials ?? "include",
+      headers: h,
+    });
   };
   let response = await request(access);
   if (response.status === 401) {
@@ -401,13 +415,62 @@ export async function v1Logout() {
   }
 }
 
+export type WithholdingCategoryRecord = {
+  id: string;
+  code: string;
+  name: string;
+  residency: "resident" | "non_resident";
+  rate: number;
+  taxable_basis: "net_before_vat" | "gross_including_vat";
+  effective_from: string;
+  effective_to: string | null;
+  remittance_working_days: number;
+  status: "draft" | "approved" | "disabled";
+  liability_account_code: string;
+  approved_by?: string | null;
+};
+
+export type WithholdingObligationRecord = {
+  id: string;
+  bill_id: string;
+  payment_id: string;
+  taxable_base: number;
+  rate: number;
+  amount: number;
+  due_date: string;
+  status: "outstanding" | "remitted";
+  certificate_no: string | null;
+  vendor_code: string;
+  vendor_name: string;
+  category_code: string;
+  category_name: string;
+};
+
+export type FxRevaluationRunRecord = {
+  id: string;
+  fiscal_period_id: string;
+  period_name: string;
+  currency_code: string;
+  closing_rate: number;
+  total_gain: number;
+  total_loss: number;
+  journal_id: string | null;
+  reversal_journal_id: string | null;
+  status: string;
+  account_count: number;
+};
+
 export const v1Api = {
   auth: {
     setupMfa: (token: string, password: string, current_totp?: string) =>
-      apiV1Fetch<{ secret: string; otpauth_url: string }>("/auth/mfa/setup", {
-        method: "POST",
-        body: JSON.stringify({ password, current_totp }),
-      }, token),
+      apiV1Fetch<{ secret: string; otpauth_url: string }>(
+        "/auth/mfa/setup",
+        {
+          method: "POST",
+          body: JSON.stringify({ password, current_totp }),
+        },
+        token,
+      ),
     verifyMfa: (token: string, otp: string) =>
       apiV1Fetch<{ ok: boolean; mfa_enabled: boolean; recovery_codes: string[] }>(
         "/auth/mfa/verify",
@@ -416,19 +479,37 @@ export const v1Api = {
       ),
   },
   master: {
-    taxGroups: (token: string) =>
-      apiV1Fetch<{ data: Record<string, unknown>[] }>("/master/tax-groups?limit=200", {}, token)
-        .then((result) => result.data),
-    taxRates: (token: string) =>
-      apiV1Fetch<{ data: Record<string, unknown>[] }>("/master/tax-rates", {}, token)
-        .then((result) => result.data),
-    createTaxRateVersion: (token: string, body: {
-      code: string; name: string; rate: number; tax_type: string; basis: string;
-      effective_from: string; effective_to?: string;
-    }) => apiV1Fetch<Record<string, unknown>>("/master/tax-rates", {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    }, token),
+    taxGroups: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ data: Record<string, unknown>[] }>(
+        "/master/tax-groups?limit=200",
+        { signal },
+        token,
+      ).then((result) => result.data),
+    taxRates: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ data: Record<string, unknown>[] }>("/master/tax-rates", { signal }, token).then(
+        (result) => result.data,
+      ),
+    createTaxRateVersion: (
+      token: string,
+      body: {
+        code: string;
+        name: string;
+        rate: number;
+        tax_type: string;
+        basis: string;
+        effective_from: string;
+        effective_to?: string;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/master/tax-rates",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
     customers: (token: string, q = "", signal?: AbortSignal) =>
       apiV1Fetch<{ data: Record<string, unknown>[] }>(
         `/master/customers?q=${encodeURIComponent(q)}&limit=200`,
@@ -467,6 +548,15 @@ export const v1Api = {
         },
         token,
       ).then(normalizeMasterCustomer),
+    updateItem: (token: string, id: string, payload: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/master/items/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        },
+        token,
+      ),
     updateCustomer: (
       token: string,
       id: string | number,
@@ -503,25 +593,19 @@ export const v1Api = {
         `/master/items?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
         { signal },
         token,
-      ).then(
-        (r) => r.data,
-      ),
-    warehouses: (token: string) =>
+      ).then((r) => r.data),
+    warehouses: (token: string, signal?: AbortSignal) =>
       apiV1Fetch<{ data: Record<string, unknown>[] }>(
         "/master/warehouses?limit=200",
-        {},
+        { signal },
         token,
       ).then((r) => r.data),
-    chartOfAccounts: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/master/chart-of-accounts", {}, token),
+    chartOfAccounts: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/master/chart-of-accounts", { signal }, token),
   },
   users: {
     list: (token: string, q = "", signal?: AbortSignal) =>
-      apiV1Fetch<Record<string, unknown>[]>(
-        `/users?q=${encodeURIComponent(q)}`,
-        { signal },
-        token,
-      ),
+      apiV1Fetch<Record<string, unknown>[]>(`/users?q=${encodeURIComponent(q)}`, { signal }, token),
     create: (
       token: string,
       payload: {
@@ -549,8 +633,8 @@ export const v1Api = {
         { method: "PATCH", body: JSON.stringify(payload) },
         token,
       ).then(normalizeApiUser),
-    listIpWhitelist: (token: string) =>
-      apiV1Fetch<IpWhitelistRule[]>("/users/security/ip-whitelist", {}, token),
+    listIpWhitelist: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<IpWhitelistRule[]>("/users/security/ip-whitelist", { signal }, token),
     createIpWhitelist: (
       token: string,
       payload: { cidr: string; description?: string; role_id?: string; user_id?: string },
@@ -562,31 +646,42 @@ export const v1Api = {
       ),
     deleteIpWhitelist: (token: string, id: string) =>
       apiV1Fetch<void>(`/users/security/ip-whitelist/${id}`, { method: "DELETE" }, token),
-    listSessions: (token: string) =>
-      apiV1Fetch<SessionToken[]>("/users/security/sessions", {}, token),
+    listSessions: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<SessionToken[]>("/users/security/sessions", { signal }, token),
     revokeSession: (token: string, id: string) =>
       apiV1Fetch<{ ok: true }>(`/users/security/sessions/${id}/revoke`, { method: "POST" }, token),
   },
   roles: {
-    list: (token: string) =>
-      apiV1Fetch<RoleDefinition[]>("/roles", {}, token).then((rows) =>
+    list: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<RoleDefinition[]>("/roles", { signal }, token).then((rows) =>
         rows.map((row) => ({
           ...row,
           permissions: Array.isArray(row.permissions) ? row.permissions.map(String) : [],
         })),
       ),
-    permissions: (token: string) =>
-      apiV1Fetch<RolePermission[]>("/roles/permissions", {}, token),
-    create: (token: string, payload: { name: string; description?: string; permission_codes?: string[] }) =>
-      apiV1Fetch<Record<string, unknown>>("/roles", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }, token),
+    permissions: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<RolePermission[]>("/roles/permissions", { signal }, token),
+    create: (
+      token: string,
+      payload: { name: string; description?: string; permission_codes?: string[] },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/roles",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+        token,
+      ),
     updatePermissions: (token: string, roleId: string, permission_codes: string[]) =>
-      apiV1Fetch<{ ok: boolean }>(`/roles/${roleId}/permissions`, {
-        method: "PUT",
-        body: JSON.stringify({ permission_codes }),
-      }, token),
+      apiV1Fetch<{ ok: boolean }>(
+        `/roles/${roleId}/permissions`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ permission_codes }),
+        },
+        token,
+      ),
   },
   audit: {
     list: (token: string, q = "", limit = 100, signal?: AbortSignal) =>
@@ -595,30 +690,46 @@ export const v1Api = {
         { signal },
         token,
       ),
+    entityHistory: (token: string, entityType: string, entityId: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/audit/history/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+        { signal },
+        token,
+      ),
+    hashChain: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/audit/hash-chain", { signal }, token),
+    hashChainBlob: (token: string) => apiV1FetchBlob("/audit/hash-chain.csv", {}, token),
   },
   inventory: {
-    lots: (token: string, includeExpired = true) =>
+    lots: (token: string, includeExpired = true, signal?: AbortSignal) =>
       apiV1Fetch<BackendInventoryLotRecord[]>(
         `/inventory/lots?include_expired=${includeExpired}`,
-        {},
+        { signal },
         token,
       ),
     lotEvents: (token: string, lotId: string) =>
-      apiV1Fetch<Array<{
-        id: string;
-        event_type: string;
-        quantity: number;
-        reason: string;
-        created_at: string;
-        created_by_name?: string;
-      }>>(`/inventory/lots/${lotId}/events`, {}, token),
+      apiV1Fetch<
+        Array<{
+          id: string;
+          event_type: string;
+          quantity: number;
+          reason: string;
+          created_at: string;
+          created_by_name?: string;
+        }>
+      >(`/inventory/lots/${lotId}/events`, {}, token),
     reconcileOpeningLots: (
       token: string,
       body: {
         warehouse_id: string;
         item_id: string;
         notes: string;
-        lines: Array<{ batch_no: string; expiry_date: string; quantity: number; unit_cost: number }>;
+        lines: Array<{
+          batch_no: string;
+          expiry_date: string;
+          quantity: number;
+          unit_cost: number;
+        }>;
       },
     ) =>
       apiV1Fetch<{ id: string; stock_quantity: number; lot_count: number }>(
@@ -633,80 +744,206 @@ export const v1Api = {
       quantity: number,
       reason: string,
     ) =>
-      apiV1Fetch<{ event_type: string; quantity: number; available_quantity: number; quarantined_quantity: number }>(
+      apiV1Fetch<{
+        event_type: string;
+        quantity: number;
+        available_quantity: number;
+        quarantined_quantity: number;
+      }>(
         `/inventory/lots/${lotId}/${action}`,
         { method: "POST", body: JSON.stringify({ quantity, reason }) },
         token,
       ),
-      stock: (token: string, limit = 50, warehouseId = "") =>
-        apiV1Fetch<Record<string, unknown>[]>(`/inventory/stock?limit=${limit}${warehouseId ? `&warehouse_id=${encodeURIComponent(warehouseId)}` : ""}`, {}, token),
-    transfers: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/inventory/transfers", {}, token),
-    transferDetail: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown> & { lines: Record<string, unknown>[] }>(`/inventory/transfers/${id}`, {}, token),
-    quarantine: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/inventory/quarantine", {}, token),
-    quarantineSetup: (token: string) =>
-      apiV1Fetch<{ vendors: Record<string, unknown>[]; accounts: Record<string, unknown>[] }>("/inventory/quarantine/setup", {}, token),
-    dispositions: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/inventory/quarantine/dispositions", {}, token),
-    createDisposition: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/inventory/quarantine/dispositions", { method: "POST", body: JSON.stringify(body) }, token),
-    postDisposition: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/quarantine/dispositions/${id}/post`, { method: "POST" }, token),
-    receiveTransfer: (token: string, id: string, body: { lines: Array<{ transfer_line_id: string; received_quantity: number; damaged_quantity: number; complete: boolean }>; notes?: string }) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/transfers/${id}/receive`, { method: "POST", body: JSON.stringify(body) }, token),
-    movements: (token: string, limit = 100, signal?: AbortSignal) =>
-      apiV1Fetch<Record<string, unknown>[]>(`/inventory/movements?limit=${limit}`, { signal }, token),
-    reorderAlerts: (token: string, limit = 50, signal?: AbortSignal) =>
-      apiV1Fetch<Record<string, unknown>[]>(`/inventory/reorder-alerts?limit=${limit}`, { signal }, token),
-    analysis: (token: string, days = 30, warehouseId = "") =>
-      apiV1Fetch<{ days: number; rows: Record<string, unknown>[] }>(
-        `/inventory/analysis?days=${days}${warehouseId ? `&warehouse_id=${encodeURIComponent(warehouseId)}` : ""}`,
-        {}, token,
+    stock: (token: string, limit = 50, warehouseId = "", signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/inventory/stock?limit=${limit}${warehouseId ? `&warehouse_id=${encodeURIComponent(warehouseId)}` : ""}`,
+        { signal },
+        token,
       ),
-    materialRequisitions: (token: string, status = "") =>
-      apiV1Fetch<Array<Record<string, unknown>>>(`/inventory/material-requisitions${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
-    materialRequisition: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-requisitions/${id}`, {}, token),
-    createMaterialRequisition: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/inventory/material-requisitions", { method: "POST", body: JSON.stringify(body) }, token),
-    submitMaterialRequisition: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-requisitions/${id}/submit`, { method: "POST" }, token),
-    reviewMaterialRequisition: (token: string, id: string, decision: "approve" | "reject", note = "") =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-requisitions/${id}/review`, { method: "POST", body: JSON.stringify({ decision, note }) }, token),
-    issueMaterialRequisition: (token: string, id: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-requisitions/${id}/issues`, { method: "POST", body: JSON.stringify(body) }, token),
-    materialIssues: (token: string) =>
-      apiV1Fetch<Array<Record<string, unknown>>>("/inventory/material-issues", {}, token),
-    materialIssue: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-issues/${id}`, {}, token),
-    materialReturns: (token: string) =>
-      apiV1Fetch<Array<Record<string, unknown>>>("/inventory/material-returns", {}, token),
-    createMaterialReturn: (token: string, issueId: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/material-issues/${issueId}/returns`, { method: "POST", body: JSON.stringify(body) }, token),
-    adjustmentJournals: (token: string) =>
-      apiV1Fetch<Array<Record<string, unknown>>>("/inventory/adjustment-journals", {}, token),
-    createAdjustmentJournal: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/inventory/adjustment-journals", { method: "POST", body: JSON.stringify(body) }, token),
-    postAdjustmentJournal: (token: string, id: string, note = "") =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/adjustment-journals/${id}/post`, { method: "POST", body: JSON.stringify({ note }) }, token),
-    cancelAdjustmentJournal: (token: string, id: string, note = "") =>
-      apiV1Fetch<Record<string, unknown>>(`/inventory/adjustment-journals/${id}/cancel`, { method: "POST", body: JSON.stringify({ note }) }, token),
-    fleetLocations: (token: string) =>
-      apiV1Fetch<FleetLocation[]>("/inventory/fleet/locations", {}, token),
-    fleetItems: (token: string) =>
-      apiV1Fetch<Array<{ id: string; item_code: string; name: string }>>(
-        "/inventory/fleet/items",
+    transfers: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/inventory/transfers", { signal }, token),
+    transferDetail: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown> & { lines: Record<string, unknown>[] }>(
+        `/inventory/transfers/${id}`,
         {},
         token,
       ),
-    fleetVehicleStock: (token: string) =>
-      apiV1Fetch<DriverStockRow[]>("/inventory/fleet/vehicle-stock", {}, token),
-    fleetDrivers: (token: string) =>
+    quarantine: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/inventory/quarantine", { signal }, token),
+    quarantineSetup: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ vendors: Record<string, unknown>[]; accounts: Record<string, unknown>[] }>(
+        "/inventory/quarantine/setup",
+        { signal },
+        token,
+      ),
+    dispositions: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        "/inventory/quarantine/dispositions",
+        { signal },
+        token,
+      ),
+    createDisposition: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/inventory/quarantine/dispositions",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    postDisposition: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/quarantine/dispositions/${id}/post`,
+        { method: "POST" },
+        token,
+      ),
+    receiveTransfer: (
+      token: string,
+      id: string,
+      body: {
+        lines: Array<{
+          transfer_line_id: string;
+          received_quantity: number;
+          damaged_quantity: number;
+          complete: boolean;
+        }>;
+        notes?: string;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/transfers/${id}/receive`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    movements: (token: string, limit = 100, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/inventory/movements?limit=${limit}`,
+        { signal },
+        token,
+      ),
+    reorderAlerts: (token: string, limit = 50, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/inventory/reorder-alerts?limit=${limit}`,
+        { signal },
+        token,
+      ),
+    reorderSuggestions: (token: string, limit = 200, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>(
+        `/inventory/reorder-suggestions?limit=${limit}`,
+        { signal },
+        token,
+      ),
+    valuationReconciliation: (token: string, asOfDate: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        as_of: string;
+        inventory_account: string;
+        stock_value: number;
+        gl_value: number;
+        variance: number;
+        items: Array<{
+          item_id: string;
+          item_code: string;
+          item_name: string;
+          on_hand_value: number;
+          in_transit_value: number;
+          stock_value: number;
+        }>;
+        unposted_movement_types: Array<{ reference_type: string; reason: string }>;
+      }>(
+        `/inventory/valuation-reconciliation?as_of=${encodeURIComponent(asOfDate)}`,
+        { signal },
+        token,
+      ),
+    analysis: (token: string, days = 30, warehouseId = "", signal?: AbortSignal) =>
+      apiV1Fetch<{ days: number; rows: Record<string, unknown>[] }>(
+        `/inventory/analysis?days=${days}${warehouseId ? `&warehouse_id=${encodeURIComponent(warehouseId)}` : ""}`,
+        { signal },
+        token,
+      ),
+    materialRequisitions: (token: string, status = "", signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>(
+        `/inventory/material-requisitions${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+        { signal },
+        token,
+      ),
+    materialRequisition: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(`/inventory/material-requisitions/${id}`, {}, token),
+    createMaterialRequisition: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/inventory/material-requisitions",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    submitMaterialRequisition: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/material-requisitions/${id}/submit`,
+        { method: "POST" },
+        token,
+      ),
+    reviewMaterialRequisition: (
+      token: string,
+      id: string,
+      decision: "approve" | "reject",
+      note = "",
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/material-requisitions/${id}/review`,
+        { method: "POST", body: JSON.stringify({ decision, note }) },
+        token,
+      ),
+    issueMaterialRequisition: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/material-requisitions/${id}/issues`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    materialIssues: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>("/inventory/material-issues", { signal }, token),
+    materialIssue: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(`/inventory/material-issues/${id}`, {}, token),
+    materialReturns: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>("/inventory/material-returns", { signal }, token),
+    createMaterialReturn: (token: string, issueId: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/material-issues/${issueId}/returns`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    adjustmentJournals: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>(
+        "/inventory/adjustment-journals",
+        { signal },
+        token,
+      ),
+    createAdjustmentJournal: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/inventory/adjustment-journals",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    postAdjustmentJournal: (token: string, id: string, note = "") =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/adjustment-journals/${id}/post`,
+        { method: "POST", body: JSON.stringify({ note }) },
+        token,
+      ),
+    cancelAdjustmentJournal: (token: string, id: string, note = "") =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/inventory/adjustment-journals/${id}/cancel`,
+        { method: "POST", body: JSON.stringify({ note }) },
+        token,
+      ),
+    fleetLocations: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<FleetLocation[]>("/inventory/fleet/locations", { signal }, token),
+    fleetItems: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<{ id: string; item_code: string; name: string }>>(
+        "/inventory/fleet/items",
+        { signal },
+        token,
+      ),
+    fleetVehicleStock: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<DriverStockRow[]>("/inventory/fleet/vehicle-stock", { signal }, token),
+    fleetDrivers: (token: string, signal?: AbortSignal) =>
       apiV1Fetch<Array<{ id: string; full_name: string; email: string }>>(
         "/inventory/fleet/drivers",
-        {},
+        { signal },
         token,
       ),
     createVehicleLocation: (
@@ -723,8 +960,8 @@ export const v1Api = {
         { method: "POST", body: JSON.stringify(body) },
         token,
       ),
-    stocktakes: (token: string) =>
-      apiV1Fetch<FleetStocktake[]>("/inventory/fleet/stocktakes", {}, token),
+    stocktakes: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<FleetStocktake[]>("/inventory/fleet/stocktakes", { signal }, token),
     stocktake: (token: string, id: string) =>
       apiV1Fetch<FleetStocktakeDetail>(`/inventory/fleet/stocktakes/${id}`, {}, token),
     startStocktake: (token: string, warehouse_id: string, title: string) =>
@@ -758,10 +995,16 @@ export const v1Api = {
         },
         token,
       ),
-    intelligenceFindings: (token: string, status = "open") =>
+    reopenStocktakeForRecount: (token: string, id: string) =>
+      apiV1Fetch<FleetStocktake>(
+        `/inventory/fleet/stocktakes/${id}/recount`,
+        { method: "POST" },
+        token,
+      ),
+    intelligenceFindings: (token: string, status = "open", signal?: AbortSignal) =>
       apiV1Fetch<InventoryFinding[]>(
         `/intelligence/inventory/findings?status=${status}&limit=100`,
-        {},
+        { signal },
         token,
       ),
     analyzeInventory: (token: string) =>
@@ -783,13 +1026,22 @@ export const v1Api = {
     analyzeBusiness: (token: string, question = "") =>
       apiV1Fetch<{
         answer: string;
-        observations: { title: string; detail: string; evidence: string[]; priority: "low" | "medium" | "high" }[];
+        observations: {
+          title: string;
+          detail: string;
+          evidence: string[];
+          priority: "low" | "medium" | "high";
+        }[];
         actions: string[];
         provider: string;
         model: string;
         mode: "rules" | "model";
         note?: string;
-        snapshot: { asOf: string; currency: string; sections: { name: string; data: Record<string, number> }[] };
+        snapshot: {
+          asOf: string;
+          currency: string;
+          sections: { name: string; data: Record<string, number> }[];
+        };
       }>(
         "/intelligence/assistant/analyze",
         { method: "POST", body: JSON.stringify({ question }) },
@@ -861,8 +1113,28 @@ export const v1Api = {
       ),
   },
   procurement: {
-    purchaseOrders: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/procurement/purchase-orders", {}, token),
+    purchaseRequisitions: (token: string) =>
+      apiV1Fetch<Record<string, unknown>[]>("/procurement/purchase-requisitions", {}, token),
+    purchaseRequisition: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown> & { lines: Record<string, unknown>[] }>(
+        `/procurement/purchase-requisitions/${id}`,
+        {},
+        token,
+      ),
+    createPurchaseRequisition: (token: string, payload: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/procurement/purchase-requisitions",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    approvePurchaseRequisition: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/procurement/purchase-requisitions/${id}/approve`,
+        { method: "POST" },
+        token,
+      ),
+    purchaseOrders: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/procurement/purchase-orders", { signal }, token),
     purchaseOrder: (token: string, id: string) =>
       apiV1Fetch<Record<string, unknown> & { lines: Record<string, unknown>[] }>(
         `/procurement/purchase-orders/${id}`,
@@ -883,17 +1155,25 @@ export const v1Api = {
         {},
         token,
       ),
-    receivePurchaseOrder: async (token: string, purchaseOrderId: string) => {
+    receivePurchaseOrder: async (
+      token: string,
+      purchaseOrderId: string,
+      input: {
+        lines: Array<{
+          po_line_id: string;
+          item_id: string;
+          quantity: number;
+          unit_cost: number;
+          batch_no?: string;
+          expiry_date?: string;
+        }>;
+        received_date?: string;
+        notes?: string;
+      },
+    ) => {
       const purchaseOrder = await v1Api.procurement.purchaseOrder(token, purchaseOrderId);
-      const lines = (purchaseOrder.lines || [])
-        .map((line) => ({
-          po_line_id: String(line.id),
-          item_id: String(line.item_id),
-          quantity: Number(line.quantity || 0) - Number(line.qty_received || 0),
-          unit_cost: Number(line.unit_cost || 0),
-        }))
-        .filter((line) => line.quantity > 0);
-      if (!lines.length) throw new Error("This purchase order has no outstanding quantities to receive.");
+      if (!input.lines.length)
+        throw new Error("Enter a positive quantity for at least one receipt line.");
       return apiV1Fetch<Record<string, unknown>>(
         "/procurement/goods-receipts",
         {
@@ -901,14 +1181,16 @@ export const v1Api = {
           body: JSON.stringify({
             purchase_order_id: purchaseOrderId,
             warehouse_id: purchaseOrder.warehouse_id,
-            lines,
+            lines: input.lines,
+            received_date: input.received_date,
+            notes: input.notes,
           }),
         },
         token,
       );
     },
-    supplierBills: (token: string) =>
-      apiV1Fetch<SupplierBillRecord[]>("/procurement/supplier-bills", {}, token),
+    supplierBills: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<SupplierBillRecord[]>("/procurement/supplier-bills", { signal }, token),
     createSupplierBill: (token: string, payload: Record<string, unknown>) =>
       apiV1Fetch<SupplierBillRecord>(
         "/procurement/supplier-bills",
@@ -921,8 +1203,8 @@ export const v1Api = {
         { method: "POST" },
         token,
       ),
-    supplierPayments: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/procurement/supplier-payments", {}, token),
+    supplierPayments: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/procurement/supplier-payments", { signal }, token),
     createSupplierPayment: (token: string, payload: Record<string, unknown>) =>
       apiV1Fetch<{ id: string; payment_no: string; amount: number; status: string }>(
         "/procurement/supplier-payments",
@@ -935,41 +1217,275 @@ export const v1Api = {
         { method: "POST" },
         token,
       ),
-    supplierReturnCredits: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/procurement/supplier-return-credits", {}, token),
-    supplierReturnCreditSetup: (token: string) =>
-      apiV1Fetch<{ claims: Record<string, unknown>[]; bills: Record<string, unknown>[]; sourceLines: Record<string, unknown>[]; accounts: Record<string, unknown>[] }>("/procurement/supplier-return-credits/setup", {}, token),
+    supplierReturnCredits: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        "/procurement/supplier-return-credits",
+        { signal },
+        token,
+      ),
+    supplierReturnCreditSetup: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        claims: Record<string, unknown>[];
+        bills: Record<string, unknown>[];
+        sourceLines: Record<string, unknown>[];
+        accounts: Record<string, unknown>[];
+      }>("/procurement/supplier-return-credits/setup", { signal }, token),
     createSupplierReturnCredit: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/procurement/supplier-return-credits", { method: "POST", body: JSON.stringify(body) }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        "/procurement/supplier-return-credits",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
     postSupplierReturnCredit: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/procurement/supplier-return-credits/${id}/post`, { method: "POST" }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/procurement/supplier-return-credits/${id}/post`,
+        { method: "POST" },
+        token,
+      ),
     cancelSupplierReturnCredit: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/procurement/supplier-return-credits/${id}/cancel`, { method: "POST" }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/procurement/supplier-return-credits/${id}/cancel`,
+        { method: "POST" },
+        token,
+      ),
+  },
+  crm: {
+    leads: (token: string, filters: { q?: string; status?: string } = {}, signal?: AbortSignal) => {
+      const params = new URLSearchParams();
+      if (filters.q) params.set("q", filters.q);
+      if (filters.status) params.set("status", filters.status);
+      return apiV1Fetch<{ data: Record<string, unknown>[]; pagination?: Record<string, number> }>(
+        `/crm/leads${params.size ? `?${params}` : ""}`,
+        { signal },
+        token,
+      );
+    },
+    createLead: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/leads",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    updateLead: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/leads/${encodeURIComponent(id)}`,
+        { method: "PUT", body: JSON.stringify(body) },
+        token,
+      ),
+    archiveLead: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/leads/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+        token,
+      ),
+    convertLead: (token: string, id: string, body: Record<string, unknown> = {}) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/leads/${encodeURIComponent(id)}/convert`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    opportunities: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/crm/opportunities", { signal }, token),
+    createOpportunity: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/opportunities",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    updateOpportunity: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/opportunities/${encodeURIComponent(id)}`,
+        { method: "PUT", body: JSON.stringify(body) },
+        token,
+      ),
+    archiveOpportunity: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/opportunities/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+        token,
+      ),
+    activities: (
+      token: string,
+      filters: { lead_id?: string; opportunity_id?: string; customer_id?: string } = {},
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.set(key, value);
+      });
+      return apiV1Fetch<Record<string, unknown>[]>(
+        `/crm/activities${params.size ? `?${params}` : ""}`,
+        { signal },
+        token,
+      );
+    },
+    createActivity: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/activities",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    quotes: (
+      token: string,
+      filters: { q?: string; status?: string } = {},
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams();
+      if (filters.q) params.set("q", filters.q);
+      if (filters.status) params.set("status", filters.status);
+      return apiV1Fetch<{ data: Record<string, unknown>[]; pagination?: Record<string, number> }>(
+        `/crm/quotes${params.size ? `?${params}` : ""}`,
+        { signal },
+        token,
+      );
+    },
+    createQuote: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/quotes",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    updateQuote: (token: string, id: string, action: "send" | "accept" | "reject") =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/quotes/${encodeURIComponent(id)}/${action}`,
+        { method: "POST" },
+        token,
+      ),
+    convertQuote: (
+      token: string,
+      id: string,
+      body: { warehouse_id: string; required_date: string },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/crm/quotes/${encodeURIComponent(id)}/convert-order`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    saveSalesTarget: (
+      token: string,
+      body: {
+        sales_rep_id: string;
+        period_start: string;
+        period_end: string;
+        target_amount: number;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/sales-targets",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    createCommissionPlan: (
+      token: string,
+      body: {
+        code: string;
+        name: string;
+        rate_percent: number;
+        effective_from: string;
+        effective_to?: string;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/crm/commission-plans",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    salesRepresentatives: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<{ id: string; username: string; full_name: string | null; email: string }>>(
+        "/crm/sales-representatives",
+        { signal },
+        token,
+      ),
   },
   sales: {
     deliveries: (token: string, signal?: AbortSignal) =>
-      apiV1Fetch<Array<{
+      apiV1Fetch<
+        Array<{
+          id: string;
+          delivery_no: string;
+          order_no?: string;
+          delivery_date?: string;
+          status?: string;
+          driver_name?: string | null;
+          vehicle_no?: string | null;
+          route?: string | null;
+        }>
+      >("/sales/deliveries", { signal }, token),
+    deliveryProof: (token: string, deliveryId: string) =>
+      apiV1Fetch<{
         id: string;
         delivery_no: string;
-        order_no?: string;
-        delivery_date?: string;
-        status?: string;
-        driver_name?: string | null;
-        vehicle_no?: string | null;
-        route?: string | null;
-      }>>("/sales/deliveries", { signal }, token),
-    routeDrivers: (token: string) =>
-      apiV1Fetch<Array<{ id: string; full_name: string; email: string }>>(
-        "/inventory/fleet/drivers",
+        order_no: string;
+        customer_name: string;
+        status: string;
+        route_code?: string | null;
+        proof_status: string;
+        customer_confirmed: boolean;
+        proof_note?: string | null;
+        lines: Array<{
+          delivery_line_id: string;
+          item_id: string;
+          item_name: string;
+          quantity: number;
+          delivered_quantity: number;
+          short_quantity: number;
+          damaged_quantity: number;
+          customer_accepted_quantity: number;
+        }>;
+        attachments: Array<{
+          id: string;
+          file_name: string;
+          content_type: string;
+          byte_size: number;
+          sha256: string;
+          created_at: string;
+        }>;
+      }>(`/sales/deliveries/${deliveryId}/proof`, {}, token),
+    recordDeliveryProof: (token: string, deliveryId: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/sales/deliveries/${deliveryId}/proof`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    uploadDeliveryProofAttachment: (token: string, deliveryId: string, file: File) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/sales/deliveries/${deliveryId}/proof/attachments`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-File-Content-Type": file.type,
+            "X-File-Name": encodeURIComponent(file.name),
+          },
+          body: file,
+        },
+        token,
+      ),
+    downloadDeliveryProofAttachment: (token: string, deliveryId: string, attachmentId: string) =>
+      apiV1FetchBlob(
+        `/sales/deliveries/${deliveryId}/proof/attachments/${attachmentId}`,
         {},
         token,
       ),
-    routeClosures: (token: string, filters: { status?: string; route_date?: string } = {}) => {
+    routeDrivers: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<{ id: string; full_name: string; email: string }>>(
+        "/inventory/fleet/drivers",
+        { signal },
+        token,
+      ),
+    routeClosures: (
+      token: string,
+      filters: { status?: string; route_date?: string } = {},
+      signal?: AbortSignal,
+    ) => {
       const params = new URLSearchParams();
       if (filters.status) params.set("status", filters.status);
       if (filters.route_date) params.set("route_date", filters.route_date);
       const query = params.size ? `?${params.toString()}` : "";
-      return apiV1Fetch<RouteClosureRecord[]>(`/sales/routes/closures${query}`, {}, token);
+      return apiV1Fetch<RouteClosureRecord[]>(`/sales/routes/closures${query}`, { signal }, token);
     },
     submitRouteClosure: (
       token: string,
@@ -1000,34 +1516,127 @@ export const v1Api = {
         },
         token,
       ),
-    customerCreditNoteSetup: (token: string) =>
-      apiV1Fetch<{ invoices: Record<string, unknown>[]; notes: Record<string, unknown>[]; refundAccounts: Record<string, unknown>[] }>("/sales/customer-credit-notes/setup", {}, token),
+    customerCreditNoteSetup: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        invoices: Record<string, unknown>[];
+        notes: Record<string, unknown>[];
+        refundAccounts: Record<string, unknown>[];
+      }>("/sales/customer-credit-notes/setup", { signal }, token),
     customerReturnOptions: (token: string, invoiceId: string) =>
-      apiV1Fetch<{ invoice: Record<string, unknown>; lines: Record<string, unknown>[] }>(`/sales/invoices/${invoiceId}/return-options`, {}, token),
-    createCustomerCreditNote: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/sales/customer-credit-notes", { method: "POST", body: JSON.stringify(body) }, token),
-    postCustomerCreditNote: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/sales/customer-credit-notes/${id}/post`, { method: "POST" }, token),
-    cancelCustomerCreditNote: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/sales/customer-credit-notes/${id}/cancel`, { method: "POST" }, token),
-    taxPreview: (token: string, lines: Array<{ item_id: string; quantity: number; unit_price: number; tax_group_id?: string }>, taxDate?: string) =>
-      apiV1Fetch<{ subtotal: number; tax_amount: number; total_amount: number; lines: Record<string, unknown>[] }>(
-        "/sales/tax-preview",
-        { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ lines, tax_date: taxDate }) },
+      apiV1Fetch<{ invoice: Record<string, unknown>; lines: Record<string, unknown>[] }>(
+        `/sales/invoices/${invoiceId}/return-options`,
+        {},
         token,
       ),
-    receivablesAging: (token: string) =>
-      apiV1Fetch<{ as_of: string; totals: Record<string, number>; rows: Record<string, unknown>[] }>(
-        "/sales/receivables/aging", {}, token,
+    createCustomerCreditNote: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/sales/customer-credit-notes",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
       ),
-    collectionActivities: (token: string, status = "open") =>
-      apiV1Fetch<Record<string, unknown>[]>(`/sales/receivables/collection-activities?status=${encodeURIComponent(status)}`, {}, token),
+    postCustomerCreditNote: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/sales/customer-credit-notes/${id}/post`,
+        { method: "POST" },
+        token,
+      ),
+    cancelCustomerCreditNote: (token: string, id: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/sales/customer-credit-notes/${id}/cancel`,
+        { method: "POST" },
+        token,
+      ),
+    taxPreview: (
+      token: string,
+      lines: Array<{
+        item_id: string;
+        quantity: number;
+        unit_price: number;
+        tax_group_id?: string;
+      }>,
+      taxDate?: string,
+      signal?: AbortSignal,
+    ) =>
+      apiV1Fetch<{
+        subtotal: number;
+        tax_amount: number;
+        total_amount: number;
+        lines: Record<string, unknown>[];
+      }>(
+        "/sales/tax-preview",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ lines, tax_date: taxDate }),
+          signal,
+        },
+        token,
+      ),
+    receivablesAging: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        as_of: string;
+        totals: Record<string, number>;
+        rows: Record<string, unknown>[];
+      }>("/sales/receivables/aging", { signal }, token),
+    collectionActivities: (token: string, status = "open", signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/sales/receivables/collection-activities?status=${encodeURIComponent(status)}`,
+        { signal },
+        token,
+      ),
     createCollectionActivity: (token: string, body: Record<string, unknown>) =>
-      apiV1Fetch<Record<string, unknown>>("/sales/receivables/collection-activities", { method: "POST", body: JSON.stringify(body) }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        "/sales/receivables/collection-activities",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
     completeCollectionActivity: (token: string, id: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/sales/receivables/collection-activities/${id}/complete`, { method: "POST" }, token),
-    orders: (token: string, limit = 25) =>
-      apiV1Fetch<Record<string, unknown>[]>(`/sales/orders?limit=${limit}`, {}, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/sales/receivables/collection-activities/${id}/complete`,
+        { method: "POST" },
+        token,
+      ),
+    queueDunningReminders: (token: string, asOfDate?: string) =>
+      apiV1Fetch<{
+        as_of: string;
+        eligible_count: number;
+        queued_count: number;
+        skipped_count: number;
+        failed_count: number;
+        reminders: Record<string, unknown>[];
+      }>(
+        "/sales/receivables/dunning/reminders",
+        { method: "POST", body: JSON.stringify({ as_of: asOfDate }) },
+        token,
+      ),
+    createPickList: (token: string, orderId: string) =>
+      apiV1Fetch<
+        Record<string, unknown> & {
+          id: string;
+          pick_no: string;
+          status: string;
+          lines: Record<string, unknown>[];
+        }
+      >(`/sales/orders/${encodeURIComponent(orderId)}/pick-list`, { method: "POST" }, token),
+    confirmPickList: (
+      token: string,
+      pickListId: string,
+      lines: Array<{ pick_list_line_id: string; quantity_picked: number }>,
+    ) =>
+      apiV1Fetch<
+        Record<string, unknown> & {
+          id: string;
+          pick_no: string;
+          status: string;
+          lines: Record<string, unknown>[];
+        }
+      >(
+        `/sales/pick-lists/${encodeURIComponent(pickListId)}/confirm`,
+        { method: "POST", body: JSON.stringify({ lines }) },
+        token,
+      ),
+    orders: (token: string, limit = 25, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(`/sales/orders?limit=${limit}`, { signal }, token),
     createOrder: (
       token: string,
       body: {
@@ -1062,7 +1671,9 @@ export const v1Api = {
       }>(`/sales/orders/${orderId}/confirm`, { method: "POST" }, token),
     cancelOrder: (token: string, orderId: string) =>
       apiV1Fetch<{ ok: boolean; order_id: string; status: string }>(
-        `/sales/orders/${orderId}/cancel`, { method: "POST" }, token,
+        `/sales/orders/${orderId}/cancel`,
+        { method: "POST" },
+        token,
       ),
     createDelivery: (
       token: string,
@@ -1076,6 +1687,7 @@ export const v1Api = {
           quantity: number;
           unit_cost?: number;
         }>;
+        pick_list_id?: string;
       },
     ) =>
       apiV1Fetch<{ ok: boolean; delivery_id: string }>(
@@ -1090,9 +1702,12 @@ export const v1Api = {
     invoices: (token: string, limit = 25, signal?: AbortSignal) =>
       apiV1Fetch<Record<string, unknown>[]>(`/sales/invoices?limit=${limit}`, { signal }, token),
     postInvoice: (token: string, invoiceNo: string) =>
-      apiV1Fetch<{ ok: boolean; invoice_id: string; invoice_no: string; journal_id: string | null }>(
-        `/sales/invoices/${encodeURIComponent(invoiceNo)}/post`, { method: "POST" }, token,
-      ),
+      apiV1Fetch<{
+        ok: boolean;
+        invoice_id: string;
+        invoice_no: string;
+        journal_id: string | null;
+      }>(`/sales/invoices/${encodeURIComponent(invoiceNo)}/post`, { method: "POST" }, token),
     createInvoice: (
       token: string,
       body: {
@@ -1109,7 +1724,13 @@ export const v1Api = {
         }>;
       },
     ) =>
-      apiV1Fetch<{ ok: boolean; invoice_id: string; invoice_no: string; journal_id?: string | null; gl_warning?: string | null }>(
+      apiV1Fetch<{
+        ok: boolean;
+        invoice_id: string;
+        invoice_no: string;
+        journal_id?: string | null;
+        gl_warning?: string | null;
+      }>(
         "/sales/invoices",
         {
           method: "POST",
@@ -1123,7 +1744,13 @@ export const v1Api = {
       invoiceId: string,
       body: { amount: number; payment_date?: string; reference_no?: string; notes?: string },
     ) =>
-      apiV1Fetch<{ ok: boolean; payment_no: string; status: string; amount_paid: number; gl_warning?: string | null }>(
+      apiV1Fetch<{
+        ok: boolean;
+        payment_no: string;
+        status: string;
+        amount_paid: number;
+        gl_warning?: string | null;
+      }>(
         `/sales/invoices/${invoiceId}/pay`,
         {
           method: "POST",
@@ -1147,23 +1774,244 @@ export const v1Api = {
         {},
         token,
       ),
-    analytics: (token: string) =>
-      apiV1Fetch<Record<string, unknown>>("/sales/analytics/summary", {}, token),
+    analytics: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>>("/sales/analytics/summary", { signal }, token),
   },
   hr: {
-    employees: (token: string) => apiV1Fetch<Record<string, unknown>[]>("/hr/employees", {}, token),
-    attendance: (token: string, from?: string, to?: string) => {
+    employees: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/employees", { signal }, token),
+    branches: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/branches", { signal }, token),
+    selfProfile: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>>("/hr/me", { signal }, token),
+    selfAttendance: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/attendance", { signal }, token),
+    selfLeaveTypes: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/leave-types", { signal }, token),
+    selfLeaveApplications: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/leave-applications", { signal }, token),
+    selfLeaveBalances: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/leave-balances", { signal }, token),
+    selfClaims: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/claims", { signal }, token),
+    submitSelfClaim: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/me/claims",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    selfProfileChangeRequests: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/profile-change-requests", { signal }, token),
+    submitSelfProfileChangeRequest: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/me/profile-change-requests",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    encashSelfLeaveBalance: (token: string, leaveTypeId: string, days: number) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/me/leave-balances/encash",
+        {
+          method: "POST",
+          body: JSON.stringify({ leave_type_id: leaveTypeId, days }),
+        },
+        token,
+      ),
+    requestSelfLeave: (
+      token: string,
+      body: {
+        leave_type_id: string;
+        start_date: string;
+        end_date: string;
+        days_requested: number;
+        reason: string;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/me/leave-applications",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    selfPayslips: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/me/payslips", { signal }, token),
+    employeeOnboarding: (token: string, employeeId: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>>(`/hr/employees/${employeeId}/onboarding`, { signal }, token),
+    updateEmployeeOnboarding: (
+      token: string,
+      employeeId: string,
+      body: Record<string, unknown>,
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/employees/${employeeId}/onboarding`,
+        {
+          method: "PUT",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    employeeDocuments: (token: string, employeeId: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(`/hr/employees/${employeeId}/documents`, { signal }, token),
+    createEmployeeDocument: (
+      token: string,
+      employeeId: string,
+      body: Record<string, unknown>,
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/employees/${employeeId}/documents`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    linkEmployeeAccount: (token: string, employeeId: string, email: string) =>
+      apiV1Fetch<{ ok: boolean }>(
+        `/hr/employees/${employeeId}/link-user`,
+        {
+          method: "POST",
+          body: JSON.stringify({ email }),
+        },
+        token,
+      ),
+    lifecycleEvents: (token: string, employeeId: string) =>
+      apiV1Fetch<Record<string, unknown>[]>(
+        `/hr/employees/${employeeId}/lifecycle-events`,
+        {},
+        token,
+      ),
+    requestLifecycleEvent: (token: string, employeeId: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/employees/${employeeId}/lifecycle-events`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    decideLifecycleEvent: (
+      token: string,
+      eventId: string,
+      decision: "approved" | "rejected",
+      decisionNote: string,
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/employee-lifecycle-events/${eventId}/decision`,
+        {
+          method: "POST",
+          body: JSON.stringify({ decision, decision_note: decisionNote }),
+        },
+        token,
+      ),
+    applyLifecycleEvent: (token: string, eventId: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/employee-lifecycle-events/${eventId}/apply`,
+        {
+          method: "POST",
+        },
+        token,
+      ),
+    attendance: (token: string, from?: string, to?: string, signal?: AbortSignal) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       return apiV1Fetch<Record<string, unknown>[]>(
         `/hr/attendance${params.size ? `?${params.toString()}` : ""}`,
-        {},
+        { signal },
         token,
       );
     },
+    recruitmentRequisitions: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/recruitment/requisitions", { signal }, token),
+    recruitmentVacancies: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/recruitment/vacancies", { signal }, token),
+    recruitmentCandidates: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/recruitment/candidates", { signal }, token),
+    convertCandidate: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/recruitment/convert-candidate",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
     leaveApplications: (token: string, signal?: AbortSignal) =>
       apiV1Fetch<Record<string, unknown>[]>("/hr/leave-applications", { signal }, token),
+    claims: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/claims", { signal }, token),
+    createClaim: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/claims",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    decideClaim: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/claims/${id}/decision`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    profileChangeRequests: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/profile-change-requests", { signal }, token),
+    createProfileChangeRequest: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/profile-change-requests",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    decideProfileChangeRequest: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/profile-change-requests/${id}/decision`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    leaveTypes: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/leave-types", { signal }, token),
+    payrollLeaveRules: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/payroll/leave-rules", { signal }, token),
+    savePayrollLeaveRule: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/payroll/leave-rules",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    setPayrollLeaveRuleActive: (token: string, id: string, isActive: boolean) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/payroll/leave-rules/${id}/status`,
+        { method: "PATCH", body: JSON.stringify({ is_active: isActive }) },
+        token,
+      ),
+    futureEvents: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/future-events", { signal }, token),
+    createFutureEvent: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/future-events",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    decideFutureEvent: (token: string, id: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/future-events/${id}/decision`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    retentionPolicies: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/hr/retention-policies", { signal }, token),
+    saveRetentionPolicy: (token: string, body: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/hr/retention-policies",
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      ),
+    setRetentionPolicyStatus: (token: string, id: string, status: "active" | "inactive") =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/hr/retention-policies/${id}/status`,
+        { method: "PATCH", body: JSON.stringify({ status }) },
+        token,
+      ),
     payrollRuns: (token: string, signal?: AbortSignal) =>
       apiV1Fetch<Record<string, unknown>[]>("/payroll/runs", { signal }, token),
     createPayrollRun: (token: string, payrollMonth: string) =>
@@ -1173,27 +2021,43 @@ export const v1Api = {
         token,
       ),
     approvePayrollRun: (token: string, runId: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/payroll/runs/${runId}/approve`, { method: "POST" }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/payroll/runs/${runId}/approve`,
+        { method: "POST" },
+        token,
+      ),
     lockPayrollRun: (token: string, runId: string) =>
       apiV1Fetch<Record<string, unknown>>(`/payroll/runs/${runId}/lock`, { method: "POST" }, token),
     postPayrollRun: (token: string, runId: string) =>
       apiV1Fetch<{ ok: boolean }>(`/payroll/runs/${runId}/post`, { method: "POST" }, token),
     releasePayrollRun: (token: string, runId: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/payroll/runs/${runId}/release`, { method: "POST" }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/payroll/runs/${runId}/release`,
+        { method: "POST" },
+        token,
+      ),
     payrollPaymentFile: (token: string, runId: string) =>
       apiV1FetchBlob(`/payroll/runs/${runId}/payment-file.csv`, {}, token),
-    payslips: (token: string, runId: string) =>
-      apiV1Fetch<Record<string, unknown>[]>(`/payroll/runs/${runId}/payslips`, {}, token),
-    statutoryReport: (token: string, runId: string) =>
-      apiV1Fetch<Record<string, number>>(`/payroll/runs/${runId}/statutory-report`, {}, token),
-    statutoryRemittances: (token: string, runId?: string) =>
+    payslips: (token: string, runId: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>(`/payroll/runs/${runId}/payslips`, { signal }, token),
+    statutoryReport: (token: string, runId: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, number>>(
+        `/payroll/runs/${runId}/statutory-report`,
+        { signal },
+        token,
+      ),
+    statutoryRemittances: (token: string, runId?: string, signal?: AbortSignal) =>
       apiV1Fetch<Record<string, unknown>[]>(
         `/payroll/statutory-remittances${runId ? `?payroll_run_id=${encodeURIComponent(runId)}` : ""}`,
-        {},
+        { signal },
         token,
       ),
     postStatutoryPayment: (token: string, paymentId: string) =>
-      apiV1Fetch<Record<string, unknown>>(`/payroll/statutory-remittance-payments/${paymentId}/post`, { method: "POST" }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        `/payroll/statutory-remittance-payments/${paymentId}/post`,
+        { method: "POST" },
+        token,
+      ),
   },
   reports: {
     dashboardSummary: (token: string, signal?: AbortSignal) =>
@@ -1216,21 +2080,100 @@ export const v1Api = {
           total: number;
           status: string;
         }>;
-      }>('/reports/dashboard/summary', { signal }, token),
+      }>("/reports/dashboard/summary", { signal }, token),
     dashboard: (token: string, code: string) =>
       apiV1Fetch<{ widgets: Array<{ widget: string; value: number | null }> }>(
         `/reports/dashboards/${code}`,
         {},
         token,
       ),
-    kpis: (token: string) => apiV1Fetch<Array<Record<string, unknown>>>('/reports/kpis', {}, token),
-    library: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/reports/library", {}, token),
-    run: (token: string, code: string) =>
-      apiV1Fetch<{ rows: Record<string, unknown>[] }>(`/reports/run/${code}`, {}, token),
+    kpis: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>("/reports/kpis", { signal }, token),
+    library: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/reports/library", { signal }, token),
+    run: (token: string, code: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ rows: Record<string, unknown>[] }>(`/reports/run/${code}`, { signal }, token),
+    salesPerformance: (
+      token: string,
+      filters: { period_start: string; period_end: string; sales_rep_id?: string },
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams({
+        period_start: filters.period_start,
+        period_end: filters.period_end,
+      });
+      if (filters.sales_rep_id) params.set("sales_rep_id", filters.sales_rep_id);
+      return apiV1Fetch<{
+        period_start: string;
+        period_end: string;
+        rows: Record<string, unknown>[];
+      }>(`/reports/sales-performance?${params}`, { signal }, token);
+    },
   },
   tax: {
-    returns: (token: string) => apiV1Fetch<Array<Record<string, unknown>>>("/tax/returns", {}, token),
+    summary: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        summary: Array<{ label: string; value: number; tone: string }>;
+        obligations: Array<{ type: string; amount: number; status: string; period: string }>;
+        deadlines: Array<{ name: string; due: string; status: string }>;
+        followUps: Array<{ label: string; value: number; detail: string }>;
+        status: string;
+      }>("/tax/summary", { signal }, token),
+    withholdingCategories: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<WithholdingCategoryRecord[]>("/tax/withholding/categories", { signal }, token),
+    createWithholdingCategory: (
+      token: string,
+      payload: {
+        code: string;
+        name: string;
+        residency: "resident" | "non_resident";
+        rate: number;
+        taxable_basis: "net_before_vat" | "gross_including_vat";
+        effective_from: string;
+        effective_to?: string | null;
+        remittance_working_days: number;
+        liability_account_id: string;
+      },
+    ) =>
+      apiV1Fetch<WithholdingCategoryRecord>(
+        "/tax/withholding/categories",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    approveWithholdingCategory: (token: string, id: string) =>
+      apiV1Fetch<WithholdingCategoryRecord>(
+        `/tax/withholding/categories/${encodeURIComponent(id)}/approve`,
+        { method: "POST", body: "{}" },
+        token,
+      ),
+    withholdingObligations: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<WithholdingObligationRecord[]>("/tax/withholding/obligations", { signal }, token),
+    remitWithholding: (
+      token: string,
+      payload: {
+        obligation_ids: string[];
+        remittance_date: string;
+        payment_reference: string;
+        bank_account_id: string;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/tax/withholding/remittances",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    updateVendorResidency: (
+      token: string,
+      vendorId: string,
+      payload: { tax_residency: "resident" | "non_resident"; evidence_reference: string },
+    ) =>
+      apiV1Fetch<MasterVendor>(
+        `/tax/withholding/vendors/${encodeURIComponent(vendorId)}/residency`,
+        { method: "PATCH", body: JSON.stringify(payload) },
+        token,
+      ),
+    returns: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<Record<string, unknown>>>("/tax/returns", { signal }, token),
     prepareReturn: (token: string, periodId: string) =>
       apiV1Fetch<Record<string, unknown>>(
         "/tax/returns/prepare",
@@ -1240,7 +2183,10 @@ export const v1Api = {
     approveReturn: (token: string, id: string, varianceExplanation?: string) =>
       apiV1Fetch<Record<string, unknown>>(
         `/tax/returns/${encodeURIComponent(id)}/approve`,
-        { method: "POST", body: JSON.stringify({ variance_explanation: varianceExplanation || null }) },
+        {
+          method: "POST",
+          body: JSON.stringify({ variance_explanation: varianceExplanation || null }),
+        },
         token,
       ),
     lockReturn: (token: string, id: string) =>
@@ -1256,20 +2202,118 @@ export const v1Api = {
         token,
       ),
   },
+  expenses: {
+    summary: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        summary: Array<{ label: string; value: number | string; tone: string }>;
+        claims: Array<{
+          id: string;
+          employee: string;
+          category: string;
+          amount: number;
+          status: string;
+          date: string;
+          attachment_count: number;
+          approval_journal_id: string | null;
+          payment_journal_id: string | null;
+          decision_note: string | null;
+          requested_by: string;
+          reviewed_by: string | null;
+        }>;
+        budgets: Array<{ category: string; allocated: number; used: number; remaining: number }>;
+        status: string;
+      }>("/expenses/summary", { signal }, token),
+    claims: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<
+        Array<{ employee: string; category: string; amount: number; status: string; date: string }>
+      >("/expenses/claims", { signal }, token),
+    budgets: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Array<{ category: string; allocated: number; used: number; remaining: number }>>(
+        "/expenses/budgets",
+        { signal },
+        token,
+      ),
+    categories: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<
+        Array<{
+          id: string;
+          code: string;
+          name: string;
+          receipt_required: boolean;
+          per_claim_limit: number | null;
+        }>
+      >("/expenses/categories", { signal }, token),
+    createClaim: (
+      token: string,
+      payload: {
+        claim_date: string;
+        description: string;
+        currency_code: string;
+        lines: Array<{
+          category_id: string;
+          description: string;
+          amount: number;
+          cost_centre?: string;
+        }>;
+      },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/expenses/claims",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    uploadReceipt: (
+      token: string,
+      claimId: string,
+      payload: { file: Blob; file_name: string; content_type: string },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/expenses/claims/${encodeURIComponent(claimId)}/attachments`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-File-Name": encodeURIComponent(payload.file_name),
+            "X-Receipt-Content-Type": payload.content_type,
+          },
+          body: payload.file,
+        },
+        token,
+      ),
+    decideClaim: (token: string, claimId: string, action: "approve" | "reject", note?: string) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/expenses/claims/${encodeURIComponent(claimId)}/decision`,
+        { method: "POST", body: JSON.stringify({ action, note }) },
+        token,
+      ),
+    reimburseClaim: (
+      token: string,
+      claimId: string,
+      payload: { payment_date: string; payment_reference: string; bank_account_id: string },
+    ) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/expenses/claims/${encodeURIComponent(claimId)}/payments`,
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+  },
   platform: {
     integrationExceptions: (token: string, limit = 100, signal?: AbortSignal) =>
-      apiV1Fetch<{ exceptions: Array<{
-        id: string;
-        type: string;
-        source_id: string;
-        reference: string | null;
-        status: string;
-        attempt_count: number;
-        age_seconds: number;
-        last_error: string | null;
-        manually_retryable: boolean;
-      }> }>(`/platform/integrations/exceptions?limit=${limit}`, { signal }, token)
-        .then((result) => result.exceptions || []),
+      apiV1Fetch<{
+        exceptions: Array<{
+          id: string;
+          type: string;
+          source_id: string;
+          reference: string | null;
+          status: string;
+          attempt_count: number;
+          age_seconds: number;
+          last_error: string | null;
+          manually_retryable: boolean;
+        }>;
+      }>(`/platform/integrations/exceptions?limit=${limit}`, { signal }, token).then(
+        (result) => result.exceptions || [],
+      ),
     retryEtimsEvent: (token: string, id: string) =>
       apiV1Fetch<{ ok: boolean; event_id: string; status: string }>(
         `/platform/integrations/etims/events/${encodeURIComponent(id)}/retry`,
@@ -1284,43 +2328,65 @@ export const v1Api = {
       ),
   },
   integrations: {
-    providerSettings: (token: string, provider: string, environment?: string) =>
+    providerSettings: (
+      token: string,
+      provider: string,
+      environment?: string,
+      signal?: AbortSignal,
+    ) =>
       apiV1Fetch<Record<string, unknown>>(
         `/platform/integrations/${provider}/settings${environment ? `?environment=${encodeURIComponent(environment)}` : ""}`,
+        { signal },
+        token,
+      ),
+    saveProviderSettings: (token: string, provider: string, payload: Record<string, unknown>) =>
+      apiV1Fetch<Record<string, unknown>>(
+        `/platform/integrations/${provider}/settings`,
+        { method: "PUT", body: JSON.stringify(payload) },
+        token,
+      ),
+    initializeEtims: (token: string, body: Record<string, unknown> = {}) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/platform/integrations/etims/initialize",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    testEtimsConnection: (token: string, body: Record<string, unknown> = {}) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/platform/integrations/etims/test-connection",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    refreshEtimsReferenceData: (token: string, body: Record<string, unknown> = {}) =>
+      apiV1Fetch<Record<string, unknown>>(
+        "/platform/integrations/etims/reference-data/refresh",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
+    etimsReferenceStatus: (token: string) =>
+      apiV1Fetch<{ lists: Record<string, unknown>[] }>(
+        "/platform/integrations/etims/reference-data/status",
         {},
         token,
       ),
-    saveProviderSettings: (
-      token: string,
-      provider: string,
-      payload: Record<string, unknown>,
-    ) => apiV1Fetch<Record<string, unknown>>(
-      `/platform/integrations/${provider}/settings`,
-      { method: "PUT", body: JSON.stringify(payload) },
-      token,
-    ),
-    initializeEtims: (token: string, body: Record<string, unknown> = {}) =>
-      apiV1Fetch<Record<string, unknown>>("/platform/integrations/etims/initialize", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, token),
-    testEtimsConnection: (token: string, body: Record<string, unknown> = {}) =>
-      apiV1Fetch<Record<string, unknown>>("/platform/integrations/etims/test-connection", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, token),
-    refreshEtimsReferenceData: (token: string, body: Record<string, unknown> = {}) =>
-      apiV1Fetch<Record<string, unknown>>("/platform/integrations/etims/reference-data/refresh", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, token),
-    etimsReferenceStatus: (token: string) =>
-      apiV1Fetch<{ lists: Record<string, unknown>[] }>("/platform/integrations/etims/reference-data/status", {}, token),
     rotateMpesaCallbackToken: (token: string, body: Record<string, unknown> = {}) =>
-      apiV1Fetch<Record<string, unknown>>("/platform/integrations/mpesa/rotate-callback-token", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, token),
+      apiV1Fetch<Record<string, unknown>>(
+        "/platform/integrations/mpesa/rotate-callback-token",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        token,
+      ),
     createMpesaStkRequest: (
       token: string,
       invoiceId: string,
@@ -1332,9 +2398,17 @@ export const v1Api = {
         token,
       ),
     mpesaPaymentRequest: (token: string, requestId: string) =>
-      apiV1Fetch<MpesaPaymentRequest>(`/platform/integrations/mpesa/requests/${requestId}`, {}, token),
-    notificationTemplates: (token: string) =>
-      apiV1Fetch<{ templates: Array<Record<string, unknown>> }>("/platform/notifications/templates", {}, token),
+      apiV1Fetch<MpesaPaymentRequest>(
+        `/platform/integrations/mpesa/requests/${requestId}`,
+        {},
+        token,
+      ),
+    notificationTemplates: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ templates: Array<Record<string, unknown>> }>(
+        "/platform/notifications/templates",
+        { signal },
+        token,
+      ),
     saveNotificationTemplate: (token: string, code: string, payload: Record<string, unknown>) =>
       apiV1Fetch<Record<string, unknown>>(
         `/platform/notifications/templates/${encodeURIComponent(code)}`,
@@ -1343,7 +2417,13 @@ export const v1Api = {
       ),
     sendNotification: (
       token: string,
-      body: { channel: "email" | "sms"; to: string; subject?: string; body: string; idempotency_key: string },
+      body: {
+        channel: "email" | "sms";
+        to: string;
+        subject?: string;
+        body: string;
+        idempotency_key: string;
+      },
     ) =>
       apiV1Fetch<OutboundNotification>(
         "/platform/notifications/send",
@@ -1353,11 +2433,131 @@ export const v1Api = {
     notification: (token: string, id: string) =>
       apiV1Fetch<OutboundNotification>(`/platform/notifications/${id}`, {}, token),
   },
+  currencies: {
+    list: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<CurrencyRecord[]>("/currencies", { signal }, token),
+    exchangeRates: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<ExchangeRateRecord[]>("/currencies/exchange-rates", { signal }, token),
+    createExchangeRate: (
+      token: string,
+      payload: {
+        from_currency_code: string;
+        to_currency_code: string;
+        rate: number;
+        effective_date: string;
+        source: string;
+      },
+    ) =>
+      apiV1Fetch<ExchangeRateRecord>(
+        "/currencies/exchange-rates",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    approveExchangeRate: (token: string, id: string) =>
+      apiV1Fetch<ExchangeRateRecord>(
+        `/currencies/exchange-rates/${id}/approve`,
+        { method: "POST" },
+        token,
+      ),
+    rejectExchangeRate: (token: string, id: string, reason?: string) =>
+      apiV1Fetch<ExchangeRateRecord>(
+        `/currencies/exchange-rates/${id}/reject`,
+        { method: "POST", body: JSON.stringify({ reason: reason || "Rejected by finance" }) },
+        token,
+      ),
+    fxPolicies: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<FxPolicyRecord[]>("/currencies/fx-accounting-policies", { signal }, token),
+    createFxPolicy: (
+      token: string,
+      payload: {
+        currency_code: string;
+        rate_direction: string;
+        rate_source: string;
+        effective_date_policy: string;
+        rounding_method: string;
+        realized_gain_account_id: string;
+        realized_loss_account_id: string;
+        unrealized_gain_account_id: string;
+        unrealized_loss_account_id: string;
+        monetary_account_ids: string[];
+        reversal_policy: string;
+      },
+    ) =>
+      apiV1Fetch<FxPolicyRecord>(
+        "/currencies/fx-accounting-policies",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    approveFxPolicy: (token: string, id: string) =>
+      apiV1Fetch<FxPolicyRecord>(
+        `/currencies/fx-accounting-policies/${id}/approve`,
+        { method: "POST" },
+        token,
+      ),
+    rejectFxPolicy: (token: string, id: string, reason?: string) =>
+      apiV1Fetch<FxPolicyRecord>(
+        `/currencies/fx-accounting-policies/${id}/reject`,
+        { method: "POST", body: JSON.stringify({ reason: reason || "Rejected by finance" }) },
+        token,
+      ),
+    fxRevaluations: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<FxRevaluationRunRecord[]>("/currencies/fx-revaluations", { signal }, token),
+    postFxRevaluation: (token: string, payload: { period_id: string; currency_code: string }) =>
+      apiV1Fetch<{ run: FxRevaluationRunRecord; lines: Array<Record<string, unknown>> }>(
+        "/currencies/fx-revaluations",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+  },
   finance: {
-    bankAccounts: (token: string) =>
-      apiV1Fetch<BankAccountRecord[]>("/finance/bank-accounts", {}, token),
-    bankReconciliations: (token: string) =>
-      apiV1Fetch<BankReconciliationRecord[]>("/finance/bank-reconciliations", {}, token),
+    bankAccounts: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<BankAccountRecord[]>("/finance/bank-accounts", { signal }, token),
+    createBankAccount: (
+      token: string,
+      payload: {
+        account_code: string;
+        account_name: string;
+        currency_code?: string;
+        is_active?: boolean;
+        is_postable?: boolean;
+      },
+    ) =>
+      apiV1Fetch<BankAccountRecord>(
+        "/finance/bank-accounts",
+        { method: "POST", body: JSON.stringify(payload) },
+        token,
+      ),
+    cashBook: (
+      token: string,
+      filters: { start_date: string; end_date: string; account_id?: string; limit?: number },
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams({
+        start_date: filters.start_date,
+        end_date: filters.end_date,
+        limit: String(filters.limit ?? 1000),
+      });
+      if (filters.account_id) params.set("account_id", filters.account_id);
+      return apiV1Fetch<CashBookResponse>(`/finance/cash-book?${params}`, { signal }, token);
+    },
+    budgetForecast: (
+      token: string,
+      filters: { period_start?: string; period_end?: string; limit?: number } = {},
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams({
+        period_start: filters.period_start || "2026-01-01",
+        period_end: filters.period_end || "2026-12-31",
+        limit: String(filters.limit ?? 4),
+      });
+      return apiV1Fetch<BudgetForecastResponse>(
+        `/finance/budget-forecast?${params}`,
+        { signal },
+        token,
+      );
+    },
+    bankReconciliations: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<BankReconciliationRecord[]>("/finance/bank-reconciliations", { signal }, token),
     createBankReconciliation: (
       token: string,
       payload: {
@@ -1381,20 +2581,19 @@ export const v1Api = {
         { method: "POST", body: JSON.stringify(payload) },
         token,
       ),
-    bankReconciliation: (token: string, id: string) =>
-      apiV1Fetch<BankReconciliationRecord>(`/finance/bank-reconciliations/${id}`, {}, token),
-    bankCandidates: (token: string, id: string) =>
-      apiV1Fetch<BankLedgerCandidateRecord[]>(
-        `/finance/bank-reconciliations/${id}/candidates`,
-        {},
+    bankReconciliation: (token: string, id: string, signal?: AbortSignal) =>
+      apiV1Fetch<BankReconciliationRecord>(
+        `/finance/bank-reconciliations/${id}`,
+        { signal },
         token,
       ),
-    matchBankStatementLine: (
-      token: string,
-      id: string,
-      lineId: string,
-      journalLineId: string,
-    ) =>
+    bankCandidates: (token: string, id: string, signal?: AbortSignal) =>
+      apiV1Fetch<BankLedgerCandidateRecord[]>(
+        `/finance/bank-reconciliations/${id}/candidates`,
+        { signal },
+        token,
+      ),
+    matchBankStatementLine: (token: string, id: string, lineId: string, journalLineId: string) =>
       apiV1Fetch<{ ok: boolean }>(
         `/finance/bank-reconciliations/${id}/lines/${lineId}/match`,
         { method: "POST", body: JSON.stringify({ journal_line_id: journalLineId }) },
@@ -1406,16 +2605,19 @@ export const v1Api = {
         { method: "POST" },
         token,
       ),
-    createFiscalYear: (token: string, body: { year_label: string; start_date: string; end_date: string }) =>
+    createFiscalYear: (
+      token: string,
+      body: { year_label: string; start_date: string; end_date: string },
+    ) =>
       apiV1Fetch<Record<string, unknown> & { periods: Record<string, unknown>[] }>(
         "/finance/fiscal-years",
         { method: "POST", body: JSON.stringify(body) },
         token,
       ),
-    fiscalPeriodCloseChecklist: (token: string, periodId: string) =>
+    fiscalPeriodCloseChecklist: (token: string, periodId: string, signal?: AbortSignal) =>
       apiV1Fetch<FinancePeriodCloseChecklist>(
         `/finance/fiscal-periods/${periodId}/close-checklist`,
-        {},
+        { signal },
         token,
       ),
     closeFiscalPeriod: (token: string, periodId: string, reason: string) =>
@@ -1424,34 +2626,50 @@ export const v1Api = {
         { method: "POST", body: JSON.stringify({ reason }) },
         token,
       ),
-    trialBalance: (token: string, periodId: string) =>
-      apiV1Fetch<{ lines: Record<string, unknown>[] }>(
-        `/finance/reports/trial-balance?fiscal_period_id=${periodId}`,
-        {},
-        token,
-      ),
-    profitLoss: (token: string, periodId: string) =>
-      apiV1Fetch<{ lines: Record<string, unknown>[]; net_profit: number }>(
+    trialBalance: (token: string, periodId: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        lines: FinanceReportLine[];
+        totals: { period_debit: number; period_credit: number };
+      }>(`/finance/reports/trial-balance?fiscal_period_id=${periodId}`, { signal }, token),
+    profitLoss: (token: string, periodId: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ lines: FinanceReportLine[]; net_profit: number }>(
         `/finance/reports/profit-loss?fiscal_period_id=${periodId}`,
-        {},
+        { signal },
         token,
       ),
-    balanceSheet: (token: string, periodId: string) =>
+    balanceSheet: (token: string, periodId: string, signal?: AbortSignal) =>
       apiV1Fetch<FinanceReportLine[]>(
         `/finance/reports/balance-sheet?fiscal_period_id=${encodeURIComponent(periodId)}`,
-        {},
+        { signal },
         token,
       ),
-    fiscalPeriods: (token: string) =>
-      apiV1Fetch<Record<string, unknown>[]>("/finance/fiscal-periods", {}, token),
-    journals: (token: string) =>
-      apiV1Fetch<{ data: Record<string, unknown>[] }>("/finance/journals?limit=50", {}, token).then(
-        (r) => r.data,
+    cashFlow: (token: string, periodId: string, signal?: AbortSignal) =>
+      apiV1Fetch<{
+        operating: number;
+        investing: number;
+        financing: number;
+        net_movement: number;
+        opening_cash: number;
+        closing_cash: number;
+        reconciliation_variance: number;
+        lines: Array<{ activity: string; amount: number }>;
+      }>(
+        `/finance/reports/cash-flow?fiscal_period_id=${encodeURIComponent(periodId)}`,
+        { signal },
+        token,
       ),
-    journal: (token: string, id: string) =>
+    fiscalPeriods: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<Record<string, unknown>[]>("/finance/fiscal-periods", { signal }, token),
+    journals: (token: string, signal?: AbortSignal) =>
+      apiV1Fetch<{ data: Record<string, unknown>[] }>(
+        "/finance/journals?limit=50",
+        { signal },
+        token,
+      ).then((r) => r.data),
+    journal: (token: string, id: string, signal?: AbortSignal) =>
       apiV1Fetch<Record<string, unknown> & { lines: Record<string, unknown>[] }>(
         `/finance/journals/${id}`,
-        {},
+        { signal },
         token,
       ),
   },
@@ -1519,6 +2737,47 @@ export type SupplierBillRecord = {
   grn_number?: string | null;
 };
 
+export type CurrencyRecord = {
+  id?: string | number;
+  code: string;
+  name?: string | null;
+  symbol?: string | null;
+  numeric_code?: string | number | null;
+  is_active?: boolean;
+  is_base?: boolean;
+};
+
+export type ExchangeRateRecord = {
+  id: string;
+  company_id?: string;
+  from_currency_code: string;
+  to_currency_code: string;
+  rate: number;
+  effective_date: string;
+  source?: string | null;
+  status?: string;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  rejected_reason?: string | null;
+  created_at?: string | null;
+};
+
+export type FxPolicyRecord = {
+  id: string;
+  currency_code: string;
+  rate_direction: string;
+  rate_source?: string | null;
+  effective_date_policy?: string | null;
+  rounding_method?: string | null;
+  reversal_policy?: string | null;
+  status?: string;
+  realized_gain_account_code?: string | null;
+  realized_loss_account_code?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  created_at?: string | null;
+};
+
 export type FinancePeriod = {
   id: string;
   name: string;
@@ -1546,6 +2805,16 @@ export type FinanceWorkspace = {
   };
   balanceSheet: FinanceReportLine[];
   profitLoss: { lines: FinanceReportLine[]; net_profit: number };
+  cashFlow: {
+    operating: number;
+    investing: number;
+    financing: number;
+    net_movement: number;
+    opening_cash: number;
+    closing_cash: number;
+    reconciliation_variance: number;
+    lines: Array<{ activity: string; amount: number }>;
+  };
 };
 
 export type BankAccountRecord = {
@@ -1553,6 +2822,48 @@ export type BankAccountRecord = {
   account_code: string;
   account_name: string;
   currency_code: string;
+};
+
+export type BudgetForecastLine = {
+  department: string;
+  budget: number;
+  actual: number;
+  forecast: number;
+  variance: number;
+  status: "Ahead" | "On track" | "Watch";
+};
+
+export type BudgetForecastResponse = {
+  metrics: {
+    total_budget: number;
+    total_actual: number;
+    total_forecast: number;
+    variance: number;
+  };
+  lines: BudgetForecastLine[];
+  assumptions: Array<{ label: string; value: string }>;
+  filters: { periodStart: string; periodEnd: string; limit: number };
+};
+
+export type CashBookResponse = {
+  accounts: Array<BankAccountRecord & { opening_balance: number | string }>;
+  lines: Array<{
+    account_id: string;
+    account_code: string;
+    account_name: string;
+    currency_code: string;
+    journal_id: string;
+    journal_no: string;
+    entry_date: string;
+    reference_no: string | null;
+    description: string;
+    line_no: number;
+    debit: number | string;
+    credit: number | string;
+    opening_balance: number | string;
+    running_balance: number | string;
+  }>;
+  filters: { accountId: string | null; startDate: string; endDate: string; limit: number };
 };
 
 export type BankStatementLineRecord = {
@@ -1609,8 +2920,9 @@ export type AccountingSnapshot = {
 export async function fetchFinanceWorkspaceV1(
   token: string,
   periodId?: string,
+  signal?: AbortSignal,
 ): Promise<FinanceWorkspace> {
-  const rawPeriods = await v1Api.finance.fiscalPeriods(token);
+  const rawPeriods = await v1Api.finance.fiscalPeriods(token, signal);
   const periods: FinancePeriod[] = rawPeriods.map((row) => ({
     id: String(row.id),
     name: String(row.name || row.code || row.id),
@@ -1620,34 +2932,56 @@ export async function fetchFinanceWorkspaceV1(
     end_date: row.end_date ? String(row.end_date).slice(0, 10) : undefined,
   }));
   const today = new Date().toISOString().slice(0, 10);
-  const current = periods.find((period) =>
-    period.status === "open" && period.start_date && period.end_date &&
-    period.start_date <= today && period.end_date >= today,
+  const current = periods.find(
+    (period) =>
+      period.status === "open" &&
+      period.start_date &&
+      period.end_date &&
+      period.start_date <= today &&
+      period.end_date >= today,
   );
-  const selected = periodId || current?.id || periods.find((period) => period.status === "open")?.id || periods[0]?.id;
+  const selected =
+    periodId ||
+    current?.id ||
+    periods.find((period) => period.status === "open")?.id ||
+    periods[0]?.id;
   if (!selected) {
     return {
       periods,
       trialBalance: { lines: [], totals: { period_debit: 0, period_credit: 0 } },
       balanceSheet: [],
       profitLoss: { lines: [], net_profit: 0 },
+      cashFlow: {
+        operating: 0,
+        investing: 0,
+        financing: 0,
+        net_movement: 0,
+        opening_cash: 0,
+        closing_cash: 0,
+        reconciliation_variance: 0,
+        lines: [],
+      },
     };
   }
-  const [trialBalance, balanceSheet, profitLoss] = await Promise.all([
-    v1Api.finance.trialBalance(token, selected),
-    v1Api.finance.balanceSheet(token, selected),
-    v1Api.finance.profitLoss(token, selected),
+  const [trialBalance, balanceSheet, profitLoss, cashFlow] = await Promise.all([
+    v1Api.finance.trialBalance(token, selected, signal),
+    v1Api.finance.balanceSheet(token, selected, signal),
+    v1Api.finance.profitLoss(token, selected, signal),
+    v1Api.finance.cashFlow(token, selected, signal),
   ]);
-  return { periods, trialBalance, balanceSheet, profitLoss };
+  return { periods, trialBalance, balanceSheet, profitLoss, cashFlow };
 }
 
-export async function fetchAccountingSnapshotV1(token: string): Promise<AccountingSnapshot> {
-  const workspace = await fetchFinanceWorkspaceV1(token);
+export async function fetchAccountingSnapshotV1(
+  token: string,
+  signal?: AbortSignal,
+): Promise<AccountingSnapshot> {
+  const workspace = await fetchFinanceWorkspaceV1(token, undefined, signal);
   const period = workspace.periods.find((row) => row.status === "open") || workspace.periods[0];
   if (!period) return { journalRows: [], pnl: [] };
-  const journals = await v1Api.finance.journals(token);
+  const journals = await v1Api.finance.journals(token, signal);
   const latest = journals[0];
-  const journal = latest?.id ? await v1Api.finance.journal(token, String(latest.id)) : null;
+  const journal = latest?.id ? await v1Api.finance.journal(token, String(latest.id), signal) : null;
   const journalRows = (journal?.lines || []).map((line) => ({
     d: String(journal?.entry_date || "").slice(0, 10),
     a: `${String(line.account_code || "")} — ${String(line.account_name || "")}`,
@@ -1765,12 +3099,18 @@ export type BackendInventoryLotRecord = {
 
 export type MasterEntity = "customers" | "vendors" | "items" | "warehouses";
 
-export async function masterList(token: string, entity: MasterEntity, q = "", limit?: number) {
+export async function masterList(
+  token: string,
+  entity: MasterEntity,
+  q = "",
+  limit?: number,
+  signal?: AbortSignal,
+) {
   const requestedLimit = limit ?? (entity === "items" ? 100 : 500);
   const path = `/master/${entity}?limit=${requestedLimit}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
   const result = await apiV1Fetch<{ data?: Record<string, unknown>[] } | Record<string, unknown>[]>(
     path,
-    {},
+    { signal },
     token,
   );
   if (Array.isArray(result)) return result;
@@ -1855,8 +3195,94 @@ export type FixedAsset = {
   notes: string;
 };
 
-export async function fetchFixedAssets(token: string) {
-  return apiV1Fetch<FixedAsset[]>("/assets", {}, token);
+export type FixedAssetDepreciationRow = FixedAsset & {
+  monthly_depreciation: number;
+};
+
+export type FixedAssetDepreciationSummary = {
+  asOfDate: string;
+  activeAssets: number;
+  totalMonthlyDepreciation: number;
+  rows: FixedAssetDepreciationRow[];
+};
+
+export type FixedAssetDisposalInput = {
+  disposal_date: string;
+  disposal_value: number;
+  disposal_type: "sale" | "scrap" | "write_off" | "transfer";
+  reason?: string;
+};
+
+export type FixedAssetDisposalResult = {
+  asset: FixedAsset;
+  impact: {
+    type: string;
+    disposal_value: number;
+    net_book_value: number;
+    gain_or_loss: number;
+    months_held: number;
+    monthly_depreciation: number;
+  };
+  note: string;
+};
+
+export async function fetchFixedAssets(token: string, signal?: AbortSignal) {
+  return apiV1Fetch<FixedAsset[]>("/assets", { signal }, token);
+}
+
+export async function fetchFixedAssetDepreciation(
+  token: string,
+  asOfDate?: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams();
+  if (asOfDate) params.set("as_of_date", asOfDate);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return apiV1Fetch<FixedAssetDepreciationSummary>(
+    `/assets/depreciation${query}`,
+    { signal },
+    token,
+  );
+}
+
+export async function fetchFixedAssetDepreciationRuns(token: string, signal?: AbortSignal) {
+  return apiV1Fetch<
+    Array<{
+      id: string;
+      period_start: string;
+      period_end: string;
+      status: string;
+      total_depreciation: number;
+      journal_id: string | null;
+      notes: string | null;
+      created_at: string;
+      posted_at: string | null;
+    }>
+  >("/assets/depreciation-runs", { signal }, token);
+}
+
+export async function createFixedAssetDepreciationRun(
+  token: string,
+  payload: { period_start: string; period_end: string },
+) {
+  return apiV1Fetch<{
+    run: Record<string, unknown>;
+    summary: {
+      period_start: string;
+      period_end: string;
+      line_count: number;
+      total_depreciation: number;
+      lines: Array<Record<string, unknown>>;
+    };
+  }>(
+    "/assets/depreciation-runs",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
 }
 
 export async function createFixedAsset(token: string, data: Omit<FixedAsset, "id" | "status">) {
@@ -1867,6 +3293,18 @@ export async function setFixedAssetStatus(token: string, id: string, status: Fix
   return apiV1Fetch<FixedAsset>(
     `/assets/${id}`,
     { method: "PATCH", body: JSON.stringify({ status }) },
+    token,
+  );
+}
+
+export async function disposeFixedAsset(token: string, id: string, input: FixedAssetDisposalInput) {
+  return apiV1Fetch<FixedAssetDisposalResult>(
+    `/assets/${id}/dispose`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(input),
+    },
     token,
   );
 }

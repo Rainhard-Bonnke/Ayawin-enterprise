@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { User } from "./api-types";
 import {
   clearTokens,
@@ -58,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsubscribe;
   }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const epoch = ++sessionEpoch.current;
     try {
       const { token: newToken, user: currentUser } = await v1Login(email, password);
@@ -72,9 +80,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (epoch === sessionEpoch.current) setLoading(false);
       throw error;
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     sessionEpoch.current += 1;
     try {
       await v1Logout();
@@ -85,7 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     window.location.href = "/login";
-  };
+  }, []);
 
   const value = useMemo(
     () => ({ user, token, login, logout, loading }),

@@ -34,13 +34,28 @@ describe("AuthProvider session restoration", () => {
 
   it("does not let a late refresh failure erase a successful login", async () => {
     let rejectRestore!: (error: Error) => void;
-    api.restore.mockImplementation(() => new Promise((_resolve, reject) => { rejectRestore = reject; }));
+    api.restore.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRestore = reject;
+        }),
+    );
     api.login.mockResolvedValue({
       token: "access-token",
-      user: { id: "user-1", email: "operator@example.test", username: "operator", full_name: null, role: "Operator" },
+      user: {
+        id: "user-1",
+        email: "operator@example.test",
+        username: "operator",
+        full_name: null,
+        role: "Operator",
+      },
     });
 
-    render(<AuthProvider><AuthProbe /></AuthProvider>);
+    render(
+      <AuthProvider>
+        <AuthProbe />
+      </AuthProvider>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
 
     expect(await screen.findByText("user-1|access-token|ready")).toBeTruthy();

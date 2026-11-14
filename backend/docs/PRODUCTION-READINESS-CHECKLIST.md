@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-Last updated: 2026-11-09
+Last updated: 2026-11-13
 
 This checklist tracks production readiness for the ERP modules and platform services.
 
@@ -29,7 +29,7 @@ Status legend:
 - Batch process ready orders: PASS
 - Server-side invoice PDF download: PASS
 - Server-side receipt PDF download (paid invoices): PASS
-- Advanced compliance templates (legal fields, verifiable hash, QR): PARTIAL
+- Advanced compliance templates (legal fields, verifiable hash, QR): PARTIAL (migration 106 snapshots immutable issuer identity at posting and receipt verification hashes cover it; statutory template/legal review remains)
 
 ## 3) Inventory & Procurement
 
@@ -46,10 +46,11 @@ Status legend:
 - Static fallback accounting cards/charts removed: PASS
 - Invoice GL posting: PASS (with account-code guardrails)
 - Payment GL posting (cash vs AR): PASS
-- Full reconciliation workflows (bank, suspense, adjustments): PARTIAL
+- Full reconciliation workflows (bank, suspense, adjustments): PARTIAL (statement periods cannot overlap per bank account; suspense clearing and automated adjustment workflows remain)
 - Financial period close controls and lock windows: PARTIAL
 - Supplier VAT split, pending-evidence posting, manual reclassification, and source-linked credit reversal: PARTIAL (legacy journal review and accountant validation remain)
 - VAT3 internal working paper with CSV/XLSX, GL variance, maker-checker approval, and period locks: PARTIAL (not an iTax filing integration)
+- Versioned FX policies with independent approval, account-currency validation, and policy-bound exact-date rates: PARTIAL (foreign posting, settlement, and revaluation remain disabled)
 - Foreign-currency posting and revaluation: FAIL
 - Withholding-tax categories and remittance workflow: FAIL (KRA rates documented; company categories not selected)
 - Statutory payroll upload files and P9 cards: FAIL (current agency templates not publicly retrievable; see `PAYROLL-STATUTORY-FILES.md`)

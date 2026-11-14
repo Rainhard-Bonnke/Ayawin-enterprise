@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canAccessPath } from "./rbac";
+import type { User } from "./api-types";
 import { describeNetworkScope, describeSessionDevice } from "./security";
 
 describe("security UI helpers", () => {
@@ -24,12 +25,20 @@ describe("security UI helpers", () => {
   });
 });
 
-describe("route access matrix", () => {
-  it("blocks unmapped routes and allows explicitly approved screens", () => {
-    expect(canAccessPath({ role: "Driver" } as any, "/bank-reconciliation")).toBe(false);
-    expect(canAccessPath({ role: "Driver" } as any, "/inventory-lots")).toBe(false);
-    expect(canAccessPath({ role: "Manager" } as any, "/customer-credit-notes")).toBe(true);
-    expect(canAccessPath({ role: "Accountant" } as any, "/bank-reconciliation")).toBe(true);
-    expect(canAccessPath({ role: "Store Manager" } as any, "/inventory-lots")).toBe(true);
+describe("permission based route access", () => {
+  const user = (permissions: string[]) => ({ permissions }) as unknown as User;
+
+  it("checks actual backend permission codes and denies unknown routes", () => {
+    expect(canAccessPath(user(["fleet.view"]), "/bank-reconciliation")).toBe(false);
+    expect(canAccessPath(user(["fleet.view"]), "/inventory-lots")).toBe(false);
+    expect(canAccessPath(user(["sales.credit_note.approve"]), "/customer-credit-notes")).toBe(true);
+    expect(canAccessPath(user(["sales.view"]), "/crm")).toBe(true);
+    expect(canAccessPath(user(["fleet.view"]), "/crm")).toBe(false);
+    expect(canAccessPath(user(["finance.view"]), "/bank-reconciliation")).toBe(true);
+    expect(canAccessPath(user(["procurement.approve"]), "/inventory-lots")).toBe(true);
+    expect(canAccessPath(user(["procurement.view"]), "/purchase-requisitions")).toBe(true);
+    expect(canAccessPath(user(["fleet.approve"]), "/route-closures")).toBe(true);
+    expect(canAccessPath(user(["users.edit"]), "/users")).toBe(true);
+    expect(canAccessPath(user(["sales.view"]), "/unknown-screen")).toBe(false);
   });
 });

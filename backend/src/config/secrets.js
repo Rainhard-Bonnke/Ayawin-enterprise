@@ -1,3 +1,7 @@
+const path = require("path");
+const dotenv = require("dotenv");
+dotenv.config({ path: path.resolve(__dirname, "..", "..", ".env") });
+
 const PLACEHOLDERS = new Set([
   "your_jwt_secret_here_min_32_chars",
   "ayawin-enterprise-secret",

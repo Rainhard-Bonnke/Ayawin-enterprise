@@ -7,11 +7,14 @@ describe("browser session token handling", () => {
   });
 
   it("keeps access tokens in memory and never accesses browser storage", async () => {
-    const storage = new Proxy({}, {
-      get() {
-        throw new Error("browser storage must not be accessed for session tokens");
+    const storage = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("browser storage must not be accessed for session tokens");
+        },
       },
-    });
+    );
     vi.stubGlobal("localStorage", storage);
     vi.stubGlobal("sessionStorage", storage);
 

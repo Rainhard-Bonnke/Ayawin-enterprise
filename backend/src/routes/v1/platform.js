@@ -12,6 +12,24 @@ const etimsItems = require("../../services/etimsItemService");
 const mpesaStatements = require("../../services/mpesaStatementService");
 const mpesaB2c = require("../../services/mpesaB2cService");
 const { getOpsStatus } = require("../../services/opsStatusService");
+const {
+  DEFAULT_WORKFLOWS,
+  listApprovalRequests,
+  createApprovalRequest,
+  getApprovalRequest,
+  applyApprovalActionById,
+} = require("../../services/approvalWorkflowService");
+const {
+  createDocumentAttachment,
+  listDocumentAttachments,
+  getDocumentAttachment,
+  ALLOWED_MIME_TYPES,
+} = require("../../services/documentAttachmentService");
+const { createOrgNode, listOrgHierarchy, buildOrgTree, validateHierarchy } = require("../../services/orgHierarchyService");
+const { createBranchDimension, summarizeBranchBalances, consolidateBranchBalances, createBranchJournalEntry } = require("../../services/branchDimensionService");
+const { createReminder, listReminders, getDueReminders } = require("../../services/notificationReminderService");
+const { importOpeningBalance } = require("../../services/openingBalanceImportService");
+const { applyRlsScope, canAccessRecord } = require("../../services/rowLevelSecurityService");
 
 const router = express.Router();
 router.post("/integrations/mpesa/callback", async (req, res) => {
@@ -198,6 +216,210 @@ router.post("/webhooks/test", requirePermission("foundation.edit"), async (req, 
     payload: req.body?.payload || { test: true },
   });
   return res.json(result);
+});
+
+router.get("/approvals/workflows", requirePermission("foundation.view"), (_req, res) => {
+  return res.json(Object.values(DEFAULT_WORKFLOWS));
+});
+
+router.get("/approvals/requests", requirePermission("foundation.view"), (req, res) => {
+  return res.json(listApprovalRequests({ companyId: req.user.company_id }));
+});
+
+router.post("/approvals/requests", requirePermission("foundation.edit"), (req, res) => {
+  const { documentType, documentId, amount, requestedBy } = req.body || {};
+  if (!documentType || !documentId) {
+    return res.status(400).json({ error: "documentType and documentId are required" });
+  }
+
+  try {
+    const request = createApprovalRequest({
+      companyId: req.user.company_id,
+      documentType,
+      documentId,
+      requestedBy: requestedBy || req.user.id,
+      amount: Number(amount || 0),
+    });
+    return res.status(201).json(request);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/approvals/requests/:id", requirePermission("foundation.view"), (req, res) => {
+  const request = getApprovalRequest(req.params.id, { companyId: req.user.company_id });
+  if (!request) return res.status(404).json({ error: "Approval request not found" });
+  return res.json(request);
+});
+
+router.get("/documents/:documentType/:documentId/attachments", requirePermission("foundation.view"), (req, res) => {
+  try {
+    return res.json(listDocumentAttachments({
+      companyId: req.user.company_id,
+      documentType: req.params.documentType,
+      documentId: req.params.documentId,
+    }));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/documents/:documentType/:documentId/attachments", requirePermission("foundation.edit"), (req, res) => {
+  const { fileName, contentType, byteSize, sha256, metadata, blob } = req.body || {};
+  if (!fileName || !contentType || !blob) {
+    return res.status(400).json({ error: "fileName, contentType, and blob are required" });
+  }
+  if (!ALLOWED_MIME_TYPES.has(String(contentType))) {
+    return res.status(400).json({ error: "Attachment content type is not allowed" });
+  }
+
+  try {
+    const attachment = createDocumentAttachment({
+      companyId: req.user.company_id,
+      documentType: req.params.documentType,
+      documentId: req.params.documentId,
+      fileName,
+      contentType,
+      byteSize: Number(byteSize ?? 0),
+      sha256,
+      uploadedBy: req.user.id,
+      metadata: metadata || {},
+      blob,
+    });
+    return res.status(201).json(attachment);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/documents/:documentType/:documentId/attachments/:attachmentId", requirePermission("foundation.view"), (req, res) => {
+  const attachment = getDocumentAttachment({
+    companyId: req.user.company_id,
+    documentType: req.params.documentType,
+    documentId: req.params.documentId,
+    attachmentId: req.params.attachmentId,
+  });
+  if (!attachment) return res.status(404).json({ error: "Attachment not found" });
+  return res.json(attachment);
+});
+
+router.post("/approvals/requests/:id/actions", requirePermission("foundation.edit"), (req, res) => {
+  const { action, comment } = req.body || {};
+  if (!action) {
+    return res.status(400).json({ error: "action is required" });
+  }
+
+  try {
+    const request = applyApprovalActionById(req.params.id, action, {
+      id: req.user.id,
+      role: req.user.role,
+      position: req.user.position,
+      email: req.user.email,
+    }, { comment, companyId: req.user.company_id });
+    return res.json(request);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/org-hierarchy", requirePermission("foundation.view"), (req, res) => {
+  return res.json({
+    companyId: req.user.company_id,
+    tree: buildOrgTree(req.user.company_id),
+    validation: validateHierarchy(req.user.company_id),
+  });
+});
+
+router.post("/org-hierarchy", requirePermission("foundation.edit"), (req, res) => {
+  try {
+    const node = createOrgNode({
+      companyId: req.user.company_id,
+      name: req.body?.name,
+      type: req.body?.type,
+      parentId: req.body?.parent_id || null,
+      branchId: req.body?.branch_id || null,
+      metadata: req.body?.metadata || {},
+    });
+    return res.status(201).json(node);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/branch-dimensions", requirePermission("foundation.view"), (_req, res) => {
+  return res.json(Array.from(new Map()).size === 0 ? [] : []);
+});
+
+router.post("/branch-dimensions", requirePermission("foundation.edit"), (req, res) => {
+  try {
+    const branch = createBranchDimension({
+      companyId: req.user.company_id,
+      branchId: req.body?.branch_id,
+      branchName: req.body?.branch_name,
+      currency: req.body?.currency || "KES",
+      allowedAccounts: req.body?.allowed_accounts || [],
+    });
+    return res.status(201).json(branch);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/branch-dimensions/consolidate", requirePermission("finance.view"), (req, res) => {
+  try {
+    const result = consolidateBranchBalances(Array.isArray(req.body?.entries) ? req.body.entries : []);
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/reminders", requirePermission("foundation.view"), (req, res) => {
+  return res.json(listReminders({ companyId: req.user.company_id, status: req.query?.status || null }));
+});
+
+router.post("/reminders", requirePermission("foundation.edit"), (req, res) => {
+  try {
+    const reminder = createReminder({
+      companyId: req.user.company_id,
+      entityType: req.body?.entity_type,
+      entityId: req.body?.entity_id,
+      recipient: req.body?.recipient,
+      dueAt: req.body?.due_at,
+      subject: req.body?.subject,
+      message: req.body?.message,
+      channel: req.body?.channel || "email",
+    });
+    return res.status(201).json(reminder);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get("/reminders/due", requirePermission("foundation.view"), (req, res) => {
+  return res.json(getDueReminders({ companyId: req.user.company_id, now: req.query?.now || new Date().toISOString() }));
+});
+
+router.post("/opening-balances/import", requirePermission("finance.edit"), (req, res) => {
+  try {
+    const result = importOpeningBalance({ companyId: req.user.company_id, rows: req.body?.rows || [] });
+    return res.status(201).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post("/rls/access-check", requirePermission("foundation.view"), (req, res) => {
+  try {
+    const record = req.body?.record || {};
+    const scope = req.body?.scope || { companyId: req.user.company_id, branchId: req.body?.branch_id || null, allowedBranches: req.body?.allowed_branches || [], role: req.body?.role || req.user.role };
+    return res.json({
+      allowed: canAccessRecord(record, scope),
+      filtered: applyRlsScope(Array.isArray(req.body?.records) ? req.body.records : [record], scope),
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 });
 
 router.post("/import", requirePermission("master_data.create"), async (req, res) => {

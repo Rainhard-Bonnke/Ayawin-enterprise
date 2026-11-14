@@ -9,6 +9,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
 import { normalizeMasterWarehouse, v1Api } from "@/lib/api-v1";
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { EMPTY_ARRAY, useList } from "@/lib/queryHooks";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   Table,
   TableBody,
@@ -28,63 +31,64 @@ export const Route = createFileRoute("/_app/settings")({
 });
 
 function SettingsPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const queryClient = useQueryClient();
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "company");
-  const [warehouseRows, setWarehouseRows] = useState<
-    Array<{ id: string; name: string; location: string; manager: string }>
-  >([]);
   const [warehouseQ, setWarehouseQ] = useState("");
-  const [etimsSettings, setEtimsSettings] = useState<Record<string, unknown> | null>(null);
-  const [mpesaSettings, setMpesaSettings] = useState<Record<string, unknown> | null>(null);
-  const [templates, setTemplates] = useState<Array<Record<string, unknown>>>([]);
   const [templateCode, setTemplateCode] = useState("invoice_overdue");
   const [templateChannel, setTemplateChannel] = useState("email");
   const [templateSubject, setTemplateSubject] = useState("Invoice follow-up");
-  const [templateBody, setTemplateBody] = useState("Hello {{customer_name}}, your invoice {{invoice_number}} is due.");
+  const [templateBody, setTemplateBody] = useState(
+    "Hello {{customer_name}}, your invoice {{invoice_number}} is due.",
+  );
 
+  const settingsQuery = useList(
+    queryKeys.settings.workspace(user?.id),
+    async ({ signal }) => {
+      const [warehouseData, etimsSettings, mpesaSettings, templateResult] = await Promise.all([
+        v1Api.master.warehouses(token!, signal),
+        v1Api.integrations.providerSettings(token!, "etims", "sandbox", signal).catch(() => null),
+        v1Api.integrations.providerSettings(token!, "mpesa", "sandbox", signal).catch(() => null),
+        v1Api.integrations.notificationTemplates(token!, signal).catch(() => ({ templates: [] })),
+      ]);
+      const warehouses = warehouseData.map((row) => {
+        const warehouse = normalizeMasterWarehouse(row);
+        return {
+          id: warehouse.id,
+          name: warehouse.name,
+          location: warehouse.address,
+          manager: warehouse.manager || "—",
+        };
+      });
+      return {
+        warehouses,
+        etimsSettings: etimsSettings as Record<string, unknown> | null,
+        mpesaSettings: mpesaSettings as Record<string, unknown> | null,
+        templates: templateResult.templates || [],
+      };
+    },
+    { enabled: Boolean(token) },
+  );
+  const warehouseRows = settingsQuery.data?.warehouses ?? [];
+  const etimsSettings = settingsQuery.data?.etimsSettings ?? null;
+  const mpesaSettings = settingsQuery.data?.mpesaSettings ?? null;
+  const templates = settingsQuery.data?.templates ?? EMPTY_ARRAY;
   const maskedToken = useMemo(() => {
-    const value = String((mpesaSettings?.public_config as Record<string, unknown> | undefined)?.callbackBaseUrl || "");
+    const value = String(
+      (mpesaSettings?.public_config as Record<string, unknown> | undefined)?.callbackBaseUrl || "",
+    );
     if (!value) return "Not configured";
     return value.replace(/https?:\/\//, "").replace(/\b([A-Za-z0-9._%+-]+)@/, "***@");
   }, [mpesaSettings]);
-
   useEffect(() => {
-    if (!token) return;
-    void v1Api.master.warehouses(token)
-      .then((rows) => {
-        if (!rows.length) return;
-        setWarehouseRows(
-          rows.map((row) => {
-            const warehouse = normalizeMasterWarehouse(row);
-            return {
-              id: warehouse.id,
-              name: warehouse.name,
-              location: warehouse.address,
-              manager: warehouse.manager || "—",
-            };
-          }),
-        );
-      })
-      .catch(() => undefined);
-
-    void Promise.all([
-      v1Api.integrations.providerSettings(token, "etims", "sandbox").catch(() => null),
-      v1Api.integrations.providerSettings(token, "mpesa", "sandbox").catch(() => null),
-      v1Api.integrations.notificationTemplates(token).catch(() => ({ templates: [] })),
-    ]).then(([etims, mpesa, templatesResult]) => {
-      setEtimsSettings(etims as Record<string, unknown> | null);
-      setMpesaSettings(mpesa as Record<string, unknown> | null);
-      setTemplates((templatesResult as { templates?: Array<Record<string, unknown>> }).templates || []);
-      const first = ((templatesResult as { templates?: Array<Record<string, unknown>> }).templates || [])[0];
-      if (first) {
-        setTemplateCode(String(first.template_code || "invoice_overdue"));
-        setTemplateChannel(String(first.channel || "email"));
-        setTemplateSubject(String(first.subject_template || ""));
-        setTemplateBody(String(first.message_template || ""));
-      }
-    });
-  }, [token]);
+    const first = templates[0];
+    if (!first) return;
+    setTemplateCode(String(first.template_code || "invoice_overdue"));
+    setTemplateChannel(String(first.channel || "email"));
+    setTemplateSubject(String(first.subject_template || ""));
+    setTemplateBody(String(first.message_template || ""));
+  }, [templates]);
 
   const filteredWarehouses = warehouseRows.filter((w) =>
     `${w.name} ${w.location} ${w.manager}`.toLowerCase().includes(warehouseQ.toLowerCase()),
@@ -100,7 +104,19 @@ function SettingsPage() {
     if (!token) return;
     try {
       const result = await v1Api.integrations.initializeEtims(token, { environment: "sandbox" });
-      setEtimsSettings((prev) => ({ ...(prev || {}), last_result: result }));
+      queryClient.setQueryData<{
+        warehouses: Array<{ id: string; name: string; location: string; manager: string }>;
+        etimsSettings: Record<string, unknown> | null;
+        mpesaSettings: Record<string, unknown> | null;
+        templates: Array<Record<string, unknown>>;
+      }>(queryKeys.settings.workspace(user?.id), (previous) =>
+        previous
+          ? {
+              ...previous,
+              etimsSettings: { ...(previous.etimsSettings || {}), last_result: result },
+            }
+          : previous,
+      );
       toast.success("eTIMS device initialised");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to initialise eTIMS");
@@ -110,8 +126,22 @@ function SettingsPage() {
   const handleEtimsTest = async () => {
     if (!token) return;
     try {
-      const result = await v1Api.integrations.testEtimsConnection(token, { environment: "sandbox" });
-      setEtimsSettings((prev) => ({ ...(prev || {}), test_result: result }));
+      const result = await v1Api.integrations.testEtimsConnection(token, {
+        environment: "sandbox",
+      });
+      queryClient.setQueryData<{
+        warehouses: Array<{ id: string; name: string; location: string; manager: string }>;
+        etimsSettings: Record<string, unknown> | null;
+        mpesaSettings: Record<string, unknown> | null;
+        templates: Array<Record<string, unknown>>;
+      }>(queryKeys.settings.workspace(user?.id), (previous) =>
+        previous
+          ? {
+              ...previous,
+              etimsSettings: { ...(previous.etimsSettings || {}), test_result: result },
+            }
+          : previous,
+      );
       toast.success("eTIMS connection test passed");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "eTIMS connection test failed");
@@ -121,8 +151,19 @@ function SettingsPage() {
   const handleRotateMpesaToken = async () => {
     if (!token) return;
     try {
-      const result = await v1Api.integrations.rotateMpesaCallbackToken(token, { environment: "sandbox" });
-      setMpesaSettings((prev) => ({ ...(prev || {}), callback: result }));
+      const result = await v1Api.integrations.rotateMpesaCallbackToken(token, {
+        environment: "sandbox",
+      });
+      queryClient.setQueryData<{
+        warehouses: Array<{ id: string; name: string; location: string; manager: string }>;
+        etimsSettings: Record<string, unknown> | null;
+        mpesaSettings: Record<string, unknown> | null;
+        templates: Array<Record<string, unknown>>;
+      }>(queryKeys.settings.workspace(user?.id), (previous) =>
+        previous
+          ? { ...previous, mpesaSettings: { ...(previous.mpesaSettings || {}), callback: result } }
+          : previous,
+      );
       toast.success("Callback token rotated");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to rotate callback token");
@@ -211,7 +252,10 @@ function SettingsPage() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <InfoRow label="eTIMS" value={String(etimsSettings?.provider_mode || "disabled")} />
-                <InfoRow label="M-Pesa" value={String(mpesaSettings?.provider_mode || "disabled")} />
+                <InfoRow
+                  label="M-Pesa"
+                  value={String(mpesaSettings?.provider_mode || "disabled")}
+                />
                 <InfoRow label="Email" value="sandbox" />
                 <InfoRow label="SMS" value="sandbox" />
               </CardContent>
@@ -363,12 +407,18 @@ function SettingsPage() {
                   </div>
                   <div className="space-y-2">
                     <Label>Channel</Label>
-                    <Input value={templateChannel} onChange={(e) => setTemplateChannel(e.target.value)} />
+                    <Input
+                      value={templateChannel}
+                      onChange={(e) => setTemplateChannel(e.target.value)}
+                    />
                   </div>
                 </div>
                 <div className="space-y-2">
                   <Label>Email subject</Label>
-                  <Input value={templateSubject} onChange={(e) => setTemplateSubject(e.target.value)} />
+                  <Input
+                    value={templateSubject}
+                    onChange={(e) => setTemplateSubject(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label>Template body</Label>
@@ -379,7 +429,8 @@ function SettingsPage() {
                   />
                 </div>
                 <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                  Variables supported: {{customer_name}}, {{invoice_number}}, {{amount_due}}, {{company_name}}
+                  Variables supported:{" "}
+                  {"{{customer_name}}, {{invoice_number}}, {{amount_due}}, {{company_name}}"}
                 </div>
                 <Button onClick={() => void handleTemplateSave()}>Save template</Button>
               </CardContent>
@@ -424,17 +475,33 @@ function SettingsPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center justify-between"><span className="font-medium">eTIMS</span><span className="text-xs text-muted-foreground">{String(etimsSettings?.provider_mode || "disabled")}</span></div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-medium">eTIMS</span>
+                    <span className="text-xs text-muted-foreground">
+                      {String(etimsSettings?.provider_mode || "disabled")}
+                    </span>
+                  </div>
                   <div className="flex gap-2">
-                    <Button variant="outline" onClick={() => void handleEtimsInitialize()}>Initialise</Button>
-                    <Button variant="outline" onClick={() => void handleEtimsTest()}>Test connection</Button>
+                    <Button variant="outline" onClick={() => void handleEtimsInitialize()}>
+                      Initialise
+                    </Button>
+                    <Button variant="outline" onClick={() => void handleEtimsTest()}>
+                      Test connection
+                    </Button>
                   </div>
                 </div>
                 <div className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center justify-between"><span className="font-medium">M-Pesa callback</span><span className="text-xs text-muted-foreground">{String(mpesaSettings?.provider_mode || "disabled")}</span></div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-medium">M-Pesa callback</span>
+                    <span className="text-xs text-muted-foreground">
+                      {String(mpesaSettings?.provider_mode || "disabled")}
+                    </span>
+                  </div>
                   <InfoRow label="Callback URL" value={maskedToken} />
                   <div className="mt-3 flex gap-2">
-                    <Button variant="outline" onClick={() => void handleRotateMpesaToken()}>Rotate token</Button>
+                    <Button variant="outline" onClick={() => void handleRotateMpesaToken()}>
+                      Rotate token
+                    </Button>
                   </div>
                 </div>
               </CardContent>

@@ -1,6 +1,10 @@
 const express = require("express");
 const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
-const { listAuditLogs } = require("../../services/auditService");
+const {
+  listAuditLogs,
+  buildAuditHashChain,
+  hashChainCsvRows,
+} = require("../../services/auditService");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -53,6 +57,36 @@ router.get("/", requirePermission("audit.view"), async (req, res) => {
     offset,
   });
   return res.json(rows);
+});
+
+router.get("/history/:entityType/:entityId", requirePermission("audit.view"), async (req, res) => {
+  const rows = await listAuditLogs({
+    companyId: req.user.company_id,
+    entityType: req.params.entityType,
+    entityId: req.params.entityId,
+    limit: 500,
+  });
+  return res.json(rows);
+});
+
+router.get("/hash-chain", requirePermission("audit.view"), async (req, res) => {
+  const rows = await listAuditLogs({
+    companyId: req.user.company_id,
+    limit: 500,
+  });
+  const chain = buildAuditHashChain(rows);
+  return res.json(chain);
+});
+
+router.get("/hash-chain.csv", requirePermission("audit.view"), async (req, res) => {
+  const rows = await listAuditLogs({
+    companyId: req.user.company_id,
+    limit: 500,
+  });
+  const csv = hashChainCsvRows(buildAuditHashChain(rows));
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="audit-hash-chain.csv"');
+  return res.send(csv);
 });
 
 module.exports = router;

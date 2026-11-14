@@ -22,7 +22,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchBar } from "@/components/SearchBar";
 import { ConfirmActionDialog } from "@/components/ConfirmActionDialog";
@@ -42,13 +48,15 @@ import {
   masterDelete,
   masterList,
   masterUpdate,
-  normalizeMasterCustomer,
   normalizeMasterItem,
-  normalizeMasterWarehouse,
   v1Api,
 } from "@/lib/api-v1";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 
 export const Route = createFileRoute("/_app/master-data")({
   component: MasterDataPage,
@@ -71,123 +79,114 @@ function parseCsv(text: string): Record<string, string>[] {
 
 function MasterDataPage() {
   const { token } = useAuth();
+  const queryClient = useQueryClient();
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [tab, setTab] = useState(() => hash.replace(/^#/, "") || "items");
-  const [items, setItems] = useState<BackendMasterItem[]>([]);
-  const [taxGroups, setTaxGroups] = useState<BackendTaxGroup[]>([]);
-  const [taxRates, setTaxRates] = useState<BackendTaxRate[]>([]);
-  const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
-  const [customers, setCustomers] = useState<BackendCustomer[]>([]);
-  const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useUrlSearchParam("q");
   const fileRef = useRef<HTMLInputElement>(null);
   const [importType, setImportType] = useState<"customers" | "items">("items");
   const [importing, setImporting] = useState(false);
 
-  const load = async (requestedTab = tab) => {
-    if (!token) return;
-    setLoading(true);
-    try {
-      if (requestedTab === "items") {
+  const masterQuery = useList(
+    queryKeys.masterData.list(tab),
+    async ({ signal }) => {
+      if (tab === "items") {
         const [itemRows, groupRows] = await Promise.all([
-          masterList(token, "items", "", 2000),
-          v1Api.master.taxGroups(token),
+          masterList(token!, "items", "", 2000, signal),
+          v1Api.master.taxGroups(token!, signal),
         ]);
-        setItems(itemRows.map(normalizeMasterItem) as BackendMasterItem[]);
-        setTaxGroups(groupRows.map((row) => ({
-          id: String(row.id),
-          code: String(row.code),
-          name: String(row.name),
-          tax_treatment: String(row.tax_treatment || "standard") as BackendTaxGroup["tax_treatment"],
-        })));
+        return {
+          items: itemRows.map(normalizeMasterItem) as BackendMasterItem[],
+          taxGroups: groupRows.map((row) => ({
+            id: String(row.id),
+            code: String(row.code),
+            name: String(row.name),
+            tax_treatment: String(
+              row.tax_treatment || "standard",
+            ) as BackendTaxGroup["tax_treatment"],
+          })),
+        };
       }
-      if (requestedTab === "tax") {
-        const rows = await v1Api.master.taxRates(token);
-        setTaxRates(rows.map((row) => ({
-          id: String(row.id),
-          code: String(row.code),
-          name: String(row.name),
-          rate: Number(row.rate || 0),
-          tax_type: String(row.tax_type || "vat"),
-          basis: String(row.basis || "percentage"),
-          effective_from: String(row.effective_from || "").slice(0, 10),
-          effective_to: row.effective_to ? String(row.effective_to).slice(0, 10) : null,
-          tax_groups: Array.isArray(row.tax_groups) ? row.tax_groups.map(String) : [],
-        })));
+      if (tab === "tax") {
+        const rows = await v1Api.master.taxRates(token!, signal);
+        return {
+          taxRates: rows.map((row) => ({
+            id: String(row.id),
+            code: String(row.code),
+            name: String(row.name),
+            rate: Number(row.rate || 0),
+            tax_type: String(row.tax_type || "vat"),
+            basis: String(row.basis || "percentage"),
+            effective_from: String(row.effective_from || "").slice(0, 10),
+            effective_to: row.effective_to ? String(row.effective_to).slice(0, 10) : null,
+            tax_groups: Array.isArray(row.tax_groups) ? row.tax_groups.map(String) : [],
+          })) as BackendTaxRate[],
+        };
       }
-      if (requestedTab === "warehouses") {
-        setWarehouses(
-          (await v1Api.master.warehouses(token)).map((row) => ({
-            id: String((row as Record<string, unknown>).id ?? ""),
-            code: String((row as Record<string, unknown>).code ?? ""),
-            name: String((row as Record<string, unknown>).name ?? ""),
-            address: String(
-              (row as Record<string, unknown>).address_line1 ??
-                (row as Record<string, unknown>).address ??
-                "",
-            ),
-            city: ((row as Record<string, unknown>).city as string | null) ?? null,
-            manager: ((row as Record<string, unknown>).manager_name as string | null) ?? null,
-            phone: ((row as Record<string, unknown>).phone as string | null) ?? null,
-            is_active: (row as Record<string, unknown>).is_active !== false,
+      if (tab === "warehouses") {
+        const rows = await v1Api.master.warehouses(token!, signal);
+        return {
+          warehouses: rows.map((row) => ({
+            id: String(row.id ?? ""),
+            code: String(row.code ?? ""),
+            name: String(row.name ?? ""),
+            address: String(row.address_line1 ?? row.address ?? ""),
+            city: (row.city as string | null) ?? null,
+            manager: (row.manager_name as string | null) ?? null,
+            phone: (row.phone as string | null) ?? null,
+            is_active: row.is_active !== false,
           })) as BackendWarehouse[],
-        );
+        };
       }
-      if (requestedTab === "customers") {
-        setCustomers(
-          (await v1Api.master.customers(token)).map((row) => ({
-            id: String((row as Record<string, unknown>).id ?? ""),
-            name: String((row as Record<string, unknown>).name ?? ""),
-            kra_pin: String(
-              (row as Record<string, unknown>).tax_id ??
-                (row as Record<string, unknown>).kra_pin ??
-                "",
-            ),
-            contact:
-              ((row as Record<string, unknown>).contact_name as string | null) ??
-              ((row as Record<string, unknown>).phone as string | null) ??
-              null,
-            email: ((row as Record<string, unknown>).email as string | null) ?? null,
-            address: ((row as Record<string, unknown>).address_line1 as string | null) ?? null,
-            location: ((row as Record<string, unknown>).city as string | null) ?? null,
-            type: ((row as Record<string, unknown>).customer_type as string | null) ?? null,
-            segment: ((row as Record<string, unknown>).customer_type as string | null) ?? null,
-            credit_limit: Number((row as Record<string, unknown>).credit_limit ?? 0),
-            payment_terms:
-              ((row as Record<string, unknown>).payment_terms as string | null) ?? null,
+      if (tab === "customers") {
+        const rows = await v1Api.master.customers(token!, "", signal);
+        return {
+          customers: rows.map((row) => ({
+            id: String(row.id ?? ""),
+            name: String(row.name ?? ""),
+            kra_pin: String(row.tax_id ?? row.kra_pin ?? ""),
+            contact: (row.contact_name as string | null) ?? (row.phone as string | null) ?? null,
+            email: (row.email as string | null) ?? null,
+            address: (row.address_line1 as string | null) ?? null,
+            location: (row.city as string | null) ?? null,
+            type: (row.customer_type as string | null) ?? null,
+            segment: (row.customer_type as string | null) ?? null,
+            credit_limit: Number(row.credit_limit ?? 0),
+            payment_terms: (row.payment_terms as string | null) ?? null,
             balance: 0,
           })) as BackendCustomer[],
-        );
+        };
       }
-      if (requestedTab === "suppliers") {
-        const rows = await v1Api.master.vendors(token);
-        setSuppliers(rows.map((row) => ({
-          id: row.id,
-          name: row.name,
-          kra_pin: row.tax_id || "",
-          contact: row.contact_name,
-          email: row.email,
-          phone: row.phone,
-          payment_terms: null,
-          credit_limit: Number(row.credit_limit || 0),
-          balance: 0,
-        })));
+      if (tab === "suppliers") {
+        const rows = await v1Api.master.vendors(token!, signal);
+        return {
+          suppliers: rows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            kra_pin: row.tax_id || "",
+            contact: row.contact_name,
+            email: row.email,
+            phone: row.phone,
+            payment_terms: null,
+            credit_limit: Number(row.credit_limit || 0),
+            balance: 0,
+          })) as BackendSupplier[],
+        };
       }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to load master data");
-      setItems([]);
-      setWarehouses([]);
-      setCustomers([]);
-      setSuppliers([]);
-    } finally {
-      setLoading(false);
-    }
+      return {};
+    },
+    { enabled: Boolean(token) },
+  );
+  const items = masterQuery.data?.items ?? EMPTY_ARRAY;
+  const taxGroups = masterQuery.data?.taxGroups ?? [];
+  const taxRates = masterQuery.data?.taxRates ?? [];
+  const warehouses = masterQuery.data?.warehouses ?? EMPTY_ARRAY;
+  const customers = masterQuery.data?.customers ?? EMPTY_ARRAY;
+  const suppliers = masterQuery.data?.suppliers ?? EMPTY_ARRAY;
+  const loading = masterQuery.isPending;
+  const load = async (requestedTab = tab) => {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.masterData.list(requestedTab) });
   };
-
-  useEffect(() => {
-    void load(tab);
-  }, [token, tab]);
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
@@ -315,7 +314,20 @@ function MasterDataPage() {
             taxGroups={taxGroups}
             token={token}
             onSaved={() => load("items")}
-            onItemsChange={setItems}
+            onItemsChange={(nextItems) =>
+              queryClient.setQueryData<{
+                items: BackendMasterItem[];
+                taxGroups: BackendTaxGroup[];
+              }>(queryKeys.masterData.list("items"), (previous) =>
+                previous
+                  ? {
+                      ...previous,
+                      items:
+                        typeof nextItems === "function" ? nextItems(previous.items) : nextItems,
+                    }
+                  : undefined,
+              )
+            }
           />
         </TabsContent>
 
@@ -397,12 +409,22 @@ function MasterDataPage() {
   );
 }
 
-function TaxSettingsPanel({ rates, token, onSaved }: {
+function TaxSettingsPanel({
+  rates,
+  token,
+  onSaved,
+}: {
   rates: BackendTaxRate[];
   token: string | null;
   onSaved: () => Promise<void>;
 }) {
-  const vatCodes = Array.from(new Set(rates.filter((rate) => rate.tax_type === "vat" && rate.basis === "percentage").map((rate) => rate.code)));
+  const vatCodes = Array.from(
+    new Set(
+      rates
+        .filter((rate) => rate.tax_type === "vat" && rate.basis === "percentage")
+        .map((rate) => rate.code),
+    ),
+  );
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState(vatCodes.includes("VAT16") ? "VAT16" : vatCodes[0] || "");
   const [rate, setRate] = useState("");
@@ -414,49 +436,171 @@ function TaxSettingsPanel({ rates, token, onSaved }: {
   }, [code, vatCodes]);
 
   useEffect(() => {
-    const latest = rates.filter((row) => row.code === code).sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
+    const latest = rates
+      .filter((row) => row.code === code)
+      .sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
     setRate(latest ? String(latest.rate) : "16");
   }, [code, rates]);
 
   const save = async () => {
-    if (!token || !code || !effectiveFrom || !Number.isFinite(Number(rate)) || Number(rate) < 0 || Number(rate) > 100) {
+    if (
+      !token ||
+      !code ||
+      !effectiveFrom ||
+      !Number.isFinite(Number(rate)) ||
+      Number(rate) < 0 ||
+      Number(rate) > 100
+    ) {
       toast.error("Enter a VAT rate from 0 to 100 and its effective date.");
       return;
     }
     if (code === "VAT0" && Number(rate) !== 0) {
-      toast.error("The zero-rate tax code must remain 0%. Use a standard VAT tax code for another rate.");
+      toast.error(
+        "The zero-rate tax code must remain 0%. Use a standard VAT tax code for another rate.",
+      );
       return;
     }
     setSaving(true);
     try {
       await v1Api.master.createTaxRateVersion(token, {
-        code, name: `${code} ${Number(rate)}%`, rate: Number(rate), tax_type: "vat", basis: "percentage", effective_from: effectiveFrom,
+        code,
+        name: `${code} ${Number(rate)}%`,
+        rate: Number(rate),
+        tax_type: "vat",
+        basis: "percentage",
+        effective_from: effectiveFrom,
       });
-      toast.success(`${code} ${Number(rate)}% saved from ${effectiveFrom}; prior rate history was retained.`);
+      toast.success(
+        `${code} ${Number(rate)}% saved from ${effectiveFrom}; prior rate history was retained.`,
+      );
       setOpen(false);
       await onSaved();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save tax rate");
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
-  return <Card className="rounded-2xl border-border/70 shadow-sm"><CardContent className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 className="font-semibold">VAT rate history</h2><p className="mt-1 max-w-3xl text-sm text-muted-foreground">Add a dated rate version instead of changing a rate already used on an invoice. Item Master assigns products to standard, zero-rated, or exempt treatment. Ask accounts to confirm classification and effective dates before saving.</p></div>
-      <Button onClick={() => setOpen(true)} disabled={!vatCodes.length}>Add effective rate</Button>
-    </div>
-    <div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[760px] text-sm"><thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground"><tr><th className="px-3 py-3">Tax code</th><th className="px-3 py-3 text-right">Rate</th><th className="px-3 py-3">Effective period</th><th className="px-3 py-3">Used by tax groups</th></tr></thead><tbody>
-      {rates.map((row) => <tr key={row.id} className="border-t"><td className="px-3 py-3"><div className="font-mono text-xs">{row.code}</div><div className="text-xs text-muted-foreground">{row.name}</div></td><td className="px-3 py-3 text-right tabular-nums">{Number(row.rate).toLocaleString()} {row.basis === "percentage" ? "%" : row.basis}</td><td className="px-3 py-3">{row.effective_from} – {row.effective_to || "No end date"}</td><td className="px-3 py-3">{row.tax_groups.join(", ") || "Not assigned"}</td></tr>)}
-      {!rates.length && <tr><td colSpan={4} className="px-3 py-10 text-center text-muted-foreground">No tax rates are configured. Apply the latest ERP database migration and reload.</td></tr>}
-    </tbody></table></div>
-    <p className="text-xs text-muted-foreground">This screen configures VAT only. Excise duty calculations, KRA eTIMS submission, and tax-return reconciliation are separate unfinished workflows.</p>
-    <Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogHeader><DialogTitle>Add effective VAT rate</DialogTitle><DialogDescription>The previous rate will end the day before this date. Existing order and invoice lines keep their tax snapshots.</DialogDescription></DialogHeader><div className="space-y-3">
-      <div className="space-y-1.5"><Label>Tax code</Label><Select value={code} onValueChange={setCode}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{vatCodes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
-      <div className="space-y-1.5"><Label>Rate (%)</Label><Input type="number" min="0" max="100" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></div>
-      <div className="space-y-1.5"><Label>Effective from</Label><Input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} /></div>
-      <p className="text-xs text-muted-foreground">The selected code is configured as {code === "VAT0" ? "zero-rated" : "standard VAT"}.</p>
-    </div><DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save rate version"}</Button></DialogFooter></DialogContent></Dialog>
-  </CardContent></Card>;
+  return (
+    <Card className="rounded-2xl border-border/70 shadow-sm">
+      <CardContent className="space-y-4 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">VAT rate history</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              Add a dated rate version instead of changing a rate already used on an invoice. Item
+              Master assigns products to standard, zero-rated, or exempt treatment. Ask accounts to
+              confirm classification and effective dates before saving.
+            </p>
+          </div>
+          <Button onClick={() => setOpen(true)} disabled={!vatCodes.length}>
+            Add effective rate
+          </Button>
+        </div>
+        <div className="overflow-x-auto rounded-xl border">
+          <table className="w-full min-w-190 text-sm">
+            <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-3 py-3">Tax code</th>
+                <th className="px-3 py-3 text-right">Rate</th>
+                <th className="px-3 py-3">Effective period</th>
+                <th className="px-3 py-3">Used by tax groups</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rates.map((row) => (
+                <tr key={row.id} className="border-t">
+                  <td className="px-3 py-3">
+                    <div className="font-mono text-xs">{row.code}</div>
+                    <div className="text-xs text-muted-foreground">{row.name}</div>
+                  </td>
+                  <td className="px-3 py-3 text-right tabular-nums">
+                    {Number(row.rate).toLocaleString()}{" "}
+                    {row.basis === "percentage" ? "%" : row.basis}
+                  </td>
+                  <td className="px-3 py-3">
+                    {row.effective_from} – {row.effective_to || "No end date"}
+                  </td>
+                  <td className="px-3 py-3">{row.tax_groups.join(", ") || "Not assigned"}</td>
+                </tr>
+              ))}
+              {!rates.length && (
+                <tr>
+                  <td colSpan={4} className="px-3 py-10 text-center text-muted-foreground">
+                    No tax rates are configured. Apply the latest ERP database migration and reload.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          This screen configures VAT only. Excise duty calculations, KRA eTIMS submission, and
+          tax-return reconciliation are separate unfinished workflows.
+        </p>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add effective VAT rate</DialogTitle>
+              <DialogDescription>
+                The previous rate will end the day before this date. Existing order and invoice
+                lines keep their tax snapshots.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>Tax code</Label>
+                <Select value={code} onValueChange={setCode}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {vatCodes.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Rate (%)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={rate}
+                  onChange={(event) => setRate(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Effective from</Label>
+                <Input
+                  type="date"
+                  value={effectiveFrom}
+                  onChange={(event) => setEffectiveFrom(event.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The selected code is configured as {code === "VAT0" ? "zero-rated" : "standard VAT"}
+                .
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button disabled={saving} onClick={() => void save()}>
+                {saving ? "Saving…" : "Save rate version"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ItemsPanel({
@@ -499,7 +643,23 @@ function ItemsPanel({
 
   const openNew = () => {
     setEditing(null);
-    setForm({ item_code: "", name: "", barcode: "", standard_cost: "0", reorder_point: "0", tax_group_id: taxGroups.find((group) => group.code === "STD-VAT")?.id || "", lot_tracking_enabled: false, etims_item_classification_code: "", etims_item_code: "", etims_item_type_code: "", etims_origin_country_code: "", etims_packaging_unit_code: "", etims_package_quantity: "", etims_quantity_unit_code: "", etims_tax_type_code: "" });
+    setForm({
+      item_code: "",
+      name: "",
+      barcode: "",
+      standard_cost: "0",
+      reorder_point: "0",
+      tax_group_id: taxGroups.find((group) => group.code === "STD-VAT")?.id || "",
+      lot_tracking_enabled: false,
+      etims_item_classification_code: "",
+      etims_item_code: "",
+      etims_item_type_code: "",
+      etims_origin_country_code: "",
+      etims_packaging_unit_code: "",
+      etims_package_quantity: "",
+      etims_quantity_unit_code: "",
+      etims_tax_type_code: "",
+    });
     setOpen(true);
   };
 
@@ -511,14 +671,16 @@ function ItemsPanel({
       barcode: row.barcode || "",
       standard_cost: String(row.standard_cost),
       reorder_point: String(row.reorder_point),
-      tax_group_id: row.tax_group_id || taxGroups.find((group) => group.code === "STD-VAT")?.id || "",
+      tax_group_id:
+        row.tax_group_id || taxGroups.find((group) => group.code === "STD-VAT")?.id || "",
       lot_tracking_enabled: row.lot_tracking_enabled,
       etims_item_classification_code: row.etims_item_classification_code || "",
       etims_item_code: row.etims_item_code || "",
       etims_item_type_code: row.etims_item_type_code || "",
       etims_origin_country_code: row.etims_origin_country_code || "",
       etims_packaging_unit_code: row.etims_packaging_unit_code || "",
-      etims_package_quantity: row.etims_package_quantity == null ? "" : String(row.etims_package_quantity),
+      etims_package_quantity:
+        row.etims_package_quantity == null ? "" : String(row.etims_package_quantity),
       etims_quantity_unit_code: row.etims_quantity_unit_code || "",
       etims_tax_type_code: row.etims_tax_type_code || "",
     });
@@ -545,17 +707,23 @@ function ItemsPanel({
         etims_item_type_code: form.etims_item_type_code || null,
         etims_origin_country_code: form.etims_origin_country_code || null,
         etims_packaging_unit_code: form.etims_packaging_unit_code || null,
-        etims_package_quantity: form.etims_package_quantity ? Number(form.etims_package_quantity) : null,
+        etims_package_quantity: form.etims_package_quantity
+          ? Number(form.etims_package_quantity)
+          : null,
         etims_quantity_unit_code: form.etims_quantity_unit_code || null,
         etims_tax_type_code: form.etims_tax_type_code || null,
       };
       if (editing) {
-        const updated = normalizeMasterItem(await masterUpdate(token, "items", editing.id, body)) as BackendMasterItem;
+        const updated = normalizeMasterItem(
+          await masterUpdate(token, "items", editing.id, body),
+        ) as BackendMasterItem;
         toast.success("Item updated");
         await onSaved();
         onItemsChange((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
       } else {
-        const created = normalizeMasterItem(await masterCreate(token, "items", { item_code: form.item_code, ...body })) as BackendMasterItem;
+        const created = normalizeMasterItem(
+          await masterCreate(token, "items", { item_code: form.item_code, ...body }),
+        ) as BackendMasterItem;
         toast.success("Item created");
         onItemsChange((prev) => {
           const exists = prev.some(
@@ -579,20 +747,27 @@ function ItemsPanel({
     <Card>
       <CardContent className="p-4">
         <div className="mb-4 flex justify-end">
-          <Button variant="outline" className="mr-2" disabled={!token} onClick={async () => {
-            if (!token) return;
-            try {
-              const blob = await apiV1FetchBlob("/master/items/etims-unmapped.csv", {}, token);
-              const url = URL.createObjectURL(blob);
-              const anchor = document.createElement("a");
-              anchor.href = url;
-              anchor.download = "etims-unmapped-items.csv";
-              anchor.click();
-              URL.revokeObjectURL(url);
-            } catch (error) {
-              toast.error(error instanceof Error ? error.message : "Unable to export unmapped items");
-            }
-          }}>
+          <Button
+            variant="outline"
+            className="mr-2"
+            disabled={!token}
+            onClick={async () => {
+              if (!token) return;
+              try {
+                const blob = await apiV1FetchBlob("/master/items/etims-unmapped.csv", {}, token);
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
+                anchor.href = url;
+                anchor.download = "etims-unmapped-items.csv";
+                anchor.click();
+                URL.revokeObjectURL(url);
+              } catch (error) {
+                toast.error(
+                  error instanceof Error ? error.message : "Unable to export unmapped items",
+                );
+              }
+            }}
+          >
             <Download className="mr-2 h-4 w-4" />
             Unmapped eTIMS items
           </Button>
@@ -640,31 +815,94 @@ function ItemsPanel({
                 />
                 <div className="space-y-1.5">
                   <Label>Sales tax treatment</Label>
-                  <Select value={form.tax_group_id} onValueChange={(value) => setForm((p) => ({ ...p, tax_group_id: value }))}>
-                    <SelectTrigger><SelectValue placeholder="Choose tax treatment" /></SelectTrigger>
+                  <Select
+                    value={form.tax_group_id}
+                    onValueChange={(value) => setForm((p) => ({ ...p, tax_group_id: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose tax treatment" />
+                    </SelectTrigger>
                     <SelectContent>
-                      {taxGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name} ({group.tax_treatment.replaceAll("_", " ")})</SelectItem>)}
+                      {taxGroups.map((group) => (
+                        <SelectItem key={group.id} value={group.id}>
+                          {group.name} ({group.tax_treatment.replaceAll("_", " ")})
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">Use the product’s approved classification. Exempt and zero-rated supplies have different tax treatment. Excise-rated items need an excise workflow before sale.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Use the product’s approved classification. Exempt and zero-rated supplies have
+                    different tax treatment. Excise-rated items need an excise workflow before sale.
+                  </p>
                 </div>
                 <div className="border-t pt-3">
                   <p className="mb-3 text-sm font-medium">KRA eTIMS mapping</p>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Item classification code" value={form.etims_item_classification_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_classification_code: v }))} />
-                    <Field label="eTIMS item code" value={form.etims_item_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_code: v }))} />
-                    <Field label="Item type code" value={form.etims_item_type_code} onChange={(v) => setForm((p) => ({ ...p, etims_item_type_code: v }))} />
-                    <Field label="Origin country code" value={form.etims_origin_country_code} onChange={(v) => setForm((p) => ({ ...p, etims_origin_country_code: v }))} />
-                    <Field label="Packaging unit code" value={form.etims_packaging_unit_code} onChange={(v) => setForm((p) => ({ ...p, etims_packaging_unit_code: v }))} />
-                    <Field label="Package quantity" value={form.etims_package_quantity} onChange={(v) => setForm((p) => ({ ...p, etims_package_quantity: v }))} />
-                    <Field label="Quantity unit code" value={form.etims_quantity_unit_code} onChange={(v) => setForm((p) => ({ ...p, etims_quantity_unit_code: v }))} />
-                    <Field label="eTIMS tax type code" value={form.etims_tax_type_code} onChange={(v) => setForm((p) => ({ ...p, etims_tax_type_code: v }))} />
+                    <Field
+                      label="Item classification code"
+                      value={form.etims_item_classification_code}
+                      onChange={(v) =>
+                        setForm((p) => ({ ...p, etims_item_classification_code: v }))
+                      }
+                    />
+                    <Field
+                      label="eTIMS item code"
+                      value={form.etims_item_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_item_code: v }))}
+                    />
+                    <Field
+                      label="Item type code"
+                      value={form.etims_item_type_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_item_type_code: v }))}
+                    />
+                    <Field
+                      label="Origin country code"
+                      value={form.etims_origin_country_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_origin_country_code: v }))}
+                    />
+                    <Field
+                      label="Packaging unit code"
+                      value={form.etims_packaging_unit_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_packaging_unit_code: v }))}
+                    />
+                    <Field
+                      label="Package quantity"
+                      value={form.etims_package_quantity}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_package_quantity: v }))}
+                    />
+                    <Field
+                      label="Quantity unit code"
+                      value={form.etims_quantity_unit_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_quantity_unit_code: v }))}
+                    />
+                    <Field
+                      label="eTIMS tax type code"
+                      value={form.etims_tax_type_code}
+                      onChange={(v) => setForm((p) => ({ ...p, etims_tax_type_code: v }))}
+                    />
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">Enter codes from the company’s current KRA eTIMS code list. The system does not infer a KRA classification from the ERP tax group.</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Enter codes from the company’s current KRA eTIMS code list. The system does not
+                    infer a KRA classification from the ERP tax group.
+                  </p>
                 </div>
                 <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
-                  <input type="checkbox" className="mt-1" checked={form.lot_tracking_enabled} onChange={(event) => setForm((p) => ({ ...p, lot_tracking_enabled: event.target.checked }))} />
-                  <span><span className="font-medium">Track batches and expiry (FEFO)</span><span className="mt-1 block text-xs text-muted-foreground">Enable only when current stock is zero or reconciled to lots. Tracked receipts require batch and expiry; deliveries and issues consume earliest unexpired lots first.</span></span>
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={form.lot_tracking_enabled}
+                    onChange={(event) =>
+                      setForm((p) => ({ ...p, lot_tracking_enabled: event.target.checked }))
+                    }
+                  />
+                  <span>
+                    <span className="font-medium">Track batches and expiry (FEFO)</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Enable only when current stock is zero or reconciled to lots. Tracked receipts
+                      require batch and expiry; deliveries and issues consume earliest unexpired
+                      lots first.
+                    </span>
+                  </span>
                 </label>
               </div>
               <DialogFooter>
@@ -703,7 +941,9 @@ function ItemsPanel({
                   <TableCell>{row.name}</TableCell>
                   <TableCell>{KES(row.standard_cost)}</TableCell>
                   <TableCell>{row.reorder_point}</TableCell>
-                  <TableCell>{taxGroups.find((group) => group.id === row.tax_group_id)?.name || "Unassigned"}</TableCell>
+                  <TableCell>
+                    {taxGroups.find((group) => group.id === row.tax_group_id)?.name || "Unassigned"}
+                  </TableCell>
                   <TableCell className="text-right space-x-1">
                     <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
                       <Pencil className="h-4 w-4" />
@@ -788,7 +1028,15 @@ function PartyPanel({
   const save = async () => {
     if (!token || !form.name || !form.kra_pin) return;
     try {
-      const payload = {
+      const payload: {
+        name: string;
+        kra_pin: string;
+        email?: string;
+        contact?: string;
+        credit_limit: number;
+        location?: string;
+        phone?: string;
+      } = {
         name: form.name,
         kra_pin: form.kra_pin,
         email: form.email || undefined,

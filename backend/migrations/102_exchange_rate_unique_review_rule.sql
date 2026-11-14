@@ -1,0 +1,2 @@
+ALTER TABLE erp_exchange_rates
+  DROP CONSTRAINT IF EXISTS erp_exchange_rates_company_id_from_currency_code_to_currenc_key;

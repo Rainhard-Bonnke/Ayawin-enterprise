@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Minus, Plus, Receipt, Search, ShoppingCart, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +18,9 @@ import {
 import { useSalesWorkflow } from "@/features/sales/hooks/useSalesWorkflow";
 import { toast } from "sonner";
 import { posCheckoutSchema } from "@/lib/schemas/sales";
+import { EMPTY_ARRAY, useList, useDocument } from "@/lib/queryHooks";
+import { queryKeys } from "@/lib/queryKeys";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 
 export const Route = createFileRoute("/_app/pos")({
   component: PosPage,
@@ -34,6 +37,8 @@ function PosPage() {
     createSalesOrder,
     confirmSalesOrder,
     cancelSalesOrder,
+    createSalesPickList,
+    confirmSalesPickList,
     dispatchSalesOrder,
     paySalesInvoice,
     downloadReceiptPdf,
@@ -44,23 +49,21 @@ function PosPage() {
     "sales.delivery.post",
     "sales.invoice.create",
     "sales.receipt.create",
-  ].every((permission) => canPerformSalesAction(user, permission as
-    | "sales.order.create"
-    | "sales.delivery.post"
-    | "sales.invoice.create"
-    | "sales.receipt.create"));
-  const [items, setItems] = useState<BackendMasterItem[]>([]);
-  const [customers, setCustomers] = useState<BackendCustomer[]>([]);
-  const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
+  ].every((permission) =>
+    canPerformSalesAction(
+      user,
+      permission as
+        | "sales.order.create"
+        | "sales.delivery.post"
+        | "sales.invoice.create"
+        | "sales.receipt.create",
+    ),
+  );
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [taxPreview, setTaxPreview] = useState<{ subtotal: number; tax_amount: number; total_amount: number } | null>(null);
-  const [taxPreviewLoading, setTaxPreviewLoading] = useState(false);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useUrlSearchParam("q", "");
   const [customerId, setCustomerId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [amountReceived, setAmountReceived] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lastSale, setLastSale] = useState<{
     invoiceId: string;
@@ -70,56 +73,45 @@ function PosPage() {
     change: number;
   } | null>(null);
 
-  useEffect(() => {
-    if (!token) return;
-    Promise.all([
-      v1Api.master.items(token, 60),
-      v1Api.master.customers(token),
-      v1Api.master.warehouses(token),
-    ])
-      .then(([catalogRows, customerRows, warehouseRows]) => {
-        const catalog = catalogRows.map(normalizeMasterItem) as BackendMasterItem[];
-        const customers = customerRows.map(normalizeMasterCustomer) as BackendCustomer[];
-        const locations = warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[];
-        setItems(catalog.filter((item) => item.is_active));
-        setCustomers(customers);
-        setWarehouses(locations);
-        setCustomerId(String(customers[0]?.id || ""));
-      })
-      .catch((error) =>
-        toast.error(error instanceof Error ? error.message : "Unable to load POS catalog"),
-      )
-      .finally(() => setLoading(false));
-  }, [token]);
-
-  useEffect(() => {
-    if (!token || !search.trim()) return;
-    const timer = window.setTimeout(() => {
-      setSearching(true);
-      void v1Api.master.items(token, 60, undefined, search.trim())
-        .then((rows) => setItems(rows.map(normalizeMasterItem).filter((item) => item.is_active) as BackendMasterItem[]))
-        .catch((error) =>
-          toast.error(error instanceof Error ? error.message : "Unable to search catalog"),
-        )
-        .finally(() => setSearching(false));
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [token, search]);
-
-  useEffect(() => {
-    if (!token || !cart.length) { setTaxPreview(null); setTaxPreviewLoading(false); return; }
-    let active = true;
-    setTaxPreviewLoading(true);
-    void v1Api.sales.taxPreview(token, cart.map((line) => ({ item_id: line.id, quantity: line.quantity, unit_price: line.unit_price })))
-      .then((preview) => {
-        if (active) setTaxPreview({ subtotal: preview.subtotal, tax_amount: preview.tax_amount, total_amount: preview.total_amount });
-      })
-      .catch((error) => {
-        if (active) { setTaxPreview(null); toast.error(error instanceof Error ? error.message : "Could not calculate sale tax"); }
-      })
-      .finally(() => { if (active) setTaxPreviewLoading(false); });
-    return () => { active = false; };
-  }, [cart, token]);
+  const setupQuery = useList(
+    queryKeys.inventory.posSetup(),
+    async ({ signal }) => {
+      const [customerRows, warehouseRows] = await Promise.all([
+        v1Api.master.customers(token!, undefined, signal),
+        v1Api.master.warehouses(token!, signal),
+      ]);
+      return {
+        customers: customerRows.map(normalizeMasterCustomer) as BackendCustomer[],
+        warehouses: warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[],
+      };
+    },
+    { enabled: Boolean(token) },
+  );
+  const catalogQuery = useList(
+    queryKeys.inventory.posCatalog(search.trim()),
+    async ({ signal }) =>
+      (await v1Api.master.items(token!, 60, signal, search.trim()))
+        .map(normalizeMasterItem)
+        .filter((item) => item.is_active) as BackendMasterItem[],
+    { enabled: Boolean(token) },
+  );
+  const items = catalogQuery.data ?? EMPTY_ARRAY;
+  const customers = setupQuery.data?.customers ?? [];
+  const warehouses = setupQuery.data?.warehouses ?? [];
+  const loading = setupQuery.isPending || catalogQuery.isPending;
+  const searching = catalogQuery.isFetching && !catalogQuery.isPending;
+  const taxPreviewLines = cart.map((line) => ({
+    item_id: line.id,
+    quantity: line.quantity,
+    unit_price: line.unit_price,
+  }));
+  const taxPreviewQuery = useDocument(
+    queryKeys.sales.posTaxPreview(taxPreviewLines),
+    ({ signal }) => v1Api.sales.taxPreview(token!, taxPreviewLines, undefined, signal),
+    { enabled: Boolean(token) && taxPreviewLines.length > 0 },
+  );
+  const taxPreview = taxPreviewQuery.data ?? null;
+  const taxPreviewLoading = taxPreviewQuery.isFetching;
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -130,9 +122,9 @@ function PosPage() {
       .slice(0, 30);
   }, [items, search]);
 
-  const subtotal = cart.reduce((sum, line) => sum + line.quantity * line.unit_price, 0);
+  const subtotal = taxPreview?.subtotal ?? 0;
   const tax = taxPreview?.tax_amount ?? 0;
-  const total = taxPreview?.total_amount ?? subtotal;
+  const total = taxPreview?.total_amount ?? 0;
   const received = Number(amountReceived || 0);
   const change = Math.max(0, received - total);
 
@@ -181,7 +173,9 @@ function PosPage() {
       })),
     });
     if (!validation.success) {
-      toast.error(validation.error.issues[0]?.message || "Please fix the sale details before continuing.");
+      toast.error(
+        validation.error.issues[0]?.message || "Please fix the sale details before continuing.",
+      );
       return;
     }
     if (!token || !customerId || !warehouses[0]?.id || !cart.length) {
@@ -214,7 +208,9 @@ function PosPage() {
       const saleTotal = order.total;
       if (paymentMethod === "cash" && received < saleTotal) {
         await cancelSalesOrder(token, order.internal_id);
-        throw new Error("The ERP recalculated tax and cash received is below the sale total. The draft order was cancelled; review the amount and try again.");
+        throw new Error(
+          "The ERP recalculated tax and cash received is below the sale total. The draft order was cancelled; review the amount and try again.",
+        );
       }
       const confirmed = await confirmSalesOrder(token, order.internal_id);
       if (!confirmed.ok)
@@ -223,7 +219,16 @@ function PosPage() {
             ? "Insufficient stock for this sale."
             : "Sale failed credit validation.",
         );
-      await dispatchSalesOrder(token, order.internal_id);
+      const pickList = await createSalesPickList(token, order.internal_id);
+      await confirmSalesPickList(
+        token,
+        pickList.id,
+        pickList.lines.map((line) => ({
+          pick_list_line_id: String(line.id),
+          quantity_picked: Number(line.quantity_to_pick),
+        })),
+      );
+      await dispatchSalesOrder(token, order.internal_id, pickList.id);
       const invoice = await createInvoiceFromSalesOrder(token, order.internal_id);
       if (paymentMethod !== "credit") {
         await paySalesInvoice(token, invoice.invoice_id, {
@@ -461,7 +466,11 @@ function PosPage() {
               disabled={submitting || !cart.length || !canCheckout}
               onClick={completeSale}
             >
-              {submitting ? "Processing sale..." : !canCheckout ? "Checkout permission required" : `Complete sale · ${KES(total)}`}
+              {submitting
+                ? "Processing sale..."
+                : !canCheckout
+                  ? "Checkout permission required"
+                  : `Complete sale · ${KES(total)}`}
             </Button>
           </CardContent>
         </Card>

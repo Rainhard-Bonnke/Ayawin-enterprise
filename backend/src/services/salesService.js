@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { buildInvoiceIssuerDetails } = require("./documentVerificationService");
 const { recordIssue, getSellableQuantity } = require("./inventoryService");
 const gl = require("./glPostingService");
 const { ACCOUNT_CODES } = require("./accountCodes");
@@ -147,6 +148,15 @@ async function previewSaleTax(companyId, lines, taxDate) {
   } finally { client.release(); }
 }
 
+async function previewCustomerSalePrice(options) {
+  const client = await pool.connect();
+  try {
+    return await resolveCustomerPrice(client, options);
+  } finally {
+    client.release();
+  }
+}
+
 async function nextNo(client, companyId, table, prefix) {
   return nextDocumentNo(client, { companyId, docType: table, prefix });
 }
@@ -246,7 +256,9 @@ async function createSalesOrder({
   orderDate,
   requiredDate,
   notes,
+  salesRepId = userId,
   permissions = [],
+  client: transactionClient = null,
 }) {
   if (!lines?.length) throw new Error("Order lines required");
   const parsedRequiredDate = new Date(`${requiredDate}T00:00:00.000Z`);
@@ -260,17 +272,20 @@ async function createSalesOrder({
   if (orderDate && requiredDate < orderDate) {
     throw new Error("Required delivery date cannot be before the order date");
   }
-  const client = await pool.connect();
+  const ownsClient = !transactionClient;
+  const client = transactionClient || await pool.connect();
   try {
-    await client.query("BEGIN");
+    if (ownsClient) await client.query("BEGIN");
     const partyAndWarehouse = await client.query(
       `SELECT
          EXISTS (SELECT 1 FROM erp_customers WHERE id = $1 AND company_id = $3 AND is_deleted = FALSE AND is_active = TRUE) AS customer_ok,
-         EXISTS (SELECT 1 FROM erp_warehouses WHERE id = $2 AND company_id = $3 AND is_deleted = FALSE) AS warehouse_ok`,
-      [customerId, warehouseId, companyId],
+         EXISTS (SELECT 1 FROM erp_warehouses WHERE id = $2 AND company_id = $3 AND is_deleted = FALSE) AS warehouse_ok,
+         EXISTS (SELECT 1 FROM erp_users WHERE id = $4 AND company_id = $3 AND status = 'active' AND is_deleted = FALSE) AS sales_rep_ok`,
+      [customerId, warehouseId, companyId, salesRepId],
     );
     if (!partyAndWarehouse.rows[0].customer_ok) throw new Error("Customer does not belong to this company or is inactive");
     if (!partyAndWarehouse.rows[0].warehouse_ok) throw new Error("Warehouse does not belong to this company or is inactive");
+    if (!partyAndWarehouse.rows[0].sales_rep_ok) throw new Error("Sales representative must be an active user in this company");
     const orderNo = await nextNo(client, companyId, "erp_sales_orders", "SO");
     const maxDiscountPercent = await getMaximumDiscountPercent(client, companyId);
     const pricingDate = orderDate || new Date().toISOString().slice(0, 10);
@@ -306,8 +321,8 @@ async function createSalesOrder({
     const soResult = await client.query(
       `INSERT INTO erp_sales_orders (
          company_id, customer_id, quotation_id, warehouse_id, price_list_id, order_no, order_date, required_date,
-         status, subtotal, discount_amount, discount_approval_status, tax_amount, total_amount, notes, created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,CURRENT_DATE),$8,'draft',$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+         status, subtotal, discount_amount, discount_approval_status, tax_amount, total_amount, notes, sales_rep_id, created_by
+       ) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,CURRENT_DATE),$8,'draft',$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
       [
         companyId,
         customerId,
@@ -323,6 +338,7 @@ async function createSalesOrder({
         taxAmount,
         total,
         notes,
+        salesRepId,
         userId,
       ],
     );
@@ -347,13 +363,13 @@ async function createSalesOrder({
       }
     }
 
-    await client.query("COMMIT");
+    if (ownsClient) await client.query("COMMIT");
     return so;
   } catch (err) {
-    await client.query("ROLLBACK");
+    if (ownsClient) await client.query("ROLLBACK");
     throw err;
   } finally {
-    client.release();
+    if (ownsClient) client.release();
   }
 }
 
@@ -982,13 +998,17 @@ async function recordDeliveryProof({
   signatureUrl,
   lines,
 }) {
+  const hasProofLines = Array.isArray(lines) && lines.length > 0;
+  if (customerConfirmed && !hasProofLines) {
+    throw new Error("Customer confirmation requires quantities for every dispatched line");
+  }
   const summary = summarizeDeliveryProof({
     customer_confirmed: Boolean(customerConfirmed),
     route_code: routeCode,
     lines,
     proof_note: proofNote,
     signature_url: signatureUrl,
-    delivered_at: deliveredAt,
+    delivered_at: deliveredAt || (customerConfirmed ? new Date().toISOString() : null),
   });
 
   const client = await pool.connect();
@@ -1080,15 +1100,36 @@ async function recordDeliveryProof({
       );
     }
 
-    if (Array.isArray(lines) && lines.length > 0) {
+    if (hasProofLines) {
+      const sourceLines = await client.query(
+        `SELECT id, quantity FROM erp_delivery_note_lines
+         WHERE delivery_note_id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE`,
+        [deliveryId, companyId],
+      );
+      if (lines.length !== sourceLines.rowCount || sourceLines.rowCount === 0) {
+        throw new Error("Proof must include every dispatched delivery line");
+      }
+      const allowedLines = new Map(sourceLines.rows.map((line) => [line.id, Number(line.quantity)]));
+      const seenLines = new Set();
       for (const line of lines) {
         const lineId = line.delivery_line_id || line.id;
         if (!lineId) throw new Error("Each proof line needs a delivery_line_id");
+        if (!allowedLines.has(lineId) || seenLines.has(lineId)) throw new Error("Proof contains an invalid or duplicate delivery line");
+        seenLines.add(lineId);
 
         const deliveredQty = toDeliveryQuantity(line.delivered_quantity ?? line.quantity);
         const shortQty = toDeliveryQuantity(line.short_quantity);
         const damagedQty = toDeliveryQuantity(line.damaged_quantity);
         const acceptedQty = toDeliveryQuantity(line.customer_accepted_quantity ?? deliveredQty);
+        if ([deliveredQty, shortQty, damagedQty, acceptedQty].some((value) => value < 0)) {
+          throw new Error("Proof quantities cannot be negative");
+        }
+        if (Math.abs(deliveredQty + shortQty - allowedLines.get(lineId)) > 0.0001) {
+          throw new Error("Delivered and short quantities must account for the dispatched quantity");
+        }
+        if (damagedQty > deliveredQty || acceptedQty > deliveredQty - damagedQty) {
+          throw new Error("Damaged and accepted quantities cannot exceed the delivered quantity");
+        }
 
         await client.query(
           `UPDATE erp_delivery_note_lines
@@ -1098,10 +1139,11 @@ async function recordDeliveryProof({
                customer_accepted_quantity = $6,
                updated_at = NOW(),
                updated_by = $7
-           WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE`,
-          [lineId, companyId, deliveredQty, shortQty, damagedQty, acceptedQty, userId],
+           WHERE id = $1 AND company_id = $2 AND delivery_note_id = $8 AND is_deleted = FALSE`,
+          [lineId, companyId, deliveredQty, shortQty, damagedQty, acceptedQty, userId, deliveryId],
         );
       }
+      if (seenLines.size !== allowedLines.size) throw new Error("Proof must account for every delivery line");
     }
 
     const updated = await client.query(
@@ -1109,11 +1151,11 @@ async function recordDeliveryProof({
        SET route_code = COALESCE($3, route_code),
            driver_user_id = COALESCE($4, driver_user_id),
            vehicle_warehouse_id = COALESCE($5, vehicle_warehouse_id),
-           proof_status = $6,
+           proof_status = COALESCE($6, proof_status),
            proof_note = COALESCE($7, proof_note),
            signature_url = COALESCE($8, signature_url),
            delivered_at = COALESCE($9::timestamptz, delivered_at),
-           customer_confirmed = $10,
+           customer_confirmed = COALESCE($10, customer_confirmed),
            customer_confirmed_at = CASE WHEN $10 = TRUE AND customer_confirmed_at IS NULL THEN NOW() ELSE customer_confirmed_at END,
            delivered_quantity = COALESCE($11, delivered_quantity),
            discrepancy_quantity = COALESCE($12, discrepancy_quantity),
@@ -1128,20 +1170,56 @@ async function recordDeliveryProof({
         summary.route_code,
         effectiveDriverUserId,
         vehicleWarehouseId || null,
-        summary.proof_status,
+        hasProofLines ? summary.proof_status : null,
         summary.proof_note,
         summary.signature_url,
         deliveredAt || null,
-        summary.customer_confirmed,
-        summary.delivered_quantity,
-        summary.discrepancy_quantity,
-        summary.accepted_quantity,
+        hasProofLines ? summary.customer_confirmed : null,
+        hasProofLines ? summary.delivered_quantity : null,
+        hasProofLines ? summary.discrepancy_quantity : null,
+        hasProofLines ? summary.accepted_quantity : null,
         userId,
       ],
     );
 
+    await logAudit({
+      client,
+      companyId,
+      userId,
+      entityType: "erp_delivery_notes",
+      entityId: deliveryId,
+      action: hasProofLines ? "delivery_proof_recorded" : "delivery_assignment_updated",
+      oldValues: {
+        proof_status: delivery.proof_status,
+        customer_confirmed: delivery.customer_confirmed,
+        route_code: delivery.route_code,
+        driver_user_id: delivery.driver_user_id,
+        vehicle_warehouse_id: delivery.vehicle_warehouse_id,
+      },
+      newValues: {
+        proof_status: updated.rows[0].proof_status,
+        customer_confirmed: updated.rows[0].customer_confirmed,
+        route_code: updated.rows[0].route_code,
+        driver_user_id: updated.rows[0].driver_user_id,
+        vehicle_warehouse_id: updated.rows[0].vehicle_warehouse_id,
+        delivered_quantity: updated.rows[0].delivered_quantity,
+        discrepancy_quantity: updated.rows[0].discrepancy_quantity,
+        accepted_quantity: updated.rows[0].accepted_quantity,
+      },
+    });
+
     await client.query("COMMIT");
-    return { ok: true, delivery_id: deliveryId, ...summary, record: updated.rows[0] };
+    return {
+      ok: true,
+      delivery_id: deliveryId,
+      ...summary,
+      proof_status: updated.rows[0].proof_status,
+      customer_confirmed: updated.rows[0].customer_confirmed,
+      delivered_quantity: Number(updated.rows[0].delivered_quantity || 0),
+      discrepancy_quantity: Number(updated.rows[0].discrepancy_quantity || 0),
+      accepted_quantity: Number(updated.rows[0].accepted_quantity || 0),
+      record: updated.rows[0],
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -1194,6 +1272,149 @@ async function cancelSalesOrder({ companyId, userId, orderId }) {
   } finally { client.release(); }
 }
 
+async function createSalesPickList({ companyId, userId, salesOrderId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const orderResult = await client.query(
+      `SELECT id, warehouse_id, status FROM erp_sales_orders
+       WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE`,
+      [salesOrderId, companyId],
+    );
+    const order = orderResult.rows[0];
+    if (!order || !["confirmed", "partial"].includes(order.status)) {
+      throw new Error("Pick lists require a confirmed or partially delivered sales order");
+    }
+    const existing = await client.query(
+      `SELECT id FROM erp_sales_pick_lists
+       WHERE company_id = $1 AND sales_order_id = $2 AND is_deleted = FALSE
+         AND status IN ('open','picked') LIMIT 1 FOR UPDATE`,
+      [companyId, salesOrderId],
+    );
+    if (existing.rowCount) {
+      await client.query("COMMIT");
+      return await getSalesPickList({ companyId, pickListId: existing.rows[0].id });
+    }
+    const lines = await client.query(
+      `SELECT sol.id AS sales_order_line_id, sol.item_id,
+              LEAST(sol.quantity - sol.qty_delivered,
+                reservation.reserved_quantity - reservation.fulfilled_quantity - reservation.released_quantity) AS quantity_to_pick
+       FROM erp_sales_order_lines sol
+       JOIN erp_sales_order_reservations reservation
+         ON reservation.sales_order_line_id = sol.id AND reservation.company_id = sol.company_id
+       WHERE sol.company_id = $1 AND sol.sales_order_id = $2
+         AND sol.quantity > sol.qty_delivered AND reservation.status = 'active'
+       ORDER BY sol.line_no FOR UPDATE OF sol, reservation`,
+      [companyId, salesOrderId],
+    );
+    if (!lines.rowCount || lines.rows.some((line) => Number(line.quantity_to_pick) <= 0)) {
+      throw new Error("No reserved open order quantities are available to pick");
+    }
+    const pickNo = await nextNo(client, companyId, "erp_sales_pick_lists", "PICK");
+    const pickList = await client.query(
+      `INSERT INTO erp_sales_pick_lists (company_id, sales_order_id, warehouse_id, pick_no, created_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [companyId, salesOrderId, order.warehouse_id, pickNo, userId],
+    );
+    for (const line of lines.rows) {
+      await client.query(
+        `INSERT INTO erp_sales_pick_list_lines (
+           company_id, pick_list_id, sales_order_line_id, item_id, quantity_to_pick
+         ) VALUES ($1,$2,$3,$4,$5)`,
+        [companyId, pickList.rows[0].id, line.sales_order_line_id, line.item_id, line.quantity_to_pick],
+      );
+    }
+    await logAudit({
+      client,
+      companyId,
+      userId,
+      entityType: "erp_sales_pick_lists",
+      entityId: pickList.rows[0].id,
+      action: "sales_pick_list_created",
+      newValues: { sales_order_id: salesOrderId, pick_no: pickNo, line_count: lines.rowCount },
+    });
+    await client.query("COMMIT");
+    return getSalesPickList({ companyId, pickListId: pickList.rows[0].id });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
+async function getSalesPickList({ companyId, pickListId }) {
+  const [header, lines] = await Promise.all([
+    pool.query(
+      `SELECT pick.*, sales_order.order_no FROM erp_sales_pick_lists pick
+       JOIN erp_sales_orders sales_order ON sales_order.id = pick.sales_order_id AND sales_order.company_id = pick.company_id
+       WHERE pick.id = $1 AND pick.company_id = $2 AND pick.is_deleted = FALSE`,
+      [pickListId, companyId],
+    ),
+    pool.query(
+      `SELECT line.*, item.item_code, item.name AS item_name, sales_order_line.line_no
+       FROM erp_sales_pick_list_lines line
+       JOIN erp_items item ON item.id = line.item_id AND item.company_id = line.company_id
+       JOIN erp_sales_order_lines sales_order_line ON sales_order_line.id = line.sales_order_line_id
+       WHERE line.pick_list_id = $1 AND line.company_id = $2 ORDER BY sales_order_line.line_no`,
+      [pickListId, companyId],
+    ),
+  ]);
+  if (!header.rowCount) throw new Error("Pick list not found");
+  return { ...header.rows[0], lines: lines.rows };
+}
+
+async function recordSalesPicks({ companyId, userId, pickListId, lines }) {
+  if (!Array.isArray(lines) || !lines.length) throw new Error("Provide at least one picked line");
+  const seen = new Set();
+  for (const line of lines) {
+    const quantity = Number(line.quantity_picked);
+    if (!line.pick_list_line_id || !Number.isFinite(quantity) || quantity <= 0 || seen.has(line.pick_list_line_id)) {
+      throw new Error("Each picked line must be unique and have a positive picked quantity");
+    }
+    seen.add(line.pick_list_line_id);
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const pickList = await client.query(
+      `SELECT id, status FROM erp_sales_pick_lists
+       WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE`,
+      [pickListId, companyId],
+    );
+    if (!pickList.rowCount || pickList.rows[0].status !== "open") throw new Error("Open pick list not found");
+    for (const line of lines) {
+      const updated = await client.query(
+        `UPDATE erp_sales_pick_list_lines
+         SET quantity_picked = $3, updated_at = NOW()
+         WHERE id = $1 AND company_id = $2 AND pick_list_id = $4
+           AND quantity_to_pick >= $3 AND quantity_picked = 0
+         RETURNING id`,
+        [line.pick_list_line_id, companyId, Number(line.quantity_picked), pickListId],
+      );
+      if (!updated.rowCount) throw new Error("Picked quantity exceeds the pick requirement or the line is not open");
+    }
+    const remaining = await client.query(
+      `SELECT COUNT(*)::int AS count FROM erp_sales_pick_list_lines
+       WHERE company_id=$1 AND pick_list_id=$2 AND quantity_picked < quantity_to_pick`,
+      [companyId, pickListId],
+    );
+    if (Number(remaining.rows[0].count) > 0) {
+      throw new Error("Confirm the full required quantity for every pick-list line");
+    }
+    await client.query(
+      `UPDATE erp_sales_pick_lists SET status = 'picked', picked_at = NOW(), picked_by = $3, updated_at = NOW()
+       WHERE id = $1 AND company_id = $2`,
+      [pickListId, companyId, userId],
+    );
+    await logAudit({ client, companyId, userId, entityType: "erp_sales_pick_lists", entityId: pickListId,
+      action: "sales_pick_list_confirmed", newValues: { picked_line_count: lines.length } });
+    await client.query("COMMIT");
+    return getSalesPickList({ companyId, pickListId });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
 async function createAndPostDelivery({
   companyId,
   userId,
@@ -1201,6 +1422,7 @@ async function createAndPostDelivery({
   warehouseId,
   lines,
   deliveryDate,
+  pickListId = null,
 }) {
   const client = await pool.connect();
   try {
@@ -1215,6 +1437,15 @@ async function createAndPostDelivery({
       throw new Error("Only a confirmed or partially delivered sales order can be dispatched");
     }
     if (order.warehouse_id !== warehouseId) throw new Error("Delivery warehouse must match the warehouse reserved on the sales order");
+    if (pickListId) {
+      const pickList = await client.query(
+        `SELECT id FROM erp_sales_pick_lists
+         WHERE id = $1 AND company_id = $2 AND sales_order_id = $3 AND status = 'picked' AND is_deleted = FALSE
+         FOR UPDATE`,
+        [pickListId, companyId, salesOrderId],
+      );
+      if (!pickList.rowCount) throw new Error("A confirmed pick list for this sales order is required");
+    }
     if (!Array.isArray(lines) || !lines.length || lines.some((line) => !line.so_line_id || Number(line.quantity) <= 0)) {
       throw new Error("Delivery lines must reference sales order lines and have positive quantities");
     }
@@ -1237,12 +1468,23 @@ async function createAndPostDelivery({
       if (requested > Number(detail.open_quantity) || requested > Number(detail.reserved_quantity)) {
         throw new Error("Delivery quantity exceeds the open, reserved quantity on its sales order line");
       }
+      if (pickListId) {
+        const picked = await client.query(
+          `SELECT quantity_picked - quantity_delivered AS available
+           FROM erp_sales_pick_list_lines
+           WHERE company_id = $1 AND pick_list_id = $2 AND sales_order_line_id = $3 FOR UPDATE`,
+          [companyId, pickListId, soLineId],
+        );
+        if (!picked.rowCount || requested > Number(picked.rows[0].available)) {
+          throw new Error("Delivery quantity exceeds the unfulfilled picked quantity");
+        }
+      }
     }
     const deliveryNo = await nextNo(client, companyId, "erp_delivery_notes", "DN");
     const dnResult = await client.query(
-      `INSERT INTO erp_delivery_notes (company_id, sales_order_id, warehouse_id, delivery_no, delivery_date, status, created_by)
-       VALUES ($1,$2,$3,$4,COALESCE($5,CURRENT_DATE),'draft',$6) RETURNING *`,
-      [companyId, salesOrderId, warehouseId, deliveryNo, deliveryDate, userId],
+      `INSERT INTO erp_delivery_notes (company_id, sales_order_id, warehouse_id, pick_list_id, delivery_no, delivery_date, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,COALESCE($6,CURRENT_DATE),'draft',$7) RETURNING *`,
+      [companyId, salesOrderId, warehouseId, pickListId, deliveryNo, deliveryDate, userId],
     );
     const dn = dnResult.rows[0];
 
@@ -1265,6 +1507,25 @@ async function createAndPostDelivery({
       );
     }
     const posted = await postDeliveryNote({ companyId, userId, deliveryId: dn.id, client });
+    if (pickListId) {
+      for (const [soLineId, requested] of requestedByLine) {
+        await client.query(
+          `UPDATE erp_sales_pick_list_lines
+           SET quantity_delivered = quantity_delivered + $4, updated_at = NOW()
+           WHERE company_id = $1 AND pick_list_id = $2 AND sales_order_line_id = $3`,
+          [companyId, pickListId, soLineId, requested],
+        );
+      }
+      await client.query(
+        `UPDATE erp_sales_pick_lists pick SET status = 'fulfilled', updated_at = NOW()
+         WHERE pick.id = $1 AND pick.company_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM erp_sales_pick_list_lines line
+             WHERE line.pick_list_id = pick.id AND line.quantity_delivered < line.quantity_picked
+           )`,
+        [pickListId, companyId],
+      );
+    }
     await client.query("COMMIT");
     return posted;
   } catch (err) {
@@ -1337,10 +1598,32 @@ async function postCustomerInvoice({ companyId, userId, invoiceId, postGl = true
         [invoice.sales_order_id, companyId],
       );
     }
+    const issuerResult = await client.query(
+      `SELECT c.name, c.legal_name, c.tax_registration_no, c.base_currency_code,
+              branch.address_line1, branch.address_line2, branch.city, branch.country_code,
+              branch.phone, branch.email
+       FROM erp_companies c
+       LEFT JOIN LATERAL (
+         SELECT b.address_line1, b.address_line2, b.city, b.country_code, b.phone, b.email
+         FROM erp_branches b
+         WHERE b.company_id = c.id AND b.is_head_office = TRUE
+           AND b.is_active = TRUE AND b.is_deleted = FALSE
+         ORDER BY b.created_at, b.id LIMIT 1
+       ) branch ON TRUE
+       WHERE c.id = $1 AND c.is_active = TRUE AND c.is_deleted = FALSE`,
+      [companyId],
+    );
+    if (!issuerResult.rowCount) throw new Error("Invoice issuer company was not found");
+    const issuerSnapshot = {
+      version: 1,
+      ...buildInvoiceIssuerDetails(issuerResult.rows[0], issuerResult.rows[0]),
+    };
     await client.query(
-      `UPDATE erp_customer_invoices SET status = 'posted', posted_at = NOW(), journal_id = $2, updated_at = NOW()
+      `UPDATE erp_customer_invoices
+       SET status = 'posted', posted_at = NOW(), journal_id = $2,
+           issuer_snapshot = $4::jsonb, issuer_snapshot_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND company_id = $3`,
-      [invoiceId, journalId, companyId],
+      [invoiceId, journalId, companyId, JSON.stringify(issuerSnapshot)],
     );
     const etimsSubmission = await integration.enqueueEtimsInvoiceInTransaction(client, {
       companyId,
@@ -1404,7 +1687,7 @@ async function createCustomerInvoice({
     let order = null;
     if (salesOrderId) {
       const orderResult = await client.query(
-        `SELECT id, customer_id, status FROM erp_sales_orders
+        `SELECT id, customer_id, status, sales_rep_id FROM erp_sales_orders
          WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE`,
         [salesOrderId, companyId],
       );
@@ -1488,8 +1771,8 @@ async function createCustomerInvoice({
     const invResult = await client.query(
       `INSERT INTO erp_customer_invoices (
          company_id, customer_id, sales_order_id, delivery_note_id, invoice_no, invoice_date, due_date,
-         status, subtotal, discount_amount, tax_amount, total_amount, created_by
-       ) VALUES ($1,$2,$3,$4,$5,COALESCE($6,CURRENT_DATE),$7,'draft',$8,$9,$10,$11,$12) RETURNING *`,
+         status, subtotal, discount_amount, tax_amount, total_amount, created_by, sales_rep_id
+       ) VALUES ($1,$2,$3,$4,$5,COALESCE($6,CURRENT_DATE),$7,'draft',$8,$9,$10,$11,$12,$13) RETURNING *`,
       [
         companyId,
         customerId,
@@ -1503,6 +1786,7 @@ async function createCustomerInvoice({
         taxAmount,
         total,
         userId,
+        order?.sales_rep_id || userId,
       ],
     );
     const inv = invResult.rows[0];
@@ -1685,6 +1969,7 @@ async function recordCustomerPayment(options) {
 module.exports = {
   checkAtp,
   previewSaleTax,
+  previewCustomerSalePrice,
   checkCreditLimit,
   createSalesOrder,
   confirmSalesOrder,
@@ -1698,6 +1983,9 @@ module.exports = {
   listRouteClosures,
   reviewRouteClosure,
   recordDeliveryProof,
+  createSalesPickList,
+  getSalesPickList,
+  recordSalesPicks,
   cancelSalesOrder,
   postDeliveryNote,
   createAndPostDelivery,

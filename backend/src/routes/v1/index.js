@@ -19,6 +19,7 @@ const platformRoutes = require("./platform");
 const intelligenceRoutes = require("./intelligence");
 const assetsRoutes = require("./assets");
 const taxRoutes = require("./tax");
+const expensesRoutes = require("./expenses");
 
 const router = express.Router();
 
@@ -42,5 +43,6 @@ router.use("/platform", platformRoutes);
 router.use("/intelligence", intelligenceRoutes);
 router.use("/assets", assetsRoutes);
 router.use("/tax", taxRoutes);
+router.use("/expenses", expensesRoutes);
 
 module.exports = router;

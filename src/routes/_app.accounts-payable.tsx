@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertCircle, ArrowUpRight, FilePlus2, RefreshCw, WalletCards } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,6 +25,9 @@ import {
 } from "@/lib/api-types";
 import { v1Api } from "@/lib/api-v1";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useAction, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 
 export const Route = createFileRoute("/_app/accounts-payable")({
   component: AccountsPayablePage,
@@ -38,24 +41,113 @@ type BillLine = {
   tax_rate: number;
   account_id: string;
   goods_receipt_line_id?: string;
+  withholding_category_id?: string;
 };
 
 function AccountsPayablePage() {
   const { token } = useAuth();
-  const [bills, setBills] = useState<SupplierBill[]>([]);
-  const [payments, setPayments] = useState<Array<Record<string, unknown>>>([]);
-  const [suppliers, setSuppliers] = useState<BackendSupplier[]>([]);
-  const [receipts, setReceipts] = useState<BackendGoodsReceipt[]>([]);
+  const withholdingCategoriesQuery = useList(
+    queryKeys.tax.withholdingCategories(),
+    ({ signal }) => v1Api.tax.withholdingCategories(token!, signal),
+    { enabled: Boolean(token) },
+  );
+  const withholdingCategories = (withholdingCategoriesQuery.data ?? []).filter(
+    (category) => category.status === "approved",
+  );
+  const saveBillAction = useAction({
+    mutationFn: (body: Record<string, unknown>) =>
+      v1Api.procurement.createSupplierBill(token!, body),
+    invalidate: [queryKeys.payables.snapshot()],
+  });
+  const postBillAction = useAction({
+    mutationFn: (billId: string) => v1Api.procurement.postSupplierBill(token!, billId),
+    invalidate: [queryKeys.payables.snapshot(), queryKeys.accounting.snapshot()],
+  });
+  const savePaymentAction = useAction({
+    mutationFn: (body: Record<string, unknown>) =>
+      v1Api.procurement.createSupplierPayment(token!, body),
+    invalidate: [queryKeys.payables.snapshot()],
+  });
+  const postPaymentAction = useAction({
+    mutationFn: (paymentId: string) => v1Api.procurement.postSupplierPayment(token!, paymentId),
+    invalidate: [queryKeys.payables.snapshot(), queryKeys.accounting.snapshot()],
+  });
+  const payablesQuery = useList(
+    queryKeys.payables.snapshot(),
+    async ({ signal }) => {
+      const [billRows, supplierRows, accountRows, paymentRows, receiptRows] = await Promise.all([
+        v1Api.procurement.supplierBills(token!, signal),
+        v1Api.master.vendors(token!, signal),
+        v1Api.master.chartOfAccounts(token!, signal),
+        v1Api.procurement.supplierPayments(token!, signal),
+        v1Api.procurement.goodsReceipts(token!, signal),
+      ]);
+      return {
+        bills: billRows as SupplierBill[],
+        payments: paymentRows,
+        suppliers: supplierRows.map((row): BackendSupplier => ({
+          id: row.id,
+          name: row.name,
+          kra_pin: row.tax_id || "",
+          contact: row.contact_name,
+          email: row.email,
+          phone: row.phone,
+          payment_terms: null,
+          credit_limit: Number(row.credit_limit || 0),
+          balance: 0,
+          tax_residency: row.tax_residency,
+        })),
+        receipts: receiptRows.map((row): BackendGoodsReceipt => ({
+          id: String(row.id),
+          grn_number: String(row.grn_number || row.id),
+          po_number: row.po_number ? String(row.po_number) : "",
+          receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : "",
+          status: String(row.status || ""),
+          notes: row.notes ? String(row.notes) : null,
+          vendor_id: row.vendor_id ? String(row.vendor_id) : "",
+          vendor_name: row.vendor_name ? String(row.vendor_name) : "",
+          purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : "",
+        })),
+        accounts: accountRows.filter(
+          (account) =>
+            account.is_postable && ["expense", "asset"].includes(String(account.account_type)),
+        ),
+      };
+    },
+    { enabled: Boolean(token) },
+  );
+  const bills = payablesQuery.data?.bills ?? EMPTY_ARRAY;
+  const [billSearch, setBillSearch] = useUrlSearchParam("billSearch", "");
+  const [billStatus, setBillStatus] = useUrlSearchParam("billStatus", "all");
+  const payments = payablesQuery.data?.payments ?? [];
+  const suppliers = payablesQuery.data?.suppliers ?? [];
+  const receipts = payablesQuery.data?.receipts ?? [];
   const [receiptDetail, setReceiptDetail] = useState<BackendGoodsReceiptDetail | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
-  const [accounts, setAccounts] = useState<Array<Record<string, unknown>>>([]);
-  const [loading, setLoading] = useState(true);
+  const accounts = payablesQuery.data?.accounts ?? [];
+  const loading = payablesQuery.isPending || payablesQuery.isFetching;
+  const visibleBills = bills.filter((bill) => {
+    const query = billSearch.trim().toLocaleLowerCase();
+    const matchesSearch =
+      !query ||
+      [bill.bill_no, bill.supplier_invoice_no, bill.vendor_name].some((value) =>
+        String(value ?? "")
+          .toLocaleLowerCase()
+          .includes(query),
+      );
+    return matchesSearch && (billStatus === "all" || bill.status === billStatus);
+  });
   const [saving, setSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [showPaymentForm, setShowPaymentForm] = useState(false);
   const [vendorId, setVendorId] = useState("");
   const [billReceiptId, setBillReceiptId] = useState("");
   const [paymentVendorId, setPaymentVendorId] = useState("");
+  const [supplierResidency, setSupplierResidency] = useState<"resident" | "non_resident">(
+    "resident",
+  );
+  const [residencyEvidence, setResidencyEvidence] = useState("");
+  const [residencySaving, setResidencySaving] = useState(false);
   const [bankAccountId, setBankAccountId] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
@@ -67,57 +159,27 @@ function AccountsPayablePage() {
     { description: "", quantity: 1, unit_price: 0, tax_rate: 0, account_id: "" },
   ]);
 
-  const load = useCallback(async () => {
-    if (!token) return;
-    setLoading(true);
-    try {
-      const [billRows, supplierRows, accountRows, paymentRows, receiptRows] = await Promise.all([
-        v1Api.procurement.supplierBills(token),
-        v1Api.master.vendors(token),
-        v1Api.master.chartOfAccounts(token),
-        v1Api.procurement.supplierPayments(token),
-        v1Api.procurement.goodsReceipts(token),
-      ]);
-      setBills(billRows as SupplierBill[]);
-      setPayments(paymentRows);
-      setSuppliers(supplierRows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        kra_pin: row.tax_id || "",
-        contact: row.contact_name,
-        email: row.email,
-        phone: row.phone,
-        payment_terms: null,
-        credit_limit: Number(row.credit_limit || 0),
-        balance: 0,
-      })));
-      setReceipts(receiptRows.map((row) => ({
-        id: String(row.id),
-        grn_number: String(row.grn_number || row.id),
-        po_number: row.po_number ? String(row.po_number) : "",
-        receipt_date: row.received_date ? String(row.received_date).slice(0, 10) : "",
-        status: String(row.status || ""),
-        notes: row.notes ? String(row.notes) : null,
-        vendor_id: row.vendor_id ? String(row.vendor_id) : "",
-        vendor_name: row.vendor_name ? String(row.vendor_name) : "",
-        purchase_order_id: row.purchase_order_id ? String(row.purchase_order_id) : "",
-      })) as BackendGoodsReceipt[]);
-      setAccounts(
-        accountRows.filter(
-          (account) =>
-            account.is_postable && ["expense", "asset"].includes(String(account.account_type)),
-        ),
-      );
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to load supplier payables");
-    } finally {
-      setLoading(false);
-    }
-  }, [token]);
+  const load = async () => {
+    await payablesQuery.refetch();
+  };
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const saveSupplierResidency = async () => {
+    if (!token || !paymentVendorId || !residencyEvidence.trim()) return;
+    setResidencySaving(true);
+    try {
+      await v1Api.tax.updateVendorResidency(token, paymentVendorId, {
+        tax_residency: supplierResidency,
+        evidence_reference: residencyEvidence.trim(),
+      });
+      toast.success("Supplier tax residency recorded with evidence");
+      setResidencyEvidence("");
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save supplier residency");
+    } finally {
+      setResidencySaving(false);
+    }
+  };
 
   const totals = useMemo(
     () =>
@@ -160,21 +222,28 @@ function AccountsPayablePage() {
     }
     setReceiptLoading(true);
     try {
-      const detail = await v1Api.procurement.goodsReceipt(token, receiptId) as unknown as BackendGoodsReceiptDetail;
+      const detail = (await v1Api.procurement.goodsReceipt(
+        token,
+        receiptId,
+      )) as unknown as BackendGoodsReceiptDetail;
       const inventoryAccount = accounts.find((account) => String(account.account_code) === "1300");
-      const fallbackAccount = inventoryAccount || accounts.find((account) => account.account_type === "asset");
-      if (!fallbackAccount) throw new Error("Add an active inventory asset account before matching a stock bill");
+      const fallbackAccount =
+        inventoryAccount || accounts.find((account) => account.account_type === "asset");
+      if (!fallbackAccount)
+        throw new Error("Add an active inventory asset account before matching a stock bill");
       const openLines = detail.lines.filter((line) => Number(line.unbilled_quantity) > 0.00005);
       setReceiptDetail(detail);
       setVendorId(detail.vendor_id);
-      setLines(openLines.map((line) => ({
-        description: `${line.item_code} · ${line.item_name}`,
-        quantity: Number(line.unbilled_quantity),
-        unit_price: Number(line.unit_price),
-        tax_rate: 0,
-        account_id: String(fallbackAccount.id),
-        goods_receipt_line_id: line.goods_receipt_line_id,
-      })));
+      setLines(
+        openLines.map((line) => ({
+          description: `${line.item_code} · ${line.item_name}`,
+          quantity: Number(line.unbilled_quantity),
+          unit_price: Number(line.unit_price),
+          tax_rate: 0,
+          account_id: String(fallbackAccount.id),
+          goods_receipt_line_id: line.goods_receipt_line_id,
+        })),
+      );
       if (!openLines.length) toast.info("Every line on this receipt has already been billed");
     } catch (error) {
       setBillReceiptId("");
@@ -190,15 +259,17 @@ function AccountsPayablePage() {
     if (!token) return;
     setSaving(true);
     try {
-      await v1Api.procurement.createSupplierBill(token, {
+      await saveBillAction.mutateAsync({
         vendor_id: vendorId,
         supplier_invoice_no: supplierInvoiceNo,
         bill_date: billDate,
         due_date: dueDate,
-        ...(receiptDetail ? {
-          purchase_order_id: receiptDetail.purchase_order_id,
-          goods_receipt_id: receiptDetail.id,
-        } : {}),
+        ...(receiptDetail
+          ? {
+              purchase_order_id: receiptDetail.purchase_order_id,
+              goods_receipt_id: receiptDetail.id,
+            }
+          : {}),
         lines,
       });
       toast.success("Supplier bill saved as draft");
@@ -218,7 +289,7 @@ function AccountsPayablePage() {
   const postBill = async (bill: SupplierBill) => {
     if (!token) return;
     try {
-      await v1Api.procurement.postSupplierBill(token, bill.id);
+      await postBillAction.mutateAsync(bill.id);
       toast.success(`Bill ${bill.bill_no} posted to the General Ledger`);
       await load();
     } catch (error) {
@@ -242,7 +313,7 @@ function AccountsPayablePage() {
     if (!token) return;
     setSaving(true);
     try {
-      const draft = await v1Api.procurement.createSupplierPayment(token, {
+      const draft = await savePaymentAction.mutateAsync({
         vendor_id: paymentVendorId,
         bank_account_id: bankAccountId,
         payment_date: paymentDate,
@@ -267,7 +338,7 @@ function AccountsPayablePage() {
   const postPayment = async (payment: Record<string, unknown>) => {
     if (!token) return;
     try {
-      await v1Api.procurement.postSupplierPayment(token, String(payment.id));
+      await postPaymentAction.mutateAsync(String(payment.id));
       toast.success(`Payment ${String(payment.payment_no)} posted to the General Ledger`);
       await load();
     } catch (error) {
@@ -297,6 +368,15 @@ function AccountsPayablePage() {
           </>
         }
       />
+
+      {payablesQuery.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {payablesQuery.error.message}{" "}
+          <Button variant="ghost" size="sm" onClick={() => void load()}>
+            Retry
+          </Button>
+        </p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         {[
@@ -354,6 +434,41 @@ function AccountsPayablePage() {
                     ))}
                   </select>
                 </div>
+                {paymentVendorId && (
+                  <div className="space-y-2 sm:col-span-2 lg:col-span-4">
+                    <Label>Supplier tax residency</Label>
+                    <div className="grid gap-2 sm:grid-cols-[1fr_2fr_auto]">
+                      <select
+                        className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                        value={supplierResidency}
+                        onChange={(event) =>
+                          setSupplierResidency(event.target.value as "resident" | "non_resident")
+                        }
+                      >
+                        <option value="resident">Resident</option>
+                        <option value="non_resident">Non-resident</option>
+                      </select>
+                      <Input
+                        value={residencyEvidence}
+                        onChange={(event) => setResidencyEvidence(event.target.value)}
+                        placeholder="Evidence reference (KRA PIN / residency document)"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={residencySaving || !residencyEvidence.trim()}
+                        onClick={() => void saveSupplierResidency()}
+                      >
+                        {residencySaving ? "Saving…" : "Record residency"}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Current record:{" "}
+                      {suppliers.find((supplier) => String(supplier.id) === paymentVendorId)
+                        ?.tax_residency || "not recorded"}
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label>Pay from</Label>
                   <select
@@ -496,14 +611,20 @@ function AccountsPayablePage() {
                     disabled={receiptLoading || !vendorId}
                   >
                     <option value="">General expense or service bill</option>
-                    {receipts.filter((receipt) => receipt.status === "posted" && receipt.vendor_id === vendorId).map((receipt) => (
-                      <option key={receipt.id} value={receipt.id}>
-                        {receipt.grn_number} · PO {receipt.po_number} · {receipt.receipt_date}
-                      </option>
-                    ))}
+                    {receipts
+                      .filter(
+                        (receipt) => receipt.status === "posted" && receipt.vendor_id === vendorId,
+                      )
+                      .map((receipt) => (
+                        <option key={receipt.id} value={receipt.id}>
+                          {receipt.grn_number} · PO {receipt.po_number} · {receipt.receipt_date}
+                        </option>
+                      ))}
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    Select the posted GRN for stock purchases. Received quantities and approved prices are loaded for matching; enter the VAT rate shown on the supplier invoice for accountant review.
+                    Select the posted GRN for stock purchases. Received quantities and approved
+                    prices are loaded for matching; enter the VAT rate shown on the supplier invoice
+                    for accountant review.
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -541,7 +662,9 @@ function AccountsPayablePage() {
                     className="grid gap-3 rounded-xl border border-border/70 p-3 sm:grid-cols-2 lg:grid-cols-6"
                   >
                     <div className="space-y-1 lg:col-span-2">
-                      <Label>Description{line.goods_receipt_line_id ? " · received item" : ""}</Label>
+                      <Label>
+                        Description{line.goods_receipt_line_id ? " · received item" : ""}
+                      </Label>
                       <Input
                         required
                         value={line.description}
@@ -554,7 +677,14 @@ function AccountsPayablePage() {
                       <Input
                         required
                         min="0.0001"
-                        max={line.goods_receipt_line_id ? receiptDetail?.lines.find((source) => source.goods_receipt_line_id === line.goods_receipt_line_id)?.unbilled_quantity : undefined}
+                        max={
+                          line.goods_receipt_line_id
+                            ? receiptDetail?.lines.find(
+                                (source) =>
+                                  source.goods_receipt_line_id === line.goods_receipt_line_id,
+                              )?.unbilled_quantity
+                            : undefined
+                        }
                         type="number"
                         step="any"
                         value={line.quantity}
@@ -584,27 +714,53 @@ function AccountsPayablePage() {
                         onChange={(e) => setLine(index, { tax_rate: Number(e.target.value) })}
                       />
                     </div>
-                    {!line.goods_receipt_line_id && <div className="space-y-1">
-                      <Label>Expense or asset</Label>
+                    <div className="space-y-1">
+                      <Label>Withholding</Label>
                       <select
-                        required
                         className="h-10 w-full rounded-md border border-input bg-background px-2 text-xs"
-                        value={line.account_id}
-                        onChange={(e) => setLine(index, { account_id: e.target.value })}
+                        value={line.withholding_category_id || ""}
+                        onChange={(event) =>
+                          setLine(index, {
+                            withholding_category_id: event.target.value || undefined,
+                          })
+                        }
                       >
-                        <option value="">Choose account</option>
-                        {accounts.map((account) => (
-                          <option key={String(account.id)} value={String(account.id)}>
-                            {String(account.account_code)} · {String(account.account_name)}
+                        <option value="">No withholding</option>
+                        {withholdingCategories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.code} · {category.rate}% · {category.residency}
                           </option>
                         ))}
                       </select>
-                    </div>}
+                    </div>
+                    {!line.goods_receipt_line_id && (
+                      <div className="space-y-1">
+                        <Label>Expense or asset</Label>
+                        <select
+                          required
+                          className="h-10 w-full rounded-md border border-input bg-background px-2 text-xs"
+                          value={line.account_id}
+                          onChange={(e) => setLine(index, { account_id: e.target.value })}
+                        >
+                          <option value="">Choose account</option>
+                          {accounts.map((account) => (
+                            <option key={String(account.id)} value={String(account.id)}>
+                              {String(account.account_code)} · {String(account.account_name)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <Button type="button" variant="outline" onClick={addLine} disabled={Boolean(receiptDetail) || receiptLoading}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addLine}
+                  disabled={Boolean(receiptDetail) || receiptLoading}
+                >
                   Add bill line
                 </Button>
                 <div className="text-right text-sm">
@@ -619,7 +775,14 @@ function AccountsPayablePage() {
                     )}
                   </span>
                 </div>
-                <Button type="submit" disabled={saving || receiptLoading || (Boolean(billReceiptId) && (!receiptDetail || !lines.length))}>
+                <Button
+                  type="submit"
+                  disabled={
+                    saving ||
+                    receiptLoading ||
+                    (Boolean(billReceiptId) && (!receiptDetail || !lines.length))
+                  }
+                >
                   {saving ? "Saving…" : "Save draft bill"}
                 </Button>
               </div>
@@ -636,6 +799,29 @@ function AccountsPayablePage() {
               Overdue supplier balances need follow-up.
             </div>
           )}
+          <div className="flex flex-col gap-3 border-b border-border/70 p-4 sm:flex-row">
+            <Input
+              aria-label="Search supplier bills"
+              placeholder="Search bill, supplier invoice or supplier"
+              value={billSearch}
+              onChange={(event) => setBillSearch(event.target.value)}
+              className="sm:max-w-sm"
+            />
+            <select
+              aria-label="Filter supplier bills by status"
+              value={billStatus}
+              onChange={(event) => setBillStatus(event.target.value)}
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="all">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="posted">Posted</option>
+              <option value="partial">Partial</option>
+              <option value="overdue">Overdue</option>
+              <option value="paid">Paid</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -651,7 +837,7 @@ function AccountsPayablePage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {bills.map((bill) => (
+                {visibleBills.map((bill) => (
                   <TableRow key={bill.id}>
                     <TableCell>
                       <div className="font-medium">{bill.bill_no}</div>
@@ -660,7 +846,8 @@ function AccountsPayablePage() {
                       </div>
                       {bill.grn_number && (
                         <div className="text-xs text-muted-foreground">
-                          Matched to {bill.grn_number}{bill.po_number ? ` · PO ${bill.po_number}` : ""}
+                          Matched to {bill.grn_number}
+                          {bill.po_number ? ` · PO ${bill.po_number}` : ""}
                         </div>
                       )}
                     </TableCell>
@@ -696,10 +883,12 @@ function AccountsPayablePage() {
                     </TableCell>
                   </TableRow>
                 ))}
-                {!loading && bills.length === 0 && (
+                {!loading && visibleBills.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
-                      No supplier bills recorded. Create a bill to start tracking payables.
+                      {bills.length === 0
+                        ? "No supplier bills recorded. Create a bill to start tracking payables."
+                        : "No supplier bills match these filters."}
                     </TableCell>
                   </TableRow>
                 )}

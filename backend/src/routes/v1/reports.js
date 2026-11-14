@@ -4,6 +4,7 @@ const { authenticateErp, requirePermission } = require("../../middleware/erpAuth
 const reporting = require("../../services/reportingService");
 const inventory = require("../../services/inventoryService");
 const scheduledReports = require("../../services/scheduledReportService");
+const salesPerformance = require("../../services/salesPerformanceService");
 const fs = require("fs");
 
 const router = express.Router();
@@ -58,6 +59,20 @@ router.get("/dashboards/:code", requirePermission("reports.view"), async (req, r
 router.get("/kpis", requirePermission("reports.view"), async (req, res) => {
   const kpis = await reporting.computeKpis(req.user.company_id);
   return res.json(kpis);
+});
+
+router.get("/sales-performance", requirePermission("reports.view"), async (req, res) => {
+  try {
+    const rows = await salesPerformance.getSalesPerformance({
+      companyId: req.user.company_id,
+      periodStart: req.query.period_start,
+      periodEnd: req.query.period_end,
+      salesRepId: req.query.sales_rep_id || null,
+    });
+    return res.json({ period_start: req.query.period_start, period_end: req.query.period_end, rows });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 });
 
 router.get("/dashboard/summary", requirePermission("reports.view"), async (req, res) => {

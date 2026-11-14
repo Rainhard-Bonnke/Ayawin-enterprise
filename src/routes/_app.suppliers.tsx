@@ -21,6 +21,17 @@ const load = async (token: string, signal?: AbortSignal): Promise<RegisterRow[]>
   }));
 
 export const Route = createFileRoute("/_app/suppliers")({
-  component: () => <ResourceRegisterPage title="Suppliers" description="Supplier contacts, payment terms, and balances." columns={columns} load={load} queryKey={queryKeys.suppliers.list()} actionLabel="Create purchase order" actionTo="/procurement" countLabel="Suppliers" />,
+  component: () => (
+    <ResourceRegisterPage
+      title="Suppliers"
+      description="Supplier contacts, payment terms, and balances."
+      columns={columns}
+      load={load}
+      queryKey={queryKeys.suppliers.list()}
+      actionLabel="Create purchase order"
+      actionTo="/procurement"
+      countLabel="Suppliers"
+    />
+  ),
   head: () => ({ meta: [{ title: "Suppliers - Ayawin Stock Solution" }] }),
 });

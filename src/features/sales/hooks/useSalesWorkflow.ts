@@ -1,11 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { v1Api } from "@/lib/api-v1";
-import type {
-  BackendSalesOrder,
-  SalesAnalytics,
-  SalesOrderDetail,
-} from "@/lib/api-types";
+import type { BackendSalesOrder, SalesAnalytics, SalesOrderDetail } from "@/lib/api-types";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAction } from "@/lib/queryHooks";
 
 type SalesOrderInput = {
   customer_id: string;
@@ -16,7 +12,10 @@ type SalesOrderInput = {
   lines: Array<{ item_id: string; quantity: number; unit_price: number }>;
 };
 
-function normalizeOrder(row: Record<string, unknown>, lineCount: number): BackendSalesOrder & { internal_id: string } {
+function normalizeOrder(
+  row: Record<string, unknown>,
+  lineCount: number,
+): BackendSalesOrder & { internal_id: string } {
   const rawStatus = String(row.status || "draft").toLowerCase();
   const status: BackendSalesOrder["status"] =
     rawStatus === "confirmed"
@@ -40,10 +39,12 @@ function normalizeOrder(row: Record<string, unknown>, lineCount: number): Backen
   };
 }
 
-async function dispatchOrder(token: string, internalId: string) {
+async function dispatchOrder(token: string, internalId: string, pickListId: string) {
+  if (!pickListId) throw new Error("Confirm a pick list before dispatch.");
   const order = await v1Api.sales.orderDetail(token, internalId);
   const warehouseId = String(order.warehouse_id || "");
-  if (!warehouseId) throw new Error("This order has no warehouse. Set its warehouse before dispatch.");
+  if (!warehouseId)
+    throw new Error("This order has no warehouse. Set its warehouse before dispatch.");
   const lines = (order.lines || [])
     .map((line) => ({
       so_line_id: String(line.id || ""),
@@ -56,6 +57,7 @@ async function dispatchOrder(token: string, internalId: string) {
     sales_order_id: internalId,
     warehouse_id: warehouseId,
     delivery_date: new Date().toISOString().slice(0, 10),
+    pick_list_id: pickListId,
     lines,
   });
 }
@@ -93,51 +95,87 @@ function saveReceipt(invoiceNo: string, blob: Blob) {
 }
 
 export function useSalesWorkflow() {
-  const queryClient = useQueryClient();
-  const invalidateSales = () => {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.sales.orders() });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.list() });
-  };
-  const createOrderMutation = useMutation({
+  const invalidateSales = [queryKeys.sales.orderLists(), queryKeys.invoices.lists()];
+  const createOrderMutation = useAction({
     mutationFn: ({ token, payload }: { token: string; payload: SalesOrderInput }) =>
-      v1Api.sales.createOrder(token, payload).then((row) => normalizeOrder(row, payload.lines.length)),
-    onSuccess: invalidateSales,
+      v1Api.sales
+        .createOrder(token, payload)
+        .then((row) => normalizeOrder(row, payload.lines.length)),
+    invalidate: invalidateSales,
   });
-  const confirmOrderMutation = useMutation({
-    mutationFn: ({ token, id }: { token: string; id: string }) => v1Api.sales.confirmOrder(token, id),
-    onSuccess: invalidateSales,
+  const confirmOrderMutation = useAction({
+    mutationFn: ({ token, id }: { token: string; id: string }) =>
+      v1Api.sales.confirmOrder(token, id),
+    invalidate: invalidateSales,
   });
-  const cancelOrderMutation = useMutation({
-    mutationFn: ({ token, id }: { token: string; id: string }) => v1Api.sales.cancelOrder(token, id),
-    onSuccess: invalidateSales,
+  const cancelOrderMutation = useAction({
+    mutationFn: ({ token, id }: { token: string; id: string }) =>
+      v1Api.sales.cancelOrder(token, id),
+    invalidate: invalidateSales,
   });
-  const dispatchOrderMutation = useMutation({
-    mutationFn: ({ token, id }: { token: string; id: string }) => dispatchOrder(token, id),
-    onSuccess: invalidateSales,
+  const dispatchOrderMutation = useAction({
+    mutationFn: ({ token, id, pickListId }: { token: string; id: string; pickListId: string }) =>
+      dispatchOrder(token, id, pickListId),
+    invalidate: invalidateSales,
   });
-  const invoiceOrderMutation = useMutation({
+  const createPickListMutation = useAction({
+    mutationFn: ({ token, id }: { token: string; id: string }) =>
+      v1Api.sales.createPickList(token, id),
+    invalidate: invalidateSales,
+  });
+  const confirmPickListMutation = useAction({
+    mutationFn: ({
+      token,
+      id,
+      lines,
+    }: {
+      token: string;
+      id: string;
+      lines: Array<{ pick_list_line_id: string; quantity_picked: number }>;
+    }) => v1Api.sales.confirmPickList(token, id, lines),
+    invalidate: invalidateSales,
+  });
+  const invoiceOrderMutation = useAction({
     mutationFn: ({ token, id }: { token: string; id: string }) => invoiceDeliveredOrder(token, id),
-    onSuccess: invalidateSales,
+    invalidate: invalidateSales,
   });
-  const payInvoiceMutation = useMutation({
-    mutationFn: ({ token, id, payload }: {
+  const payInvoiceMutation = useAction({
+    mutationFn: ({
+      token,
+      id,
+      payload,
+    }: {
       token: string;
       id: string;
       payload: { amount: number; payment_date?: string; reference_no?: string; notes?: string };
     }) => v1Api.sales.payInvoice(token, id, payload),
-    onSuccess: invalidateSales,
+    invalidate: [...invalidateSales, ["receivables"]],
   });
 
   return {
     createSalesOrder: (token: string, payload: SalesOrderInput) =>
       createOrderMutation.mutateAsync({ token, payload }),
-    confirmSalesOrder: (token: string, id: string) => confirmOrderMutation.mutateAsync({ token, id }),
+    confirmSalesOrder: (token: string, id: string) =>
+      confirmOrderMutation.mutateAsync({ token, id }),
     cancelSalesOrder: (token: string, id: string) => cancelOrderMutation.mutateAsync({ token, id }),
-    dispatchSalesOrder: (token: string, id: string) => dispatchOrderMutation.mutateAsync({ token, id }),
-    createInvoiceFromSalesOrder: (token: string, id: string) => invoiceOrderMutation.mutateAsync({ token, id }),
-    paySalesInvoice: (token: string, id: string, payload: { amount: number; payment_date?: string; reference_no?: string; notes?: string }) =>
-      payInvoiceMutation.mutateAsync({ token, id, payload }),
-    fetchSalesAnalytics: async (token: string) => v1Api.sales.analytics(token) as Promise<SalesAnalytics>,
+    createSalesPickList: (token: string, id: string) =>
+      createPickListMutation.mutateAsync({ token, id }),
+    confirmSalesPickList: (
+      token: string,
+      id: string,
+      lines: Array<{ pick_list_line_id: string; quantity_picked: number }>,
+    ) => confirmPickListMutation.mutateAsync({ token, id, lines }),
+    dispatchSalesOrder: (token: string, id: string, pickListId: string) =>
+      dispatchOrderMutation.mutateAsync({ token, id, pickListId }),
+    createInvoiceFromSalesOrder: (token: string, id: string) =>
+      invoiceOrderMutation.mutateAsync({ token, id }),
+    paySalesInvoice: (
+      token: string,
+      id: string,
+      payload: { amount: number; payment_date?: string; reference_no?: string; notes?: string },
+    ) => payInvoiceMutation.mutateAsync({ token, id, payload }),
+    fetchSalesAnalytics: async (token: string) =>
+      v1Api.sales.analytics(token) as Promise<SalesAnalytics>,
     fetchSalesOrderDetail: async (token: string, id: string) =>
       v1Api.sales.orderDetail(token, id) as Promise<SalesOrderDetail>,
     downloadReceiptPdf: async (token: string, invoiceNo: string) =>

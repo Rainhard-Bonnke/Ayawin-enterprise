@@ -7,20 +7,22 @@ const salesLineSchema = z.object({
   unit_price: z.number().finite().min(0, "Unit price cannot be negative."),
 });
 
-export const invoiceSchema = z.object({
-  customer_id: z.string().min(1, "Select a customer."),
-  invoice_date: isoDate,
-  due_date: isoDate,
-  lines: z.array(salesLineSchema).min(1, "Add at least one invoice line."),
-}).superRefine((invoice, context) => {
-  if (invoice.due_date < invoice.invoice_date) {
-    context.addIssue({
-      code: "custom",
-      path: ["due_date"],
-      message: "The due date cannot be before the invoice date.",
-    });
-  }
-});
+export const invoiceSchema = z
+  .object({
+    customer_id: z.string().min(1, "Select a customer."),
+    invoice_date: isoDate,
+    due_date: isoDate,
+    lines: z.array(salesLineSchema).min(1, "Add at least one invoice line."),
+  })
+  .superRefine((invoice, context) => {
+    if (invoice.due_date < invoice.invoice_date) {
+      context.addIssue({
+        code: "custom",
+        path: ["due_date"],
+        message: "The due date cannot be before the invoice date.",
+      });
+    }
+  });
 
 const salesOrderBaseSchema = z.object({
   customer_id: z.string().min(1, "Select a customer."),

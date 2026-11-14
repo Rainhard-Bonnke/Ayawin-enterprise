@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Check, ClipboardCheck, RefreshCw, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -19,6 +19,8 @@ import {
 import { useAuth } from "@/lib/auth";
 import { v1Api, type RouteClosureRecord } from "@/lib/api-v1";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { useAction, useList } from "@/lib/queryHooks";
 
 export const Route = createFileRoute("/_app/route-closures")({
   component: RouteClosuresPage,
@@ -42,41 +44,49 @@ function RouteClosuresPage() {
   const canReview =
     isAdmin || permissions.includes("fleet.approve") || permissions.includes("sales.approve");
   const canChooseDriver = !isDriver && (isAdmin || permissions.includes("fleet.load"));
-  const [closures, setClosures] = useState<RouteClosureRecord[]>([]);
-  const [drivers, setDrivers] = useState<DriverOption[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [routeCode, setRouteCode] = useState("");
   const [routeDate, setRouteDate] = useState(today());
-  const [driverId, setDriverId] = useState(user?.id || "");
+  const [routeCode, setRouteCode] = useState("");
+  const [driverId, setDriverId] = useState(String(user?.id || ""));
   const [declaredCollection, setDeclaredCollection] = useState("");
   const [closeNote, setCloseNote] = useState("");
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
-
-  const loadWorkspace = useCallback(async () => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const [nextClosures, nextDrivers] = await Promise.all([
-        v1Api.sales.routeClosures(token, { route_date: routeDate }),
-        canChooseDriver ? v1Api.sales.routeDrivers(token).catch(() => []) : Promise.resolve([]),
+  const userId = String(user?.id ?? "");
+  const workspaceQuery = useList(
+    queryKeys.sales.routeClosures(routeDate, userId),
+    async ({ signal }) => {
+      const [closures, drivers] = await Promise.all([
+        v1Api.sales.routeClosures(token!, { route_date: routeDate }, signal),
+        canChooseDriver
+          ? v1Api.sales.routeDrivers(token!, signal).catch(() => [])
+          : Promise.resolve([]),
       ]);
-      setClosures(nextClosures);
-      setDrivers(nextDrivers);
-      if (!driverId && isDriver && user?.id) setDriverId(user.id);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to load route closures");
-    } finally {
-      setLoading(false);
-    }
-  }, [token, routeDate, canChooseDriver, driverId, isDriver, user?.id]);
+      return { closures, drivers };
+    },
+    { enabled: Boolean(token) },
+  );
+  const closures = workspaceQuery.data?.closures ?? [];
+  const drivers = (workspaceQuery.data?.drivers ?? []) as DriverOption[];
+  const loading = workspaceQuery.isPending || workspaceQuery.isFetching;
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    void loadWorkspace();
-  }, [loadWorkspace]);
+  const loadWorkspace = async () => {
+    await workspaceQuery.refetch();
+  };
+  const submitAction = useAction({
+    mutationFn: (body: {
+      route_code: string;
+      route_date: string;
+      driver_user_id: string;
+      declared_collection: number;
+      note?: string;
+    }) => v1Api.sales.submitRouteClosure(token!, body),
+    invalidate: [queryKeys.sales.routeClosures(routeDate, userId)],
+  });
+  const reviewAction = useAction({
+    mutationFn: (input: { id: string; decision: "approve" | "reject"; note: string }) =>
+      v1Api.sales.reviewRouteClosure(token!, input.id, input.decision, input.note),
+    invalidate: [queryKeys.sales.routeClosures(routeDate, userId)],
+  });
 
   const submitClose = async () => {
     if (!token) return;
@@ -87,17 +97,16 @@ function RouteClosuresPage() {
     }
     setSaving(true);
     try {
-      await v1Api.sales.submitRouteClosure(token, {
+      await submitAction.mutateAsync({
         route_code: routeCode.trim(),
         route_date: routeDate,
-        driver_user_id: isDriver ? user?.id || "" : driverId,
+        driver_user_id: isDriver ? String(user?.id || "") : driverId,
         declared_collection: amount,
         note: closeNote.trim() || undefined,
       });
       toast.success("Route close submitted for review");
       setDeclaredCollection("");
       setCloseNote("");
-      await loadWorkspace();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to submit route close");
     } finally {
@@ -109,15 +118,13 @@ function RouteClosuresPage() {
     if (!token) return;
     setSaving(true);
     try {
-      await v1Api.sales.reviewRouteClosure(
-        token,
-        closure.id,
+      await reviewAction.mutateAsync({
+        id: closure.id,
         decision,
-        reviewNotes[closure.id] || "",
-      );
+        note: reviewNotes[closure.id] || "",
+      });
       toast.success(decision === "approve" ? "Route close approved" : "Route close rejected");
       setReviewNotes((current) => ({ ...current, [closure.id]: "" }));
-      await loadWorkspace();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to review route close");
     } finally {
@@ -145,6 +152,14 @@ function RouteClosuresPage() {
           </Button>
         }
       />
+      {workspaceQuery.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {workspaceQuery.error.message}{" "}
+          <Button variant="ghost" size="sm" onClick={() => void loadWorkspace()}>
+            Retry
+          </Button>
+        </p>
+      )}
 
       <section className="mb-6 grid gap-3 sm:grid-cols-3" aria-label="Route close summary">
         <Card>

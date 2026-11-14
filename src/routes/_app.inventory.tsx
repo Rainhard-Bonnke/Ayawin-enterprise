@@ -1,6 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeftRight, Check, Plus, RefreshCw, ScanBarcode, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowLeftRight,
+  Check,
+  Plus,
+  RefreshCw,
+  ScanBarcode,
+  Sparkles,
+} from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -43,6 +51,9 @@ import {
   type BackendWarehouse,
 } from "@/lib/api-types";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useAction, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 import {
   normalizeMasterItem,
   normalizeMasterWarehouse,
@@ -57,17 +68,61 @@ export const Route = createFileRoute("/_app/inventory")({
 
 function InventoryPage() {
   const { token } = useAuth();
-  const [q, setQ] = useState("");
-  const [cat, setCat] = useState("all");
-  const [wh, setWh] = useState("all");
-  const [sort, setSort] = useState("name");
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [inventoryError, setInventoryError] = useState(false);
-  const [items, setItems] = useState<BackendInventoryItem[]>([]);
-  const [warehouses, setWarehouses] = useState<BackendWarehouse[]>([]);
-  const [masterItems, setMasterItems] = useState<BackendMasterItem[]>([]);
-  const [findings, setFindings] = useState<InventoryFinding[]>([]);
+  const [q, setQ] = useUrlSearchParam("q", "");
+  const [cat, setCat] = useUrlSearchParam("category", "all");
+  const [wh, setWh] = useUrlSearchParam("warehouse", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "name");
+  const [pageValue, setPageValue] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageValue) || 1);
+  const setPage = (next: number) => setPageValue(String(Math.max(1, next)));
+  const inventoryQuery = useList(
+    queryKeys.inventory.workspace(),
+    async ({ signal }) => {
+      const [stockRows, warehouseRows, catalogRows] = await Promise.all([
+        v1Api.inventory.stock(token!, 1000, "", signal),
+        v1Api.master.warehouses(token!, signal),
+        v1Api.master.items(token!, 2000, signal),
+      ]);
+      return {
+        items: stockRows.map((row, index): BackendInventoryItem => ({
+          item_id: String(row.item_id),
+          product_id: index + 1,
+          name: String(row.item_name || row.name || ""),
+          sku: String(row.item_code || ""),
+          barcode: null,
+          category: String(row.category || ""),
+          brand: null,
+          abv: 0,
+          pack_size: null,
+          cost_price: Number(row.avg_unit_cost || 0),
+          retail_price: Number(row.avg_unit_cost || 0) * 1.4,
+          min_stock: Number(row.reorder_point || 0),
+          warehouse_id: String(row.warehouse_id),
+          warehouse: String(row.warehouse_name || row.warehouse_code || ""),
+          stock: Number(row.quantity || 0),
+          reserved_quantity: Number(row.reserved_quantity || 0),
+          available_quantity: Number(row.available_quantity ?? row.quantity ?? 0),
+          expiry_date: row.nearest_expiry_date
+            ? String(row.nearest_expiry_date).slice(0, 10)
+            : null,
+        })),
+        warehouses: warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[],
+        masterItems: catalogRows.map(normalizeMasterItem) as BackendMasterItem[],
+      };
+    },
+    { enabled: Boolean(token) },
+  );
+  const findingsQuery = useList(
+    queryKeys.inventory.findings(),
+    ({ signal }) => v1Api.inventory.intelligenceFindings(token!, "open", signal),
+    { enabled: Boolean(token) },
+  );
+  const items = inventoryQuery.data?.items ?? EMPTY_ARRAY;
+  const warehouses = inventoryQuery.data?.warehouses ?? [];
+  const masterItems = inventoryQuery.data?.masterItems ?? [];
+  const findings = findingsQuery.data ?? [];
+  const loading = inventoryQuery.isPending || inventoryQuery.isFetching;
+  const inventoryError = inventoryQuery.isError;
   const [analyzing, setAnalyzing] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -81,81 +136,33 @@ function InventoryPage() {
 
   const pageSize = 6;
 
-  const loadCatalog = async () => {
-    if (!token) return [];
-    try {
-      const catalog = (await v1Api.master.items(token)).map(normalizeMasterItem) as BackendMasterItem[];
-      setMasterItems(catalog);
-      return catalog;
-    } catch {
-      setMasterItems([]);
-      return [];
-    }
-  };
-
   const loadInventory = async () => {
-    if (!token) return;
-    setLoading(true);
-    try {
-      const [stockRows, warehouseRows] = await Promise.all([
-        v1Api.inventory.stock(token, 1000),
-        v1Api.master.warehouses(token),
-      ]);
-      setItems(stockRows.map((row, index) => ({
-        item_id: String(row.item_id),
-        product_id: index + 1,
-        name: String(row.item_name || row.name || ""),
-        sku: String(row.item_code || ""),
-        barcode: null,
-        category: String(row.category || ""),
-        brand: null,
-        abv: 0,
-        pack_size: null,
-        cost_price: Number(row.avg_unit_cost || 0),
-        retail_price: Number(row.avg_unit_cost || 0) * 1.4,
-        min_stock: Number(row.reorder_point || 0),
-        warehouse_id: String(row.warehouse_id),
-        warehouse: String(row.warehouse_name || row.warehouse_code || ""),
-        stock: Number(row.quantity || 0),
-        reserved_quantity: Number(row.reserved_quantity || 0),
-        available_quantity: Number(row.available_quantity ?? row.quantity ?? 0),
-        expiry_date: row.nearest_expiry_date ? String(row.nearest_expiry_date).slice(0, 10) : null,
-      })));
-      setWarehouses(warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[]);
-      setInventoryError(false);
-    } catch {
-      setItems([]);
-      setWarehouses([]);
-      setInventoryError(true);
-      toast.error("Unable to load inventory");
-    } finally {
-      setLoading(false);
-    }
+    await inventoryQuery.refetch();
   };
-
-  useEffect(() => {
-    void loadInventory();
-  }, [token]);
-
-  const loadFindings = async () => {
-    if (!token) return;
-    try {
-      setFindings(await v1Api.inventory.intelligenceFindings(token));
-    } catch {
-      setFindings([]);
-    }
-  };
-
-  useEffect(() => {
-    void loadFindings();
-  }, [token]);
+  const analyzeAction = useAction({
+    mutationFn: () => v1Api.inventory.analyzeInventory(token!),
+    invalidate: [queryKeys.inventory.findings()],
+  });
+  const reviewAction = useAction({
+    mutationFn: (input: { id: string; status: "acknowledged" | "resolved" }) =>
+      v1Api.inventory.reviewFinding(token!, input.id, input.status),
+    invalidate: [queryKeys.inventory.findings()],
+  });
+  const dispatchAction = useAction({
+    mutationFn: (body: {
+      from_warehouse_id: string;
+      to_warehouse_id: string;
+      lines: Array<{ item_id: string; quantity: number }>;
+      notes?: string;
+    }) => v1Api.inventory.dispatchTransfer(token!, body),
+    invalidate: [queryKeys.inventory.workspace(), queryKeys.inventory.transfers()],
+  });
 
   const runInventoryAnalysis = async () => {
     if (!token) return;
     setAnalyzing(true);
     try {
-      const result = await v1Api.inventory.analyzeInventory(token);
-      await loadFindings();
+      const result = await analyzeAction.mutateAsync(undefined);
       toast.success(result.run.summary || "Inventory checks complete");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Inventory analysis failed");
@@ -167,8 +174,7 @@ function InventoryPage() {
   const reviewFinding = async (finding: InventoryFinding, status: "acknowledged" | "resolved") => {
     if (!token) return;
     try {
-      await v1Api.inventory.reviewFinding(token, finding.id, status);
-      await loadFindings();
+      await reviewAction.mutateAsync({ id: finding.id, status });
       toast.success(status === "resolved" ? "Finding resolved" : "Finding acknowledged");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to update finding");
@@ -201,12 +207,15 @@ function InventoryPage() {
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const totalValue = useMemo(
-    () =>
-      items.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0),
+    () => items.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.cost_price || 0), 0),
     [items],
   );
   const calculatedLowStockCount = useMemo(
-    () => items.filter((row) => Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0)).length,
+    () =>
+      items.filter(
+        (row) =>
+          Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0),
+      ).length,
     [items],
   );
   const lowStockCount = calculatedLowStockCount;
@@ -215,7 +224,10 @@ function InventoryPage() {
   const reorderDraft = useMemo(
     () =>
       items
-        .filter((row) => Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0))
+        .filter(
+          (row) =>
+            Number(row.min_stock || 0) > 0 && Number(row.stock || 0) <= Number(row.min_stock || 0),
+        )
         .slice(0, 12)
         .map((row) => ({
           sku: row.sku,
@@ -242,7 +254,7 @@ function InventoryPage() {
   const openTransfer = async () => {
     if (!token) return;
     const first = filtered[0];
-    const catalog = await loadCatalog();
+    const catalog = masterItems;
     setTransferForm({
       from_warehouse_id:
         warehouses.find((w) => w.name === first?.warehouse)?.id?.toString() ||
@@ -274,7 +286,7 @@ function InventoryPage() {
     }
     setSaving(true);
     try {
-      const result = await v1Api.inventory.dispatchTransfer(token, {
+      const result = await dispatchAction.mutateAsync({
         from_warehouse_id: transferForm.from_warehouse_id,
         to_warehouse_id: transferForm.to_warehouse_id,
         lines: [{ item_id: transferForm.item_id, quantity: qty }],
@@ -283,7 +295,6 @@ function InventoryPage() {
       toast.success(`Transfer dispatched and in transit: ${result.transfer_no}`);
       setTransferOpen(false);
       setPage(1);
-      await loadInventory();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Transfer failed");
     } finally {
@@ -350,18 +361,43 @@ function InventoryPage() {
               <ArrowLeftRight className="mr-2 h-4 w-4" />
               Transfer
             </Button>
-            <Button asChild variant="outline"><Link to="/stock-adjustments">Physical count</Link></Button>
-            <Button asChild><Link to="/procurement"><Plus className="mr-2 h-4 w-4" />Receive against PO</Link></Button>
+            <Button asChild variant="outline">
+              <Link to="/stock-adjustments">Physical count</Link>
+            </Button>
+            <Button asChild>
+              <Link to="/procurement">
+                <Plus className="mr-2 h-4 w-4" />
+                Receive against PO
+              </Link>
+            </Button>
           </>
         }
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { l: "Stock Value · all locations", v: loading ? "Loading" : inventoryError ? "Unavailable" : KES(totalValue) },
-          { l: "Unique SKUs", v: loading ? "Loading" : inventoryError ? "Unavailable" : String(skuCount) },
-          { l: "Below Reorder Point", v: loading ? "Loading" : inventoryError ? "Unavailable" : String(lowStockCount) },
-          { l: "Expiry Tracking", v: loading ? "Loading" : inventoryError ? "Unavailable" : items.some((row) => row.expiry_date) ? String(expiringSoon.length) : "Not available" },
+          {
+            l: "Stock Value · all locations",
+            v: loading ? "Loading" : inventoryError ? "Unavailable" : KES(totalValue),
+          },
+          {
+            l: "Unique SKUs",
+            v: loading ? "Loading" : inventoryError ? "Unavailable" : String(skuCount),
+          },
+          {
+            l: "Below Reorder Point",
+            v: loading ? "Loading" : inventoryError ? "Unavailable" : String(lowStockCount),
+          },
+          {
+            l: "Expiry Tracking",
+            v: loading
+              ? "Loading"
+              : inventoryError
+                ? "Unavailable"
+                : items.some((row) => row.expiry_date)
+                  ? String(expiringSoon.length)
+                  : "Not available",
+          },
         ].map((k) => (
           <Card key={k.l}>
             <CardContent className="p-4">
@@ -391,40 +427,76 @@ function InventoryPage() {
         <CardContent className="p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-start gap-3">
-              <div className="rounded-xl bg-primary/10 p-2 text-primary"><Sparkles className="h-5 w-5" /></div>
+              <div className="rounded-xl bg-primary/10 p-2 text-primary">
+                <Sparkles className="h-5 w-5" />
+              </div>
               <div>
                 <div className="font-semibold">Inventory review queue</div>
                 <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                  Rule-based stockout and reorder checks use current on-hand quantities and the last 14 days of ledger issues. Review the evidence before taking action.
+                  Rule-based stockout and reorder checks use current on-hand quantities and the last
+                  14 days of ledger issues. Review the evidence before taking action.
                 </p>
               </div>
             </div>
-            <Button variant="outline" onClick={() => void runInventoryAnalysis()} disabled={analyzing || loading || inventoryError}>
+            <Button
+              variant="outline"
+              onClick={() => void runInventoryAnalysis()}
+              disabled={analyzing || loading || inventoryError}
+            >
               <RefreshCw className={`mr-2 h-4 w-4 ${analyzing ? "animate-spin" : ""}`} />
               {analyzing ? "Checking stock…" : "Run stock checks"}
             </Button>
           </div>
           <div className="mt-4 grid gap-2 md:grid-cols-2">
             {findings.slice(0, 6).map((finding) => (
-              <div key={finding.id} className="rounded-xl border border-border/70 bg-background/80 p-3">
+              <div
+                key={finding.id}
+                className="rounded-xl border border-border/70 bg-background/80 p-3"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium">{finding.title}</div>
-                  <Badge variant={finding.severity === "critical" || finding.severity === "high" ? "destructive" : "outline"}>{finding.severity}</Badge>
+                  <Badge
+                    variant={
+                      finding.severity === "critical" || finding.severity === "high"
+                        ? "destructive"
+                        : "outline"
+                    }
+                  >
+                    {finding.severity}
+                  </Badge>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{finding.finding}</p>
-                <p className="mt-2 text-sm"><span className="font-medium">Next step:</span> {finding.recommendation}</p>
+                <p className="mt-2 text-sm">
+                  <span className="font-medium">Next step:</span> {finding.recommendation}
+                </p>
                 <div className="mt-3 flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">Rule confidence {Math.round(finding.confidence * 100)}%</span>
+                  <span className="text-xs text-muted-foreground">
+                    Rule confidence {Math.round(finding.confidence * 100)}%
+                  </span>
                   <div className="flex gap-2">
-                    <Button size="sm" variant="ghost" onClick={() => void reviewFinding(finding, "acknowledged")}>Acknowledge</Button>
-                    <Button size="sm" variant="outline" onClick={() => void reviewFinding(finding, "resolved")}><Check className="mr-1 h-3.5 w-3.5" /> Resolve</Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void reviewFinding(finding, "acknowledged")}
+                    >
+                      Acknowledge
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void reviewFinding(finding, "resolved")}
+                    >
+                      <Check className="mr-1 h-3.5 w-3.5" /> Resolve
+                    </Button>
                   </div>
                 </div>
               </div>
             ))}
             {findings.length === 0 && (
               <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground md:col-span-2">
-                {loading ? "Loading stock review queue…" : "No open rule findings. Run a stock check to review current exceptions."}
+                {loading
+                  ? "Loading stock review queue…"
+                  : "No open rule findings. Run a stock check to review current exceptions."}
               </div>
             )}
           </div>
@@ -458,7 +530,11 @@ function InventoryPage() {
               ))}
               {reorderDraft.length === 0 && (
                 <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">
-                  {loading ? "Loading reorder recommendations…" : inventoryError ? "Reorder recommendations could not be loaded." : "No items are at or below their reorder point."}
+                  {loading
+                    ? "Loading reorder recommendations…"
+                    : inventoryError
+                      ? "Reorder recommendations could not be loaded."
+                      : "No items are at or below their reorder point."}
                 </div>
               )}
             </div>
@@ -490,7 +566,8 @@ function InventoryPage() {
               ))}
               {expiringSoon.length === 0 && (
                 <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground">
-                  Expiry balances are not returned by the stock service yet. Record lot and expiry details on receipt; batch balances require lot-level issue tracking.
+                  Expiry balances are not returned by the stock service yet. Record lot and expiry
+                  details on receipt; batch balances require lot-level issue tracking.
                 </div>
               )}
             </div>
@@ -509,20 +586,34 @@ function InventoryPage() {
               }}
               placeholder="Search SKU, barcode or product name..."
             />
-            <Select value={cat} onValueChange={(value) => { setCat(value); setPage(1); }}>
+            <Select
+              value={cat}
+              onValueChange={(value) => {
+                setCat(value);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All categories</SelectItem>
-                {Array.from(new Set(items.map((row) => row.category).filter(Boolean))).sort().map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {c}
-                  </SelectItem>
-                ))}
+                {Array.from(new Set(items.map((row) => row.category).filter(Boolean)))
+                  .sort()
+                  .map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
-            <Select value={wh} onValueChange={(value) => { setWh(value); setPage(1); }}>
+            <Select
+              value={wh}
+              onValueChange={(value) => {
+                setWh(value);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="w-44">
                 <SelectValue />
               </SelectTrigger>
@@ -575,7 +666,9 @@ function InventoryPage() {
                 </TableRow>
               ) : (
                 paged.map((p) => {
-                  const low = Number(p.min_stock || 0) > 0 && Number(p.available_quantity ?? p.stock ?? 0) <= Number(p.min_stock || 0);
+                  const low =
+                    Number(p.min_stock || 0) > 0 &&
+                    Number(p.available_quantity ?? p.stock ?? 0) <= Number(p.min_stock || 0);
                   return (
                     <TableRow key={`${p.item_id}-${p.warehouse_id}`}>
                       <TableCell className="font-mono text-xs">{p.sku}</TableCell>
@@ -599,11 +692,17 @@ function InventoryPage() {
                           {Number(p.stock || 0)}
                         </span>
                       </TableCell>
-                      <TableCell className="text-right">{Number(p.reserved_quantity || 0)}</TableCell>
                       <TableCell className="text-right">
-                        <span className={low ? "font-bold text-destructive" : "font-medium"}>{Number(p.available_quantity ?? p.stock ?? 0)}</span>
+                        {Number(p.reserved_quantity || 0)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={low ? "font-bold text-destructive" : "font-medium"}>
+                          {Number(p.available_quantity ?? p.stock ?? 0)}
+                        </span>
                         {low && <AlertTriangle className="ml-1 inline h-3 w-3 text-destructive" />}
-                        <div className="text-xs text-muted-foreground">reorder at {Number(p.min_stock || 0)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          reorder at {Number(p.min_stock || 0)}
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {p.expiry_date ? fmtDate(p.expiry_date) : "-"}
@@ -719,8 +818,6 @@ function InventoryPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-
     </div>
   );
 }

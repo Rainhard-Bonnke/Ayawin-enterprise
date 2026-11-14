@@ -1,5 +1,4 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -43,6 +42,8 @@ import { notify, triggerEmailNotification } from "@/lib/notifications";
 import { useAuth } from "@/lib/auth";
 import { canPerformSalesAction } from "@/lib/rbac";
 import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useList } from "@/lib/queryHooks";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 import type {
   BackendCustomer,
   BackendMasterItem,
@@ -68,18 +69,31 @@ export const Route = createFileRoute("/_app/sales")({
 
 function SalesPage() {
   const { token, user } = useAuth();
-  const { createInvoiceFromSalesOrder, dispatchSalesOrder, fetchSalesAnalytics, fetchSalesOrderDetail } = useSalesWorkflow();
+  const {
+    createSalesOrder,
+    confirmSalesOrder,
+    cancelSalesOrder,
+    createInvoiceFromSalesOrder,
+    createSalesPickList,
+    confirmSalesPickList,
+    dispatchSalesOrder,
+    fetchSalesOrderDetail,
+  } = useSalesWorkflow();
   const canCreateOrder = canPerformSalesAction(user, "sales.order.create");
   const canApproveOrder = canPerformSalesAction(user, "sales.order.approve");
   const canPostDelivery = canPerformSalesAction(user, "sales.delivery.post");
   const canCreateInvoice = canPerformSalesAction(user, "sales.invoice.create");
-  const salesOrdersQuery = useQuery({
-    queryKey: queryKeys.sales.orders(user?.id),
-    queryFn: async () => {
-      const data = await v1Api.sales.orders(token!, 25);
+  const salesOrdersQuery = useList(
+    queryKeys.sales.orders(user?.id),
+    async ({ signal }) => {
+      const data = await v1Api.sales.orders(token!, 25, signal);
       const statusMap: Record<string, BackendSalesOrder["status"]> = {
-        draft: "Draft", confirmed: "Confirmed", partial: "Partial", delivered: "Delivered",
-        invoiced: "Invoiced", cancelled: "Cancelled",
+        draft: "Draft",
+        confirmed: "Confirmed",
+        partial: "Partial",
+        delivered: "Delivered",
+        invoiced: "Invoiced",
+        cancelled: "Cancelled",
       };
       return data.map((row) => {
         const orderStatus = String(row.status || "draft").toLowerCase();
@@ -95,23 +109,38 @@ function SalesPage() {
         };
       });
     },
-    enabled: Boolean(token),
-  });
+    { enabled: Boolean(token), refetchInterval: 60_000, refetchIntervalInBackground: false },
+  );
   const rows = salesOrdersQuery.data ?? [];
   const salesOrdersError = salesOrdersQuery.error;
-  const refetchSalesOrders = salesOrdersQuery.refetch;
-  const [warehouseIds, setWarehouseIds] = useState<string[]>([]);
   const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
-  const [processingAll, setProcessingAll] = useState(false);
   const loading = salesOrdersQuery.isPending;
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<string>("all");
-  const [sort, setSort] = useState("date");
-  const [page, setPage] = useState(1);
+  const [query, setQuery] = useUrlSearchParam("q", "");
+  const [status, setStatus] = useUrlSearchParam("status", "all");
+  const [sort, setSort] = useUrlSearchParam("sort", "date");
+  const [pageValue, setPageValue] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageValue) || 1);
+  const setPage = (next: number) => setPageValue(String(Math.max(1, next)));
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [view, setView] = useState(() => hash.replace(/^#/, "") || "orders");
-  const [analytics, setAnalytics] = useState<SalesAnalytics | null>(null);
   const [detail, setDetail] = useState<SalesOrderDetail | null>(null);
+  const [pickWorkflow, setPickWorkflow] = useState<{
+    orderId: string;
+    orderNo: string;
+    pickList: Record<string, unknown> & {
+      id: string;
+      pick_no: string;
+      status: string;
+      lines: Record<string, unknown>[];
+    };
+  } | null>(null);
+  const [confirmedPickLines, setConfirmedPickLines] = useState<string[]>([]);
+  const analyticsQuery = useList(
+    queryKeys.salesReports.list({ report: "overview", userId: user?.id }),
+    async ({ signal }) => (await v1Api.sales.analytics(token!, signal)) as SalesAnalytics,
+    { enabled: Boolean(token) && view === "credit" },
+  );
+  const analytics = analyticsQuery.data ?? null;
   const pageSize = 5;
 
   const reloadSalesOrders = async () => {
@@ -122,7 +151,11 @@ function SalesPage() {
 
   useEffect(() => {
     if (salesOrdersError) {
-      toast.error(salesOrdersError instanceof Error ? salesOrdersError.message : "Unable to load sales orders");
+      toast.error(
+        salesOrdersError instanceof Error
+          ? salesOrdersError.message
+          : "Unable to load sales orders",
+      );
     }
   }, [salesOrdersError]);
 
@@ -130,28 +163,6 @@ function SalesPage() {
     const nextView = hash.replace(/^#/, "");
     if (["orders", "credit"].includes(nextView)) setView(nextView);
   }, [hash]);
-
-  useEffect(() => {
-    if (!token || view !== "credit" || analytics) return;
-    void fetchSalesAnalytics(token)
-      .then(setAnalytics)
-      .catch(() => setAnalytics(null));
-  }, [token, view, analytics]);
-
-  useEffect(() => {
-    if (!token) return;
-    void v1Api.master.warehouses(token)
-      .then((whs) => setWarehouseIds(whs.map((row) => normalizeMasterWarehouse(row).id)))
-      .catch(() => setWarehouseIds([]));
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    const id = window.setInterval(() => {
-      if (!document.hidden) void refetchSalesOrders();
-    }, 60000);
-    return () => window.clearInterval(id);
-  }, [token, refetchSalesOrders]);
 
   const filtered = rows
     .filter(
@@ -197,21 +208,28 @@ function SalesPage() {
     if (!token || !order.internal_id) return false;
     setProcessingOrderId(order.id);
     try {
-      let currentStatus = order.status;
+      const currentStatus = order.status;
       if (currentStatus === "Draft") {
-        const confirmed = await v1Api.sales.confirmOrder(token, order.internal_id);
+        const confirmed = await confirmSalesOrder(token, order.internal_id);
         if (!confirmed.ok) throw new Error("Order confirmation failed.");
-        currentStatus = "Confirmed";
+        toast.success(`${order.id} confirmed. Warehouse picking is next.`);
+        await reloadSalesOrders();
+        return true;
       }
       if (currentStatus === "Confirmed" || currentStatus === "Partial") {
-        await dispatchSalesOrder(token, order.internal_id);
-        currentStatus = "Delivered";
+        const pickList = await createSalesPickList(token, order.internal_id);
+        setConfirmedPickLines(
+          pickList.status === "picked" ? pickList.lines.map((line) => String(line.id)) : [],
+        );
+        setPickWorkflow({ orderId: order.internal_id, orderNo: order.id, pickList });
+        return true;
       }
       if (currentStatus === "Delivered") {
         await createInvoiceFromSalesOrder(token, order.internal_id);
+        toast.success(`Invoice created for ${order.id}.`);
+        await reloadSalesOrders();
+        return true;
       }
-      toast.success(`${order.id} processed to invoice.`);
-      await reloadSalesOrders();
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not process order");
@@ -221,34 +239,32 @@ function SalesPage() {
     }
   };
 
-  const processAllReadyOrders = async () => {
-    if (!token) return;
-    const ready = filtered.filter(
-      (o) =>
-        o.internal_id &&
-        (o.status === "Draft" || o.status === "Confirmed" || o.status === "Partial" || o.status === "Delivered"),
-    );
-    if (!ready.length) {
-      toast.message("No ready orders to process.");
-      return;
+  const confirmPick = async () => {
+    if (!token || !pickWorkflow) return;
+    const lines = pickWorkflow.pickList.lines.map((line) => ({
+      pick_list_line_id: String(line.id),
+      quantity_picked: Number(line.quantity_to_pick),
+    }));
+    try {
+      const pickList = await confirmSalesPickList(token, pickWorkflow.pickList.id, lines);
+      setPickWorkflow({ ...pickWorkflow, pickList });
+      setConfirmedPickLines(pickList.lines.map((line) => String(line.id)));
+      toast.success(`${pickList.pick_no} confirmed`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to confirm picks");
     }
-    setProcessingAll(true);
-    let success = 0;
-    let failed = 0;
-    for (const order of ready) {
-      const ok = await processOrder(order);
-      if (ok) {
-        success += 1;
-      } else {
-        failed += 1;
-      }
-    }
-    setProcessingAll(false);
-    await reloadSalesOrders();
-    if (failed > 0) {
-      toast.warning(`Processed ${success} orders, ${failed} failed.`);
-    } else {
-      toast.success(`Processed ${success} orders successfully.`);
+  };
+
+  const dispatchPickedOrder = async () => {
+    if (!token || !pickWorkflow || pickWorkflow.pickList.status !== "picked") return;
+    try {
+      await dispatchSalesOrder(token, pickWorkflow.orderId, pickWorkflow.pickList.id);
+      toast.success(`${pickWorkflow.orderNo} dispatched`);
+      setPickWorkflow(null);
+      setConfirmedPickLines([]);
+      await reloadSalesOrders();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not dispatch picked goods");
     }
   };
 
@@ -263,15 +279,6 @@ function SalesPage() {
               <FileDown className="mr-2 h-4 w-4" />
               Export XLSX
             </Button>
-            {canApproveOrder && canPostDelivery && canCreateInvoice && <Button
-              variant="outline"
-              disabled={processingAll}
-              onClick={() => {
-                void processAllReadyOrders();
-              }}
-            >
-              {processingAll ? "Processing orders..." : "Process All Ready"}
-            </Button>}
             {canCreateOrder && <NewOrderDialog onCompleted={reloadSalesOrders} />}
           </>
         }
@@ -485,100 +492,62 @@ function SalesPage() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
-                              {canApproveOrder && o.status === "Draft" && o.internal_id && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={async () => {
-                                    if (!token) return;
-                                    try {
-                                      const result = await v1Api.sales.confirmOrder(token, o.internal_id!);
-                                      if (result.ok) {
-                                        toast.success(`${o.id} confirmed`);
-                                        await reloadSalesOrders();
-                                      } else {
-                                        toast.error("Order confirmation failed");
-                                      }
-                                    } catch (e) {
-                                      toast.error(
-                                        e instanceof Error ? e.message : "Could not confirm order",
-                                      );
-                                    }
-                                  }}
-                                >
-                                  Confirm
-                                </Button>
-                              )}
-                              {canApproveOrder && canPostDelivery && canCreateInvoice && (o.status === "Draft" ||
-                                o.status === "Confirmed" ||
-                                o.status === "Partial" ||
-                                o.status === "Delivered") &&
+                              {((o.status === "Draft" && canApproveOrder) ||
+                                ((o.status === "Confirmed" || o.status === "Partial") &&
+                                  canPostDelivery) ||
+                                (o.status === "Delivered" && canCreateInvoice)) &&
                                 o.internal_id && (
                                   <Button
                                     size="sm"
                                     variant="secondary"
                                     disabled={processingOrderId === o.id}
-                                    onClick={() => void processOrder(o)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void processOrder(o);
+                                    }}
                                   >
-                                    {processingOrderId === o.id ? "Processing..." : "Process Order"}
+                                    {processingOrderId === o.id
+                                      ? "Working…"
+                                      : o.status === "Draft"
+                                        ? "Confirm order"
+                                        : o.status === "Delivered"
+                                          ? "Create invoice"
+                                          : "Prepare pick list"}
                                   </Button>
                                 )}
-                              {canPostDelivery && (o.status === "Confirmed" || o.status === "Partial") && o.internal_id && (
-                                <Button
-                                  size="sm"
-                                  onClick={async () => {
-                                    if (!token) return;
-                                    try {
-                                      await dispatchSalesOrder(token, o.internal_id!);
-                                      toast.success(`${o.id} dispatched`);
-                                      await reloadSalesOrders();
-                                    } catch (e) {
-                                      toast.error(
-                                        e instanceof Error ? e.message : "Could not dispatch order",
-                                      );
-                                    }
-                                  }}
-                                >
-                                  Dispatch
-                                </Button>
-                              )}
-                              {["Draft", "Confirmed", "Partial"].includes(o.status) && o.internal_id && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={processingOrderId === o.id}
-                                  onClick={async (event) => {
-                                    event.stopPropagation();
-                                    if (!token || !window.confirm(`Cancel ${o.id}? Any remaining stock reservation will be released.`)) return;
-                                    try {
-                                      await v1Api.sales.cancelOrder(token, o.internal_id!);
-                                      toast.success(`${o.id} cancelled and remaining reserved stock released`);
-                                      await reloadSalesOrders();
-                                    } catch (error) {
-                                      toast.error(error instanceof Error ? error.message : "Could not cancel this order");
-                                    }
-                                  }}
-                                >Cancel</Button>
-                              )}
-                              {canCreateInvoice && o.status === "Delivered" && o.internal_id && (
-                                <Button
-                                  size="sm"
-                                  onClick={async () => {
-                                    if (!token) return;
-                                    try {
-                                      await createInvoiceFromSalesOrder(token, o.internal_id!);
-                                      toast.success(`Invoice created for ${o.id}`);
-                                      await reloadSalesOrders();
-                                    } catch (e) {
-                                      toast.error(
-                                        e instanceof Error ? e.message : "Could not create invoice",
-                                      );
-                                    }
-                                  }}
-                                >
-                                  Create Invoice
-                                </Button>
-                              )}
+                              {["Draft", "Confirmed", "Partial"].includes(o.status) &&
+                                o.internal_id && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={processingOrderId === o.id}
+                                    onClick={async (event) => {
+                                      event.stopPropagation();
+                                      if (
+                                        !token ||
+                                        !window.confirm(
+                                          `Cancel ${o.id}? Any remaining stock reservation will be released.`,
+                                        )
+                                      )
+                                        return;
+                                      try {
+                                        await cancelSalesOrder(token, o.internal_id!);
+                                        toast.success(
+                                          `${o.id} cancelled and remaining reserved stock released`,
+                                        );
+                                        await reloadSalesOrders();
+                                      } catch (error) {
+                                        toast.error(
+                                          error instanceof Error
+                                            ? error.message
+                                            : "Could not cancel this order",
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -609,6 +578,107 @@ function SalesPage() {
         </TabsContent>
       </Tabs>
 
+      <Dialog
+        open={!!pickWorkflow}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPickWorkflow(null);
+            setConfirmedPickLines([]);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          {pickWorkflow && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Pick list {pickWorkflow.pickList.pick_no}</DialogTitle>
+                <DialogDescription>
+                  Order {pickWorkflow.orderNo} · Confirm each complete required quantity before
+                  dispatch.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Picked</TableHead>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-right">Required</TableHead>
+                      <TableHead className="text-right">Picked</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pickWorkflow.pickList.lines.map((line) => {
+                      const lineId = String(line.id);
+                      const isChecked = confirmedPickLines.includes(lineId);
+                      return (
+                        <TableRow key={lineId}>
+                          <TableCell>
+                            <input
+                              aria-label={`Confirm pick ${String(line.item_name || line.item_code)}`}
+                              type="checkbox"
+                              checked={isChecked}
+                              disabled={pickWorkflow.pickList.status !== "open"}
+                              onChange={(event) =>
+                                setConfirmedPickLines((current) =>
+                                  event.target.checked
+                                    ? [...current, lineId]
+                                    : current.filter((id) => id !== lineId),
+                                )
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {String(line.item_code || "")} {String(line.item_name || "")}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {Number(line.quantity_to_pick)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {pickWorkflow.pickList.status === "picked"
+                              ? Number(line.quantity_picked)
+                              : isChecked
+                                ? Number(line.quantity_to_pick)
+                                : 0}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {!pickWorkflow.pickList.lines.length && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                          No open reserved quantities are available to pick.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              <DialogFooter>
+                {pickWorkflow.pickList.status === "open" ? (
+                  <Button
+                    disabled={
+                      !pickWorkflow.pickList.lines.length ||
+                      confirmedPickLines.length !== pickWorkflow.pickList.lines.length
+                    }
+                    onClick={() => void confirmPick()}
+                  >
+                    Confirm all picked quantities
+                  </Button>
+                ) : (
+                  <Button
+                    disabled={pickWorkflow.pickList.status !== "picked"}
+                    onClick={() => void dispatchPickedOrder()}
+                  >
+                    Dispatch picked goods
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!detail} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogContent className="max-w-3xl">
           {detail && (
@@ -616,8 +686,8 @@ function SalesPage() {
               <DialogHeader>
                 <DialogTitle>Sales Order {detail.order_no}</DialogTitle>
                 <DialogDescription>
-                  {detail.customer_name || "Customer"} · Ordered {detail.order_date || "—"} ·
-                  {" "}Required by {detail.required_date || "—"} · {detail.status || ""}
+                  {detail.customer_name || "Customer"} · Ordered {detail.order_date || "—"} ·{" "}
+                  Required by {detail.required_date || "—"} · {detail.status || ""}
                 </DialogDescription>
               </DialogHeader>
               <Table>
@@ -666,12 +736,9 @@ function SalesPage() {
 
 function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<void> }) {
   const { token } = useAuth();
+  const { createSalesOrder } = useSalesWorkflow();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formLoading, setFormLoading] = useState(false);
-  const [apiCustomers, setApiCustomers] = useState<BackendCustomer[]>([]);
-  const [apiItems, setApiItems] = useState<BackendMasterItem[]>([]);
-  const [apiWarehouses, setApiWarehouses] = useState<BackendWarehouse[]>([]);
   const [customerId, setCustomerId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [itemId, setItemId] = useState("");
@@ -685,35 +752,35 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
   });
   const [notes, setNotes] = useState("");
 
+  const formSetupQuery = useList(
+    queryKeys.sales.orderFormSetup(),
+    async ({ signal }) => {
+      const [customerRows, itemRows, warehouseRows] = await Promise.all([
+        v1Api.master.customers(token!, "", signal),
+        v1Api.master.items(token!, 200, signal),
+        v1Api.master.warehouses(token!, signal),
+      ]);
+      return {
+        customers: customerRows.map(normalizeMasterCustomer) as BackendCustomer[],
+        items: itemRows.map(normalizeMasterItem) as BackendMasterItem[],
+        warehouses: warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[],
+      };
+    },
+    { enabled: Boolean(open && token) },
+  );
+  const apiCustomers = formSetupQuery.data?.customers ?? EMPTY_ARRAY;
+  const apiItems = formSetupQuery.data?.items ?? EMPTY_ARRAY;
+  const apiWarehouses = formSetupQuery.data?.warehouses ?? EMPTY_ARRAY;
+  const formLoading = formSetupQuery.isPending;
+
   useEffect(() => {
-    if (!open || !token) return;
-    setFormLoading(true);
-    void Promise.all([
-      v1Api.master.customers(token),
-      v1Api.master.items(token),
-      v1Api.master.warehouses(token),
-    ])
-      .then(([customerRows, itemRows, warehouseRows]) => {
-        const cust = customerRows.map(normalizeMasterCustomer) as BackendCustomer[];
-        const items = itemRows.map(normalizeMasterItem) as BackendMasterItem[];
-        const whs = warehouseRows.map(normalizeMasterWarehouse) as BackendWarehouse[];
-        setApiCustomers(cust);
-        setApiItems(items);
-        setApiWarehouses(whs);
-        const firstItem = items[0];
-        setCustomerId(String(cust[0]?.id ?? ""));
-        setWarehouseId(String(whs[0]?.id ?? ""));
-        setItemId(firstItem?.id ?? "");
-        setUnitPrice(String(firstItem?.standard_cost ?? ""));
-      })
-      .catch((err) => {
-        notify(
-          "Could not load form",
-          err instanceof Error ? err.message : "Unable to load customers or products.",
-        );
-      })
-      .finally(() => setFormLoading(false));
-  }, [open, token]);
+    if (!open || !formSetupQuery.data) return;
+    const firstItem = apiItems[0];
+    setCustomerId((current) => current || String(apiCustomers[0]?.id ?? ""));
+    setWarehouseId((current) => current || String(apiWarehouses[0]?.id ?? ""));
+    setItemId((current) => current || firstItem?.id || "");
+    setUnitPrice((current) => current || String(firstItem?.standard_cost ?? ""));
+  }, [open, formSetupQuery.data, apiItems, apiCustomers, apiWarehouses]);
 
   const selectedCustomer = apiCustomers.find((c) => String(c.id) === customerId);
   const selectedItem = apiItems.find((i) => i.id === itemId);
@@ -731,12 +798,15 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
       lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
     });
     if (!validation.success) {
-      notify("Invalid sales order", validation.error.issues[0]?.message || "Check the order details and try again.");
+      notify(
+        "Invalid sales order",
+        validation.error.issues[0]?.message || "Check the order details and try again.",
+      );
       return;
     }
     setSaving(true);
     try {
-      const created = await v1Api.sales.createOrder(token, {
+      const created = await createSalesOrder(token, {
         customer_id: customerId,
         warehouse_id: warehouseId,
         order_date: orderDate,
@@ -744,8 +814,8 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         notes: notes.trim() || undefined,
         lines: [{ item_id: itemId, quantity: qty, unit_price: price }],
       });
-      const createdId = String(created.order_no || created.id);
-      const createdTotal = Number(created.total_amount || 0);
+      const createdId = created.id;
+      const createdTotal = created.total;
       notify("Sales order created", `${createdId} saved to the database.`);
       void trackEvent({
         action: "sales_order_created",
@@ -756,11 +826,12 @@ function NewOrderDialog({ onCompleted }: { onCompleted: () => void | Promise<voi
         context: { customerId, itemId, qty, total: createdTotal },
       });
       if (selectedCustomer?.email) {
-        if (token) void triggerEmailNotification(token, {
-          recipient: selectedCustomer.email,
-          subject: `Order ${createdId}`,
-          message: `Sales order ${createdId} has been created for ${selectedCustomer.name}.`,
-        });
+        if (token)
+          void triggerEmailNotification(token, {
+            recipient: selectedCustomer.email,
+            subject: `Order ${createdId}`,
+            message: `Sales order ${createdId} has been created for ${selectedCustomer.name}.`,
+          });
       }
       await onCompleted();
       setOpen(false);

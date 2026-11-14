@@ -1,6 +1,12 @@
 const express = require("express");
 const pool = require("../../db");
-const { authenticateErp } = require("../../middleware/erpAuth");
+const { authenticateErp, requirePermission } = require("../../middleware/erpAuth");
+const {
+  validateAssetDelete,
+  buildAssetDepreciationSchedule,
+  calculateDisposalImpact,
+} = require("../../services/fixedAssetService");
+const { postFixedAssetDepreciationRun } = require("../../services/fixedAssetDepreciationRunService");
 
 const router = express.Router();
 router.use(authenticateErp);
@@ -22,6 +28,58 @@ router.get("/", async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Unable to load fixed assets" });
+  }
+});
+
+router.get("/depreciation", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, asset_code, name, category, acquisition_date, acquisition_cost,
+              residual_value, useful_life_months, location, serial_number, status, notes
+       FROM erp_fixed_assets
+       WHERE company_id = $1 AND is_deleted = FALSE
+       ORDER BY acquisition_date DESC, asset_code`,
+      [req.user.company_id],
+    );
+
+    const summary = buildAssetDepreciationSchedule(result.rows, req.query.as_of_date);
+    return res.json(summary);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Unable to calculate depreciation summary" });
+  }
+});
+
+router.get("/depreciation-runs", async (req, res) => {
+  try {
+    const result = await pool.query(
+            `SELECT id, period_start, period_end, status, total_depreciation, journal_id,
+              notes, created_at, posted_at
+       FROM erp_fixed_asset_depreciation_runs
+       WHERE company_id = $1 AND is_deleted = FALSE
+       ORDER BY period_end DESC, created_at DESC`,
+      [req.user.company_id],
+    );
+    return res.json(result.rows);
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to load depreciation runs" });
+  }
+});
+
+router.post("/depreciation-runs", requirePermission("finance.approve"), async (req, res) => {
+  try {
+    const result = await postFixedAssetDepreciationRun({
+      companyId: req.user.company_id,
+      userId: req.user.id,
+      periodStart: req.body?.period_start,
+      periodEnd: req.body?.period_end,
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "A depreciation run already exists for this period" });
+    }
+    return res.status(400).json({ error: error.message });
   }
 });
 
@@ -74,8 +132,67 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
+router.patch("/:id/dispose", async (req, res) => {
+  try {
+    const lookup = await pool.query(
+      `SELECT * FROM erp_fixed_assets
+       WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE`,
+      [req.params.id, req.user.company_id],
+    );
+
+    if (!lookup.rowCount) {
+      return res.status(404).json({ error: "Asset not found" });
+    }
+
+    const asset = lookup.rows[0];
+    if (asset.status !== "active") {
+      return res.status(409).json({ error: "Only active assets can be disposed." });
+    }
+
+    const disposalDate = String(req.body?.disposal_date || new Date().toISOString().slice(0, 10));
+    const payload = {
+      ...asset,
+      disposal_date: disposalDate,
+      disposal_value: req.body?.disposal_value ?? 0,
+      disposal_type: req.body?.disposal_type ?? "sale",
+    };
+
+    const impact = calculateDisposalImpact(payload);
+    const note = `Disposal: ${impact.type} on ${disposalDate}; proceeds ${impact.disposal_value}; net book value ${impact.net_book_value}; gain/loss ${impact.gain_or_loss}.`;
+
+    const updated = await pool.query(
+      `UPDATE erp_fixed_assets
+       SET status = 'disposed', notes = $1, updated_by = $2, updated_at = NOW()
+       WHERE id = $3 AND company_id = $4 AND is_deleted = FALSE
+       RETURNING *`,
+      [asset.notes ? `${asset.notes}\n${note}` : note, req.user.id, req.params.id, req.user.company_id],
+    );
+
+    return res.json({ asset: updated.rows[0], impact, note });
+  } catch (error) {
+    console.error(error);
+    return res.status(400).json({ error: error.message });
+  }
+});
+
 router.delete("/:id", async (req, res) => {
   try {
+    const lookup = await pool.query(
+      `SELECT id, status FROM erp_fixed_assets
+       WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE`,
+      [req.params.id, req.user.company_id],
+    );
+
+    if (!lookup.rowCount) {
+      return res.status(404).json({ error: "Asset not found" });
+    }
+
+    try {
+      validateAssetDelete({ status: lookup.rows[0].status });
+    } catch (error) {
+      return res.status(409).json({ error: error.message });
+    }
+
     const result = await pool.query(
       `UPDATE erp_fixed_assets SET is_deleted = TRUE, updated_by = $1, updated_at = NOW()
        WHERE id = $2 AND company_id = $3 AND is_deleted = FALSE RETURNING id`,

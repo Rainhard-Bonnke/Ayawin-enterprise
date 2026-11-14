@@ -14,9 +14,11 @@ export const Route = createFileRoute("/_app")({
 });
 
 function workspaceForPath(path: string) {
+  if (path.startsWith("/my-work")) return "people";
   if (
     [
       "/sales",
+      "/crm",
       "/pos",
       "/customers",
       "/customer-credit-notes",
@@ -26,12 +28,17 @@ function workspaceForPath(path: string) {
     ].some((route) => path.startsWith(route))
   )
     return "sales";
-  if (["/procurement", "/goods-received", "/suppliers"].some((route) => path.startsWith(route)))
+  if (
+    ["/procurement", "/purchase-requisitions", "/goods-received", "/suppliers"].some((route) =>
+      path.startsWith(route),
+    )
+  )
     return "supply";
   if (
     [
       "/inventory",
       "/inventory-master",
+      "/inventory-valuation",
       "/material-requisitions",
       "/material-issues",
       "/material-returns",
@@ -51,9 +58,15 @@ function workspaceForPath(path: string) {
       "/accounting",
       "/accounts-receivable",
       "/accounts-payable",
+      "/cash-bank",
+      "/budget-forecasting",
+      "/tax-management",
+      "/expenses-management",
+      "/financial-reporting",
       "/bank-reconciliation",
       "/supplier-credit-notes",
       "/reports",
+      "/fixed-assets",
       "/assets",
       "/depreciation",
     ].some((route) => path.startsWith(route))

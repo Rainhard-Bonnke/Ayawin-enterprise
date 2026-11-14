@@ -4,6 +4,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: cd backend && npm ci
+    preDeployCommand: cd backend && npm run db:migrate
     startCommand: cd backend && npm start
     healthCheckPath: /ready
     autoDeploy: true
@@ -16,43 +17,32 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
-      - key: DATABASE_HOST
-        sync: false
-      - key: DATABASE_PORT
-        value: "5432"
-      - key: DATABASE_DB
-        sync: false
-      - key: DATABASE_USER
-        sync: false
-      - key: DATABASE_PASSWORD
-        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: ayawin-redis
+          property: connectionString
       - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
         sync: false
       - key: MFA_ENCRYPTION_KEY
         sync: false
+      - key: INTEGRATION_ENCRYPTION_KEY
+        sync: false
+      - key: INTEGRATION_ENCRYPTION_KEY_VERSION
+        value: "1"
       - key: PII_ENCRYPTION_KEY
         sync: false
       - key: DOC_VERIFY_SECRET
-        sync: false
-      - key: KRA_CLIENT_ID
-        sync: false
-      - key: KRA_CLIENT_SECRET
-        sync: false
-      - key: DARAJA_CONSUMER_KEY
-        sync: false
-      - key: DARAJA_CONSUMER_SECRET
-        sync: false
-      - key: AWS_S3_BUCKET
-        sync: false
-      - key: AWS_REGION
-        sync: false
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
         sync: false
 
   - type: web
@@ -68,8 +58,6 @@ services:
         value: production
       - key: VITE_API_BASE
         sync: false
-      - key: APP_ENV
-        value: production
 
   - type: worker
     name: ayawin-etims-worker
@@ -83,22 +71,25 @@ services:
       - key: NODE_ENV
         value: production
       - key: REDIS_URL
-        sync: false
-      - key: DATABASE_HOST
-        sync: false
-      - key: DATABASE_PORT
-        value: "5432"
-      - key: DATABASE_DB
-        sync: false
-      - key: DATABASE_USER
-        sync: false
-      - key: DATABASE_PASSWORD
-        sync: false
+        fromService:
+          type: keyvalue
+          name: ayawin-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
-      - key: KRA_CLIENT_ID
+      - key: INTEGRATION_ENCRYPTION_KEY
         sync: false
-      - key: KRA_CLIENT_SECRET
+      - key: INTEGRATION_ENCRYPTION_KEY_VERSION
+        value: "1"
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
+      - key: PII_ENCRYPTION_KEY
+        sync: false
+      - key: DOC_VERIFY_SECRET
         sync: false
 
   - type: worker
@@ -113,24 +104,25 @@ services:
       - key: NODE_ENV
         value: production
       - key: REDIS_URL
-        sync: false
-      - key: DATABASE_HOST
-        sync: false
-      - key: DATABASE_PORT
-        value: "5432"
-      - key: DATABASE_DB
-        sync: false
-      - key: DATABASE_USER
-        sync: false
-      - key: DATABASE_PASSWORD
-        sync: false
+        fromService:
+          type: keyvalue
+          name: ayawin-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
-      - key: DARAJA_CONSUMER_KEY
+      - key: INTEGRATION_ENCRYPTION_KEY
         sync: false
-      - key: DARAJA_CONSUMER_SECRET
+      - key: INTEGRATION_ENCRYPTION_KEY_VERSION
+        value: "1"
+      - key: MFA_ENCRYPTION_KEY
         sync: false
-      - key: DARAJA_SHORTCODE
+      - key: PII_ENCRYPTION_KEY
+        sync: false
+      - key: DOC_VERIFY_SECRET
         sync: false
 
   - type: worker
@@ -145,24 +137,21 @@ services:
       - key: NODE_ENV
         value: production
       - key: REDIS_URL
-        sync: false
-      - key: DATABASE_HOST
-        sync: false
-      - key: DATABASE_PORT
-        value: "5432"
-      - key: DATABASE_DB
-        sync: false
-      - key: DATABASE_USER
-        sync: false
-      - key: DATABASE_PASSWORD
-        sync: false
+        fromService:
+          type: keyvalue
+          name: ayawin-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
-      - key: SMTP_HOST
+      - key: MFA_ENCRYPTION_KEY
         sync: false
-      - key: SMTP_USERNAME
+      - key: PII_ENCRYPTION_KEY
         sync: false
-      - key: SMTP_PASSWORD
+      - key: DOC_VERIFY_SECRET
         sync: false
 
   - type: worker
@@ -177,33 +166,45 @@ services:
       - key: NODE_ENV
         value: production
       - key: REDIS_URL
-        sync: false
-      - key: DATABASE_HOST
-        sync: false
-      - key: DATABASE_PORT
-        value: "5432"
-      - key: DATABASE_DB
-        sync: false
-      - key: DATABASE_USER
-        sync: false
-      - key: DATABASE_PASSWORD
-        sync: false
+        fromService:
+          type: keyvalue
+          name: ayawin-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
 
-  - type: redis
+  - type: worker
+    name: ayawin-hr-compliance-worker
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci
+    startCommand: cd backend && npm run worker:hr
+    numInstances: 1
+    restartPolicyType: on-failure
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayawin-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "true"
+
+  - type: keyvalue
     name: ayawin-redis
     plan: starter
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
-  - type: psql
-    name: ayawin-db
+databases:
+  - name: ayawin-db
     plan: standard
     databaseName: ayawin_enterprise
     user: ayawin
     postgresMajorVersion: "16"
-    backupRetentionDays: 30
-    storageGB: 50
-
-# Note: object storage for document and backup retention must be provisioned as a separate managed S3-compatible bucket
-# and wired through AWS_* variables above. Keep it private and do not store provider keys in the repository.
+    diskSizeGB: 50

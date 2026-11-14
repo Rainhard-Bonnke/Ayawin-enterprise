@@ -5,7 +5,15 @@ const pool = require("../db");
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || "15m";
 const JWT_REFRESH_EXPIRES_DAYS = Number(process.env.JWT_REFRESH_EXPIRES_DAYS) || 7;
-const POS_ALLOWED_PERMISSIONS = Object.freeze(["sales.view", "sales.create", "master_data.view"]);
+const POS_ALLOWED_PERMISSIONS = Object.freeze([
+  "sales.view",
+  "sales.create",
+  "sales.order.create",
+  "sales.delivery.post",
+  "sales.invoice.create",
+  "sales.receipt.create",
+  "master_data.view",
+]);
 
 function permissionsForSession(user, sessionType) {
   if (sessionType !== "pos") return user.permissions || [];

@@ -110,9 +110,20 @@ function LoginPage() {
             <form className="ayawin-login-fields" onSubmit={handleSubmit(handleSignIn)}>
               <div className="ayawin-login-field">
                 <Label htmlFor="username">Email or username</Label>
-                <Input id="username" type="text" autoComplete="username" aria-invalid={Boolean(errors.username)} aria-describedby={errors.username ? "username-error" : undefined}
-                  {...register("username")} placeholder="Email or username" />
-                {errors.username && <p id="username-error" role="alert" className="ayawin-login-error">{errors.username.message}</p>}
+                <Input
+                  id="username"
+                  type="text"
+                  autoComplete="username"
+                  aria-invalid={Boolean(errors.username)}
+                  aria-describedby={errors.username ? "username-error" : undefined}
+                  {...register("username")}
+                  placeholder="Email or username"
+                />
+                {errors.username && (
+                  <p id="username-error" role="alert" className="ayawin-login-error">
+                    {errors.username.message}
+                  </p>
+                )}
               </div>
               <div className="ayawin-login-field">
                 <Label htmlFor="password">Password</Label>
@@ -125,7 +136,11 @@ function LoginPage() {
                   {...register("password")}
                   placeholder="Password"
                 />
-                {errors.password && <p id="password-error" role="alert" className="ayawin-login-error">{errors.password.message}</p>}
+                {errors.password && (
+                  <p id="password-error" role="alert" className="ayawin-login-error">
+                    {errors.password.message}
+                  </p>
+                )}
               </div>
               <div className="ayawin-login-actions">
                 <Button type="submit" disabled={isSubmitting}>

@@ -49,6 +49,7 @@ export type BackendSupplier = {
   payment_terms?: string | null;
   credit_limit: number;
   balance: number;
+  tax_residency?: "resident" | "non_resident" | null;
 };
 
 export type SupplierBill = {
@@ -340,17 +341,17 @@ export type PayslipRow = {
 };
 
 export type PayrollRemittance = {
-    id: string;
-    agency_code: string;
-    agency_name: string;
-    amount_due: number;
-    amount_paid: number;
-    outstanding_amount: number;
-    due_date?: string | null;
-    status: string;
-    payroll_month: string;
-    posted_payment_count: number;
-  };
+  id: string;
+  agency_code: string;
+  agency_name: string;
+  amount_due: number;
+  amount_paid: number;
+  outstanding_amount: number;
+  due_date?: string | null;
+  status: string;
+  payroll_month: string;
+  posted_payment_count: number;
+};
 
 export type ReportLibraryEntry = { code: string; name: string; category: string };
 

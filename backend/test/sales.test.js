@@ -6,6 +6,8 @@ const {
   summarizeRouteClosure,
   createSalesOrder,
 } = require("../src/services/salesService");
+const crmSalesService = require("../src/services/crmSalesService");
+const { getTestContext, getCustomerId, getItemId, pool } = require("./e2e/helpers");
 
 test("VAT calculation at 16%", () => {
   const subtotal = 100000;
@@ -89,4 +91,115 @@ test("route closure records cash variance and blocks approval for missing proof"
   assert.equal(result.collection_variance, 10000);
   assert.equal(result.status, "proof_exceptions");
   assert.equal(result.can_approve, false);
+});
+
+test("lead conversion and quote conversion create valid sales artifacts", async () => {
+  const ctx = await getTestContext();
+  const quoteDates = (await pool.query(
+    `SELECT CURRENT_DATE::text AS quote_date,
+            (CURRENT_DATE + 30)::text AS valid_until,
+            (CURRENT_DATE + 10)::text AS required_date`,
+  )).rows[0];
+  const customerId = await getCustomerId(ctx.companyId, "CCRM-01");
+  const itemId = await getItemId(ctx.companyId, "TSK-500");
+
+  const lead = await crmSalesService.createLead({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    payload: {
+      company_name: "Northwind Retail",
+      contact_name: "Grace Muriuki",
+      email: "grace@northwind.test",
+      phone: "+254700000001",
+      source: "referral",
+      status: "new",
+      estimated_value: 150000,
+    },
+  });
+  assert.equal(lead.company_name, "Northwind Retail");
+  assert.match(lead.lead_no, /^LEAD-/);
+
+  const quote = await crmSalesService.createQuote({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    payload: {
+      customer_id: customerId,
+      quote_date: quoteDates.quote_date,
+      valid_until: quoteDates.valid_until,
+      lines: [
+        { item_id: itemId, quantity: 2, unit_price: 250, discount_percent: 5 },
+      ],
+    },
+  });
+  assert.equal(quote.customer_id, customerId);
+  assert.ok(quote.id);
+  assert.match(quote.quote_no, /^QT-/);
+  assert.equal(Number(quote.tax_amount), 76);
+  assert.equal((await crmSalesService.getQuote({ companyId: ctx.companyId, quoteId: quote.id })).lines.length, 1);
+
+  const sent = await crmSalesService.updateQuoteStatus({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    quoteId: quote.id,
+    status: "sent",
+  });
+  assert.equal(sent.status, "sent");
+
+  const accepted = await crmSalesService.acceptQuote({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    quoteId: quote.id,
+  });
+  assert.equal(accepted.status, "accepted");
+
+  const conversion = await crmSalesService.convertQuoteToSalesOrder({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    quoteId: quote.id,
+    warehouseId: ctx.warehouseId,
+    requiredDate: quoteDates.required_date,
+  });
+
+  assert.ok(conversion.salesOrder.id);
+  assert.equal(conversion.salesOrder.customer_id, customerId);
+  assert.equal(conversion.quote.status, "converted");
+});
+
+test("lead conversion creates a customer and opportunity with validated lost reason", async () => {
+  const ctx = await getTestContext();
+  const lead = await crmSalesService.createLead({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    payload: {
+      company_name: "Converted Lead Test",
+      contact_name: "Amina Njeri",
+      email: `lead-${Date.now()}@example.test`,
+      status: "qualified",
+      estimated_value: 25000,
+    },
+  });
+  const converted = await crmSalesService.convertLeadToCustomerAndOpportunity({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    leadId: lead.id,
+  });
+  assert.equal(converted.lead.status, "converted");
+  assert.equal(converted.customer.name, "Converted Lead Test");
+  assert.equal(converted.opportunity.customer_id, converted.customer.id);
+  await assert.rejects(
+    () => crmSalesService.updateOpportunity({
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      opportunityId: converted.opportunity.id,
+      payload: { stage: "lost" },
+    }),
+    /lost reason is required/,
+  );
+  const lost = await crmSalesService.updateOpportunity({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    opportunityId: converted.opportunity.id,
+    payload: { stage: "lost", lost_reason: "Budget deferred" },
+  });
+  assert.equal(lost.lost_reason, "Budget deferred");
 });

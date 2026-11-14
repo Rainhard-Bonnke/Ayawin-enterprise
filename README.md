@@ -1,5 +1,9 @@
 # Ayawin Enterprise ERP
 
+## ERP scope and document requirements
+
+See the [Ayawin ERP module catalogue and document register](docs/AYAWIN-ERP-MODULE-CATALOG.md) for the requested sales, inventory, finance, procurement and HR submodules, their required business documents, and the controls each workflow needs. The [Kenya ERP readiness audit](backend/docs/KENYA-ERP-MODULE-READINESS.md) tracks implemented workflows and current gaps.
+
 ## What runs where
 
 - Frontend: Vite app at `http://localhost:5173`

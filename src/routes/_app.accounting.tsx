@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SearchBar } from "@/components/SearchBar";
+import { Input } from "@/components/ui/input";
 import { KES } from "@/lib/format";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -24,6 +25,7 @@ import { ListPagination } from "@/components/ListPagination";
 import { QuietNote } from "@/components/QuietNote";
 import { exportWorkbook } from "@/lib/excel";
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Printer,
   FileDown,
@@ -38,11 +40,12 @@ import {
   fetchAccountingSnapshotV1,
   fetchFinanceWorkspaceV1,
   v1Api,
-  type FinancePeriodCloseChecklist,
   type AccountingJournalRow,
-  type FinanceWorkspace,
 } from "@/lib/api-v1";
+import { queryKeys } from "@/lib/queryKeys";
+import { useAction, useDocument, useList } from "@/lib/queryHooks";
 import { toast } from "sonner";
+import { useUrlSearchParam } from "@/lib/urlSearchState";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 export const Route = createFileRoute("/_app/accounting")({
@@ -57,120 +60,99 @@ const aging: Array<{ bucket: string; ar: number; ap: number }> = [];
 const defaultJournal: AccountingJournalRow[] = [];
 
 function Accounting() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const queryClient = useQueryClient();
   const hash = useRouterState({ select: (state) => state.location.hash });
   const [activeTab, setActiveTab] = useState(() => hash.replace(/^#/, "") || "pnl");
-  const [liveJournal, setLiveJournal] = useState<AccountingJournalRow[] | null>(null);
-  const [livePnl, setLivePnl] = useState<typeof pnl | null>(null);
-  const [q, setQ] = useState("");
-  const [sort, setSort] = useState("date");
-  const [page, setPage] = useState(1);
-  const [finance, setFinance] = useState<FinanceWorkspace | null>(null);
+  const [q, setQ] = useUrlSearchParam("q");
+  const [sort, setSort] = useUrlSearchParam("sort", "date");
+  const [pageText, setPageText] = useUrlSearchParam("page", "1");
+  const page = Math.max(1, Number(pageText) || 1);
+  const setPage = (next: number) => setPageText(String(next));
   const [periodId, setPeriodId] = useState("");
   const [closing, setClosing] = useState(false);
   const [closeReason, setCloseReason] = useState("");
-  const [closeChecklist, setCloseChecklist] = useState<FinancePeriodCloseChecklist | null>(null);
-  const [loadingCloseChecklist, setLoadingCloseChecklist] = useState(false);
-  const [vatReturns, setVatReturns] = useState<Array<Record<string, unknown>>>([]);
-  const [fiscalYears, setFiscalYears] = useState<Array<Record<string, unknown>>>([]);
   const [yearLabel, setYearLabel] = useState(new Date().getFullYear().toString());
   const [yearStart, setYearStart] = useState(new Date().toISOString().slice(0, 10));
-  const [yearEnd, setYearEnd] = useState(new Date(Date.now() + 31536000000).toISOString().slice(0, 10));
+  const [yearEnd, setYearEnd] = useState(
+    new Date(Date.now() + 31536000000).toISOString().slice(0, 10),
+  );
   const [yearCreating, setYearCreating] = useState(false);
   const pageSize = 5;
 
-  useEffect(() => {
-    if (!token) return;
-    void fetchAccountingSnapshotV1(token)
-      .then((snap) => {
-        if (!snap) return;
-        if (snap.journalRows.length) setLiveJournal(snap.journalRows);
-        if (snap.pnl.length) setLivePnl(snap.pnl);
-      })
-      .catch((err) => {
-        toast.error(err instanceof Error ? err.message : "Unable to load accounting snapshot");
-      });
-
-    void Promise.all([
-      v1Api.finance.fiscalPeriods(token).catch(() => []),
-      v1Api.finance.createFiscalYear ? Promise.resolve([]) : Promise.resolve([]),
-      v1Api.tax.returns(token).catch(() => []),
-    ]).then(([periods, _unused, vatRows]) => {
-      setFiscalYears(Array.isArray(periods) ? periods : []);
-      setVatReturns(Array.isArray(vatRows) ? vatRows : []);
-    });
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    void fetchFinanceWorkspaceV1(token, periodId || undefined)
-      .then((workspace) => {
-        setFinance(workspace);
-        if (!periodId && workspace.periods[0]?.id) {
-          const today = new Date().toISOString().slice(0, 10);
-          const current = workspace.periods.find(
-            (period) =>
-              period.status === "open" &&
-              period.start_date &&
-              period.end_date &&
-              period.start_date <= today &&
-              period.end_date >= today,
-          );
-          setPeriodId(
-            current?.id ||
-              workspace.periods.find((period) => period.status === "open")?.id ||
-              workspace.periods[0].id,
-          );
-        }
-      })
-      .catch((err) =>
-        toast.error(err instanceof Error ? err.message : "Unable to load finance reports"),
-      );
-  }, [token, periodId]);
-
-  useEffect(() => {
-    if (!token) return;
-    void v1Api.tax.returns(token)
-      .then((rows) => setVatReturns(Array.isArray(rows) ? rows : []))
-      .catch(() => setVatReturns([]));
-  }, [token]);
-
-  useEffect(() => {
-    if (
-      !token ||
-      !periodId ||
-      finance?.periods.find((period) => period.id === periodId)?.status !== "open"
-    ) {
-      setCloseChecklist(null);
-      return;
-    }
-    let active = true;
-    setLoadingCloseChecklist(true);
-    void v1Api.finance.fiscalPeriodCloseChecklist(token, periodId)
-      .then((checklist) => {
-        if (active) setCloseChecklist(checklist);
-      })
-      .catch((error) => {
-        if (active) {
-          setCloseChecklist(null);
-          toast.error(
-            error instanceof Error ? error.message : "Unable to load period close checklist",
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setLoadingCloseChecklist(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [token, periodId, finance?.periods]);
+  const snapshotQuery = useList(
+    queryKeys.accounting.snapshot(user?.id),
+    ({ signal }) => fetchAccountingSnapshotV1(token!, signal),
+    { enabled: Boolean(token) },
+  );
+  const financeQuery = useList(
+    queryKeys.accounting.workspace(user?.id, periodId),
+    ({ signal }) => fetchFinanceWorkspaceV1(token!, periodId || undefined, signal),
+    { enabled: Boolean(token) },
+  );
+  const finance = financeQuery.data ?? null;
+  const liveJournal = snapshotQuery.data?.journalRows ?? null;
+  const livePnl = snapshotQuery.data?.pnl ?? null;
+  const vatReturnsQuery = useList(
+    queryKeys.accounting.taxReturns(user?.id),
+    ({ signal }) => v1Api.tax.returns(token!, signal),
+    { enabled: Boolean(token) },
+  );
+  const vatReturns = vatReturnsQuery.data ?? [];
+  const selectedPeriod = finance?.periods.find((period) => period.id === periodId);
+  const closeChecklistQuery = useDocument(
+    queryKeys.accounting.closeChecklist(periodId || "none"),
+    ({ signal }) => v1Api.finance.fiscalPeriodCloseChecklist(token!, periodId, signal),
+    { enabled: Boolean(token && periodId && selectedPeriod?.status === "open") },
+  );
+  const closeChecklist = closeChecklistQuery.data ?? null;
+  const loadingCloseChecklist = closeChecklistQuery.isFetching;
+  const createFiscalYearAction = useAction({
+    mutationFn: (body: { year_label: string; start_date: string; end_date: string }) =>
+      v1Api.finance.createFiscalYear(token!, body),
+    invalidate: [queryKeys.accounting.workspaceLists()],
+  });
+  const prepareVatAction = useAction({
+    mutationFn: (id: string) => v1Api.tax.prepareReturn(token!, id),
+    invalidate: [queryKeys.accounting.taxReturnLists()],
+  });
+  const approveVatAction = useAction({
+    mutationFn: (id: string) => v1Api.tax.approveReturn(token!, id, "Variance acceptable"),
+    invalidate: [queryKeys.accounting.taxReturnLists()],
+  });
+  const lockVatAction = useAction({
+    mutationFn: (id: string) => v1Api.tax.lockReturn(token!, id),
+    invalidate: [queryKeys.accounting.taxReturnLists()],
+  });
+  const closePeriodAction = useAction({
+    mutationFn: (input: { periodId: string; reason: string }) =>
+      v1Api.finance.closeFiscalPeriod(token!, input.periodId, input.reason),
+    invalidate: [queryKeys.accounting.workspaceLists(), queryKeys.accounting.snapshotLists()],
+  });
 
   useEffect(() => {
     const nextTab = hash.replace(/^#/, "");
     if (["pnl", "aging", "vat", "ledger", "trial-balance", "balance-sheet"].includes(nextTab))
       setActiveTab(nextTab);
   }, [hash]);
+
+  useEffect(() => {
+    if (periodId || !finance?.periods.length) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const current = finance.periods.find(
+      (period) =>
+        period.status === "open" &&
+        period.start_date &&
+        period.end_date &&
+        period.start_date <= today &&
+        period.end_date >= today,
+    );
+    setPeriodId(
+      current?.id ||
+        finance.periods.find((period) => period.status === "open")?.id ||
+        finance.periods[0].id,
+    );
+  }, [finance?.periods, periodId]);
 
   const journalSource = liveJournal ?? defaultJournal;
   const pnlSource = livePnl ?? pnl;
@@ -248,17 +230,13 @@ function Accounting() {
     }
     setYearCreating(true);
     try {
-      const created = await v1Api.finance.createFiscalYear(token, {
+      await createFiscalYearAction.mutateAsync({
         year_label: yearLabel.trim(),
         start_date: yearStart,
         end_date: yearEnd,
       });
       toast.success("Fiscal year created");
-      const nextPeriods = Array.isArray((created as { periods?: Record<string, unknown>[] }).periods)
-        ? (created as { periods: Record<string, unknown>[] }).periods
-        : [];
-      setFiscalYears((prev) => (nextPeriods.length ? [...prev, ...nextPeriods] : prev));
-      setFinance((prev) => prev ? { ...prev, periods: prev.periods.length ? prev.periods : [] } : prev);
+      await financeQuery.refetch();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to create fiscal year");
     } finally {
@@ -269,9 +247,8 @@ function Accounting() {
   const prepareVatReturn = async () => {
     if (!token || !periodId) return;
     try {
-      await v1Api.tax.prepareReturn(token, periodId);
-      const rows = await v1Api.tax.returns(token);
-      setVatReturns(rows);
+      await prepareVatAction.mutateAsync(periodId);
+      await vatReturnsQuery.refetch();
       toast.success("VAT working paper prepared");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to prepare VAT return");
@@ -281,9 +258,8 @@ function Accounting() {
   const approveVatReturn = async (id: string) => {
     if (!token) return;
     try {
-      await v1Api.tax.approveReturn(token, id, "Variance acceptable");
-      const rows = await v1Api.tax.returns(token);
-      setVatReturns(rows);
+      await approveVatAction.mutateAsync(id);
+      await vatReturnsQuery.refetch();
       toast.success("VAT return approved");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to approve VAT return");
@@ -293,9 +269,8 @@ function Accounting() {
   const lockVatReturn = async (id: string) => {
     if (!token) return;
     try {
-      await v1Api.tax.lockReturn(token, id);
-      const rows = await v1Api.tax.returns(token);
-      setVatReturns(rows);
+      await lockVatAction.mutateAsync(id);
+      await vatReturnsQuery.refetch();
       toast.success("VAT return locked");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to lock VAT return");
@@ -399,20 +374,33 @@ function Accounting() {
           </SelectContent>
         </Select>
         {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
-          <input aria-label="Period close reason" value={closeReason} onChange={(event) => setCloseReason(event.target.value)}
-            placeholder="Reason for closing" className="h-9 w-56 rounded-md border border-input bg-background px-3 text-sm" />
+          <input
+            aria-label="Period close reason"
+            value={closeReason}
+            onChange={(event) => setCloseReason(event.target.value)}
+            placeholder="Reason for closing"
+            className="h-9 w-56 rounded-md border border-input bg-background px-3 text-sm"
+          />
         )}
         {finance?.periods.find((period) => period.id === periodId)?.status === "open" && (
           <Button
             variant="outline"
-            disabled={closing || loadingCloseChecklist || !closeChecklist?.ready_to_close || !closeReason.trim()}
+            disabled={
+              closing ||
+              loadingCloseChecklist ||
+              !closeChecklist?.ready_to_close ||
+              !closeReason.trim()
+            }
             onClick={async () => {
               if (!token || !periodId) return;
               setClosing(true);
               try {
-                await v1Api.finance.closeFiscalPeriod(token, periodId, closeReason.trim());
+                await closePeriodAction.mutateAsync({ periodId, reason: closeReason.trim() });
                 toast.success("Fiscal period closed");
-                setFinance(await fetchFinanceWorkspaceV1(token, periodId));
+                await financeQuery.refetch();
+                await queryClient.invalidateQueries({
+                  queryKey: queryKeys.accounting.closeChecklist(periodId),
+                });
               } catch (err) {
                 toast.error(err instanceof Error ? err.message : "Unable to close period");
               } finally {
@@ -436,11 +424,19 @@ function Accounting() {
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">Start date</label>
-            <Input type="date" value={yearStart} onChange={(event) => setYearStart(event.target.value)} />
+            <Input
+              type="date"
+              value={yearStart}
+              onChange={(event) => setYearStart(event.target.value)}
+            />
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">End date</label>
-            <Input type="date" value={yearEnd} onChange={(event) => setYearEnd(event.target.value)} />
+            <Input
+              type="date"
+              value={yearEnd}
+              onChange={(event) => setYearEnd(event.target.value)}
+            />
           </div>
           <div className="flex items-end">
             <Button disabled={yearCreating} onClick={() => void createFiscalYear()}>
@@ -661,9 +657,13 @@ function Accounting() {
                 <CardTitle>VAT Returns</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <Button variant="outline" onClick={() => void prepareVatReturn()}>Prepare return for current period</Button>
+                <Button variant="outline" onClick={() => void prepareVatReturn()}>
+                  Prepare return for current period
+                </Button>
                 {vatReturns.length === 0 ? (
-                  <div className="text-muted-foreground">No VAT returns have been prepared for this company.</div>
+                  <div className="text-muted-foreground">
+                    No VAT returns have been prepared for this company.
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     {vatReturns.map((row) => (
@@ -671,15 +671,29 @@ function Accounting() {
                         <div className="flex items-center justify-between gap-3">
                           <div>
                             <div className="font-medium">{String(row.return_no || row.id)}</div>
-                            <div className="text-xs text-muted-foreground">{String(row.period_name || row.period_id || "Current period")}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {String(row.period_name || row.period_id || "Current period")}
+                            </div>
                           </div>
                           <div className="text-xs uppercase tracking-wide text-muted-foreground">
                             {String(row.status || "draft")}
                           </div>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <Button variant="outline" size="sm" onClick={() => void approveVatReturn(String(row.id))}>Approve</Button>
-                          <Button variant="outline" size="sm" onClick={() => void lockVatReturn(String(row.id))}>Lock</Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void approveVatReturn(String(row.id))}
+                          >
+                            Approve
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void lockVatReturn(String(row.id))}
+                          >
+                            Lock
+                          </Button>
                         </div>
                       </div>
                     ))}

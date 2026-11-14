@@ -1,4 +1,4 @@
-import type { User } from "./api";
+import type { User } from "./api-types";
 
 export type SalesPermission =
   | "sales.order.create"
@@ -14,112 +14,99 @@ export type SalesPermission =
   | "sales.discount_approve"
   | "sales.credit_override";
 
-export function canPerformSalesAction(user: Pick<User, "role" | "permissions"> | null | undefined, permission: SalesPermission) {
-  if (!user) return false;
-  if (normalizeRole(user.role) === "Admin") return true;
-  return user.permissions?.includes(permission) ?? false;
-}
+type PermissionUser = Pick<User, "permissions"> | null | undefined;
 
-export type RoleName =
-  | "Admin"
-  | "Manager"
-  | "Accountant"
-  | "HR Officer"
-  | "Store Manager"
-  | "Sales Rep"
-  | "Warehouse"
-  | "Driver"
-  | "POS Operator";
-
-const pathAccess: Record<string, RoleName[]> = {
+const pathPermissions: Record<string, readonly string[]> = {
+  "/my-work": ["hr.view", "sales.view", "finance.view", "fleet.view"],
   "/": [
-    "Admin",
-    "Manager",
-    "Accountant",
-    "HR Officer",
-    "Store Manager",
-    "Sales Rep",
-    "Warehouse",
-    "Driver",
+    "sales.view",
+    "finance.view",
+    "procurement.view",
+    "hr.view",
+    "reports.view",
+    "foundation.view",
+    "fleet.view",
   ],
-  "/sales": ["Admin", "Manager", "Sales Rep"],
-  "/pos": ["POS Operator"],
-  "/customers": ["Admin", "Manager", "Sales Rep", "Accountant"],
-  "/customer-credit-notes": ["Admin", "Manager", "Sales Rep", "Accountant"],
-  "/invoices": ["Admin", "Manager", "Accountant", "Sales Rep"],
-  "/accounting": ["Admin", "Manager", "Accountant"],
-  "/bank-reconciliation": ["Admin", "Manager", "Accountant"],
-  "/inventory": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/inventory-master": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/material-requisitions": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/material-issues": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/material-returns": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/stock-analysis": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/stock-adjustments": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/driver-stock": ["Admin", "Manager", "Store Manager", "Warehouse", "Driver"],
-  "/inventory-lots": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/procurement": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
-  "/delivery": ["Admin", "Manager", "Driver", "Warehouse"],
-  "/route-closures": ["Admin", "Manager", "Driver", "Warehouse", "Sales Rep", "Accountant"],
-  "/goods-received": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
-  "/suppliers": ["Admin", "Manager", "Store Manager", "Warehouse", "Accountant"],
-  "/stock-movements": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/quarantine": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/transfers": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/reorder-alerts": ["Admin", "Manager", "Store Manager", "Warehouse"],
-  "/accounts-receivable": ["Admin", "Manager", "Accountant"],
-  "/accounts-payable": ["Admin", "Manager", "Accountant"],
-  "/supplier-credit-notes": ["Admin", "Manager", "Accountant"],
-  "/hr": ["Admin", "Manager", "HR Officer"],
-  "/leave-attendance": ["Admin", "Manager", "HR Officer"],
-  "/payroll": ["Admin", "Manager", "HR Officer", "Accountant"],
-  "/assets": ["Admin", "Manager", "Accountant"],
-  "/depreciation": ["Admin", "Manager", "Accountant"],
-  "/reports": ["Admin", "Manager", "Accountant", "HR Officer", "Store Manager"],
-  "/users": ["Admin"],
-  "/master-data": ["Admin", "Manager", "Store Manager"],
-  "/audit-logs": ["Admin"],
-  "/settings": ["Admin"],
+  "/sales": [
+    "sales.view",
+    "sales.order.create",
+    "sales.invoice.create",
+    "sales.order.approve",
+    "sales.discount_approve",
+    "sales.credit_override",
+  ],
+  "/crm": ["sales.view", "sales.create", "sales.target.manage"],
+  "/pos": ["sales.view", "sales.receipt.create", "sales.invoice.create"],
+  "/customers": ["sales.view"],
+  "/customer-credit-notes": ["sales.view", "sales.credit_note.create", "sales.credit_note.approve"],
+  "/invoices": ["sales.view", "sales.invoice.create", "sales.invoice.post"],
+  "/accounting": ["finance.view"],
+  "/cash-bank": ["finance.view"],
+  "/budget-forecasting": ["finance.view"],
+  "/tax-management": ["finance.view"],
+  "/expenses-management": ["finance.view"],
+  "/financial-reporting": ["finance.view"],
+  "/bank-reconciliation": ["finance.view"],
+  "/inventory": ["procurement.view"],
+  "/inventory-master": ["procurement.view"],
+  "/inventory-valuation": ["procurement.view"],
+  "/material-requisitions": ["procurement.view"],
+  "/material-issues": ["procurement.view"],
+  "/material-returns": ["procurement.view"],
+  "/stock-analysis": ["procurement.view"],
+  "/stock-adjustments": ["procurement.view"],
+  "/driver-stock": ["fleet.view", "fleet.load", "fleet.count"],
+  "/inventory-lots": ["procurement.view", "procurement.approve"],
+  "/procurement": ["procurement.view", "procurement.create", "procurement.approve"],
+  "/purchase-requisitions": ["procurement.view", "procurement.create"],
+  "/delivery": ["sales.delivery.post", "sales.view"],
+  "/route-closures": ["fleet.view", "fleet.count", "fleet.approve", "sales.view", "sales.approve"],
+  "/goods-received": ["procurement.view"],
+  "/suppliers": ["procurement.view"],
+  "/stock-movements": ["procurement.view"],
+  "/quarantine": ["procurement.view"],
+  "/transfers": ["procurement.view"],
+  "/reorder-alerts": ["procurement.view"],
+  "/accounts-receivable": ["finance.view", "sales.view"],
+  "/accounts-payable": ["finance.view", "procurement.view"],
+  "/supplier-credit-notes": ["finance.view", "procurement.view"],
+  "/hr": ["hr.view"],
+  "/leave-attendance": ["hr.view"],
+  "/payroll": ["hr.view", "finance.view"],
+  "/fixed-assets": ["finance.view"],
+  "/assets": ["finance.view"],
+  "/depreciation": ["finance.view"],
+  "/reports": ["reports.view", "finance.view"],
+  "/users": ["users.view", "users.edit", "users.create"],
+  "/master-data": ["master_data.view"],
+  "/audit-logs": ["audit.view"],
+  "/settings": ["foundation.view"],
 };
 
-export const roleLabels: Record<RoleName, string> = {
-  Admin: "Full access",
-  Manager: "Operational oversight",
-  Accountant: "Financial data, invoices, taxes and reports",
-  "HR Officer": "Employee records, payroll, attendance and leave",
-  "Store Manager": "Inventory, warehouse and procurement operations",
-  "Sales Rep": "Customers, orders and sales workflows",
-  Warehouse: "Stock, warehouse and delivery support",
-  Driver: "Delivery execution and proof of delivery",
-  "POS Operator": "Point-of-sale checkout and receipts",
-};
-
-export function normalizeRole(role?: string | null): RoleName {
-  if (role === "Human Resources" || role === "HR") return "HR Officer";
-  if (role === "Store" || role === "Inventory Manager") return "Store Manager";
-  if (role && role in roleLabels) return role as RoleName;
-  return "Admin";
+export function hasPermission(user: PermissionUser, permission: string) {
+  return user?.permissions?.includes(permission) ?? false;
 }
 
-export function canAccessPath(user: Pick<User, "role"> | null | undefined, path: string) {
-  if (!user) return false;
-  const role = normalizeRole(user.role);
-  const matchedPath = Object.keys(pathAccess)
+export function canPerformSalesAction(user: PermissionUser, permission: SalesPermission) {
+  return hasPermission(user, permission);
+}
+
+function permissionsForPath(path: string) {
+  const matchedPath = Object.keys(pathPermissions)
     .filter((candidate) => (candidate === "/" ? path === "/" : path.startsWith(candidate)))
     .sort((a, b) => b.length - a.length)[0];
-
-  if (!matchedPath) return false;
-  return pathAccess[matchedPath].includes(role);
+  return matchedPath ? pathPermissions[matchedPath] : undefined;
 }
 
-export function firstAllowedPath(user: Pick<User, "role"> | null | undefined) {
-  if (!user) return "/login";
-  const role = normalizeRole(user.role);
-  return role === "POS Operator"
-    ? "/pos"
-    : (Object.entries(pathAccess).find(([, roles]) => roles.includes(role))?.[0] ?? "/");
+export function canAccessPath(user: PermissionUser, path: string) {
+  const required = permissionsForPath(path);
+  return Boolean(required && required.some((permission) => hasPermission(user, permission)));
 }
 
-export function navigationAllowedForRole(role: string | null | undefined, url: string) {
-  return canAccessPath({ role: normalizeRole(role) } as User, url);
+export function firstAllowedPath(user: PermissionUser) {
+  return Object.keys(pathPermissions).find((path) => canAccessPath(user, path)) ?? "/login";
+}
+
+export function navigationAllowedForUser(user: PermissionUser, url: string) {
+  return canAccessPath(user, url);
 }

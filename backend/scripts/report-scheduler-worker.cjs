@@ -10,7 +10,7 @@ let stopping = false;
 
 async function run() {
   await runMigrations();
-  console.log("Scheduled report worker started.");
+  console.log(JSON.stringify({ event: "worker_health", worker: "report-scheduler", status: "ready", pid: process.pid, poll_interval_ms: pollIntervalMs }));
   while (!stopping) {
     try {
       const summary = await reports.runScheduledReportsBatch({ limit: batchSize });
@@ -27,4 +27,7 @@ process.on("SIGTERM", () => { stopping = true; });
 run().catch((error) => {
   console.error(`Scheduled report worker did not start: ${error.message}`);
   process.exitCode = 1;
-}).finally(() => pool.end());
+}).finally(async () => {
+  await pool.end();
+  console.log(JSON.stringify({ event: "worker_health", worker: "report-scheduler", status: "stopped", pid: process.pid }));
+});

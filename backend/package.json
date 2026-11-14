@@ -20,6 +20,7 @@
     "worker:mpesa": "node scripts/mpesa-outbox-worker.cjs",
     "worker:notifications": "node scripts/notification-outbox-worker.cjs",
     "worker:reports": "node scripts/report-scheduler-worker.cjs",
+    "worker:hr": "node scripts/hr-compliance-worker.cjs",
     "reports:retention": "node -e \"require('./src/services/scheduledReportService').expireOldReportRuns().then(n=>console.log(n)).finally(()=>require('./src/db').end())\"",
     "test": "node --test test/*.test.js",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",

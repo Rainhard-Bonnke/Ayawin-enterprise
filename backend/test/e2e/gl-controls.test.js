@@ -15,6 +15,18 @@ test("manual journals enforce maker checker; reversals preserve the historical l
     const journal=await gl.createJournalInTransaction(client,{companyId:context.companyId,userId:context.userId,
       entryDate:"2026-11-15",description:"E2E maker-checker reversal",source:"manual",
       lines:[{account_id:byCode["1100"],debit:1000},{account_id:byCode["4000"],credit:1000}]});
+    const snapshot=await client.query(
+      `SELECT debit,credit,transaction_debit,transaction_credit,base_debit,base_credit,
+              exchange_rate,exchange_rate_source,exchange_rate_direction,exchange_rate_id,
+              exchange_rate_effective_date::text AS exchange_rate_effective_date
+       FROM erp_journal_lines WHERE journal_id=$1 AND line_no=1`,[journal.id]);
+    assert.equal(Number(snapshot.rows[0].transaction_debit),1000);
+    assert.equal(Number(snapshot.rows[0].base_debit),1000);
+    assert.equal(Number(snapshot.rows[0].exchange_rate),1);
+    assert.equal(snapshot.rows[0].exchange_rate_source,"base_currency");
+    assert.equal(snapshot.rows[0].exchange_rate_direction,"base_per_transaction");
+    assert.equal(snapshot.rows[0].exchange_rate_id,null);
+    assert.equal(snapshot.rows[0].exchange_rate_effective_date,"2026-11-15");
     await assert.rejects(gl.postJournalInTransaction(client,{journalId:journal.id,companyId:context.companyId,userId:context.userId}),/creator cannot approve their own document/);
     const approverId="9a62cc7a-fdc2-426a-9899-0b825d98c321";
     await gl.postJournalInTransaction(client,{journalId:journal.id,companyId:context.companyId,userId:approverId});
@@ -39,7 +51,7 @@ test("manual journals enforce maker checker; reversals preserve the historical l
     assert.equal(saved.rows.some((row)=>row.status==="reversed"),true);
     assert.equal(saved.rows.some((row)=>row.reversal_of_id===journal.id),true);
     await assert.rejects(gl.createJournalInTransaction(client,{companyId:context.companyId,userId:context.userId,
-      entryDate:"2026-11-15",currencyCode:"USD",lines:[{account_id:byCode["1100"],debit:1000},{account_id:byCode["4000"],credit:1000}]}),/base-currency conversion/);
+      entryDate:"2026-11-15",currencyCode:"USD",lines:[{account_id:byCode["1100"],debit:1000},{account_id:byCode["4000"],credit:1000}]}),/approved USD accounting policy/i);
   } finally {
     await client.query("ROLLBACK");
     client.release();

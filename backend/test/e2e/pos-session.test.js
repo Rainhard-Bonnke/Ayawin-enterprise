@@ -72,7 +72,21 @@ test("POS operators retain their narrow permissions across refresh", async () =>
     const refreshedCookies=cookieHeader(refresh);
     const renewed=decode(refreshed.access_token);
     assert.equal(renewed.session_type,"pos");
-    assert.deepEqual([...renewed.permissions].sort(),["master_data.view","sales.create","sales.view"]);
+    assert.deepEqual([...renewed.permissions].sort(),[
+      "master_data.view",
+      "sales.create",
+      "sales.delivery.post",
+      "sales.invoice.create",
+      "sales.order.create",
+      "sales.receipt.create",
+      "sales.view",
+    ]);
+    const checkoutPermission = await fetch(`${base}/sales/orders`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${refreshed.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(checkoutPermission.status, 400, "POS token should reach order validation rather than be forbidden");
     const mfaSetup=await fetch(`${base}/auth/mfa/setup`,{method:"POST",headers:{Authorization:`Bearer ${session.access_token}`,"Content-Type":"application/json"},body:JSON.stringify({})});
     assert.equal(mfaSetup.status,401);
     const replay=await fetch(`${base}/auth/refresh`,{method:"POST",headers:{cookie:loginCookies,"x-csrf-token":csrf,origin}});

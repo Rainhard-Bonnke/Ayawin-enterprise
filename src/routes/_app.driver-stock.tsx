@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ClipboardCheck, PackageCheck, Plus, RefreshCw, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,31 +31,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth";
-import {
-  v1Api,
-  type DriverStockRow,
-  type FleetLocation,
-  type FleetStocktake,
-  type FleetStocktakeDetail,
-} from "@/lib/api-v1";
+import { v1Api, type FleetStocktake, type FleetStocktakeDetail } from "@/lib/api-v1";
 import { toast } from "sonner";
+import { queryKeys } from "@/lib/queryKeys";
+import { EMPTY_ARRAY, useList } from "@/lib/queryHooks";
 
 export const Route = createFileRoute("/_app/driver-stock")({
   component: DriverStockPage,
   head: () => ({ meta: [{ title: "Driver Stock & Counts - Ayawin Stock Solution" }] }),
 });
 
-type DriverUser = { id: string; full_name: string; email: string };
-type StockItemOption = { id: string; item_code: string; name: string };
-
 function DriverStockPage() {
   const { token, user } = useAuth();
-  const [locations, setLocations] = useState<FleetLocation[]>([]);
-  const [vehicleStock, setVehicleStock] = useState<DriverStockRow[]>([]);
-  const [items, setItems] = useState<StockItemOption[]>([]);
-  const [drivers, setDrivers] = useState<DriverUser[]>([]);
-  const [counts, setCounts] = useState<FleetStocktake[]>([]);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [session, setSession] = useState<FleetStocktakeDetail | null>(null);
   const [draftCounts, setDraftCounts] = useState<Record<string, string>>({});
@@ -81,6 +68,36 @@ function DriverStockPage() {
   const isDriver = String(user?.role || "")
     .toLowerCase()
     .includes("driver");
+  const workspaceQuery = useList(
+    queryKeys.inventory.driverWorkspace(user?.id),
+    async ({ signal }) => {
+      const [locations, counts, vehicleStock, catalog, drivers] = await Promise.all([
+        v1Api.inventory.fleetLocations(token!, signal),
+        v1Api.inventory.stocktakes(token!, signal),
+        v1Api.inventory.fleetVehicleStock(token!, signal),
+        v1Api.inventory.fleetItems(token!, signal),
+        canLoad ? v1Api.inventory.fleetDrivers(token!, signal) : Promise.resolve([]),
+      ]);
+      return {
+        locations,
+        counts,
+        vehicleStock,
+        items: catalog.map((row) => ({
+          id: String(row.id),
+          item_code: String(row.item_code),
+          name: String(row.name),
+        })),
+        drivers,
+      };
+    },
+    { enabled: Boolean(token) },
+  );
+  const locations = workspaceQuery.data?.locations ?? EMPTY_ARRAY;
+  const counts = workspaceQuery.data?.counts ?? [];
+  const vehicleStock = workspaceQuery.data?.vehicleStock ?? [];
+  const items = workspaceQuery.data?.items ?? [];
+  const drivers = workspaceQuery.data?.drivers ?? [];
+  const loading = workspaceQuery.isPending;
   const warehouses = useMemo(
     () => locations.filter((location) => location.location_type === "warehouse"),
     [locations],
@@ -91,39 +108,8 @@ function DriverStockPage() {
   );
 
   const loadWorkspace = async () => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const [nextLocations, nextCounts, nextVehicleStock] = await Promise.all([
-        v1Api.inventory.fleetLocations(token),
-        v1Api.inventory.stocktakes(token),
-        v1Api.inventory.fleetVehicleStock(token),
-      ]);
-      setLocations(nextLocations);
-      setCounts(nextCounts);
-      setVehicleStock(nextVehicleStock);
-      const catalog = await v1Api.inventory.fleetItems(token);
-      setItems(
-        catalog.map((row) => ({
-          id: String(row.id),
-          item_code: String(row.item_code),
-          name: String(row.name),
-        })),
-      );
-      if (canLoad) setDrivers(await v1Api.inventory.fleetDrivers(token));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to load driver stock workspace");
-    } finally {
-      setLoading(false);
-    }
+    await workspaceQuery.refetch();
   };
-
-  useEffect(() => {
-    void loadWorkspace();
-  }, [token]);
 
   const createVehicle = async () => {
     if (!token) return;
@@ -278,6 +264,23 @@ function DriverStockPage() {
       await loadWorkspace();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to review stock count");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reopenCountForRecount = async (count: FleetStocktake) => {
+    if (!token) return;
+    setSaving(true);
+    try {
+      await v1Api.inventory.reopenStocktakeForRecount(token, count.id);
+      toast.message("Count reopened with a fresh stock snapshot. Enter the recount values.");
+      await loadWorkspace();
+      const reopened = await v1Api.inventory.stocktake(token, count.id);
+      setSession(reopened);
+      setDraftCounts(Object.fromEntries(reopened.lines.map((line) => [line.id, ""])));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to reopen stock count");
     } finally {
       setSaving(false);
     }
@@ -657,9 +660,19 @@ function DriverStockPage() {
                           Review
                         </Button>
                       )}
-                      {count.status === "recount_required" && (
-                        <span className="text-xs text-muted-foreground">Recount required</span>
-                      )}
+                      {count.status === "recount_required" &&
+                        (canCount ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={saving}
+                            onClick={() => void reopenCountForRecount(count)}
+                          >
+                            Start recount
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Recount required</span>
+                        ))}
                     </TableCell>
                   </TableRow>
                 ))}

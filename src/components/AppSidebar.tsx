@@ -2,6 +2,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard,
   ShoppingCart,
+  UsersRound,
   Package,
   Building2,
   Wallet,
@@ -30,7 +31,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { BrandMark } from "@/components/BrandMark";
 import { useAuth } from "@/lib/auth";
-import { navigationAllowedForRole } from "@/lib/rbac";
+import { navigationAllowedForUser } from "@/lib/rbac";
 
 type NavItem = {
   title: string;
@@ -42,11 +43,16 @@ type NavItem = {
 export const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "Overview",
-    items: [{ title: "Dashboard", url: "/", icon: LayoutDashboard }],
+    items: [
+      { title: "Dashboard", url: "/", icon: LayoutDashboard },
+      { title: "My Work", url: "/my-work", icon: UserCog },
+    ],
   },
   {
     label: "SALES",
     items: [
+      { title: "Point of Sale", url: "/pos", icon: ShoppingCart },
+      { title: "CRM & quotations", url: "/crm", icon: UsersRound },
       {
         title: "Sales orders",
         url: "/sales",
@@ -68,6 +74,7 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
         url: "/procurement",
         icon: Building2,
         subItems: [
+          { title: "Purchase requisitions", url: "/purchase-requisitions" },
           { title: "Goods received", url: "/goods-received" },
           { title: "Suppliers", url: "/suppliers" },
         ],
@@ -87,10 +94,12 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
           { title: "Material issues", url: "/material-issues" },
           { title: "Material returns", url: "/material-returns" },
           { title: "Stock analysis", url: "/stock-analysis" },
+          { title: "Stock counts & adjustments", url: "/stock-adjustments" },
           { title: "Stock adjustments", url: "/stock-adjustments" },
           { title: "Stock movements", url: "/stock-movements" },
           { title: "Warehouse transfers", url: "/transfers" },
           { title: "Lots & expiry", url: "/inventory-lots" },
+          { title: "Stock valuation", url: "/inventory-valuation" },
           { title: "Quarantine disposition", url: "/quarantine" },
           { title: "Reorder alerts", url: "/reorder-alerts" },
         ],
@@ -115,6 +124,12 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
           { title: "Accounts receivable", url: "/accounts-receivable" },
           { title: "Accounts payable", url: "/accounts-payable" },
           { title: "Supplier credit notes", url: "/supplier-credit-notes" },
+          { title: "Cash & Bank", url: "/cash-bank" },
+          { title: "Budget & Forecasting", url: "/budget-forecasting" },
+          { title: "Tax Management", url: "/tax-management" },
+          { title: "Expenses Management", url: "/expenses-management" },
+          { title: "Financial Reporting", url: "/financial-reporting" },
+          { title: "Multi-currency", url: "/multi-currency" },
           { title: "Bank reconciliation", url: "/bank-reconciliation" },
           { title: "Reports & analytics", url: "/reports" },
         ],
@@ -139,10 +154,13 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
     label: "ASSETS",
     items: [
       {
-        title: "Asset Register",
-        url: "/assets",
+        title: "Fixed Assets",
+        url: "/fixed-assets",
         icon: BriefcaseBusiness,
-        subItems: [{ title: "Depreciation", url: "/depreciation" }],
+        subItems: [
+          { title: "Asset register", url: "/assets" },
+          { title: "Depreciation", url: "/depreciation" },
+        ],
       },
     ],
   },
@@ -181,7 +199,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav className="px-2 py-4">
       {navGroups.map((g) => {
-        const items = g.items.filter((item) => navigationAllowedForRole(user?.role, item.url));
+        const items = g.items.filter((item) => navigationAllowedForUser(user, item.url));
         if (items.length === 0) return null;
         return (
           <div key={g.label} className="mb-3">
@@ -221,17 +239,19 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   </div>
                   {item.subItems && (
                     <CollapsibleContent className="ml-6 mt-1 grid gap-1 border-l border-border pl-3">
-                      {item.subItems.map((subItem) => (
-                        <Link
-                          key={`${item.url}-${subItem.title}`}
-                          to={subItem.url}
-                          hash={subItem.hash}
-                          onClick={onNavigate}
-                          className={`rounded-md px-2 py-2 text-xs ${path === subItem.url ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
-                        >
-                          {subItem.title}
-                        </Link>
-                      ))}
+                      {item.subItems
+                        .filter((subItem) => navigationAllowedForUser(user, subItem.url))
+                        .map((subItem) => (
+                          <Link
+                            key={`${item.url}-${subItem.title}`}
+                            to={subItem.url}
+                            hash={subItem.hash}
+                            onClick={onNavigate}
+                            className={`rounded-md px-2 py-2 text-xs ${path === subItem.url ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
+                          >
+                            {subItem.title}
+                          </Link>
+                        ))}
                     </CollapsibleContent>
                   )}
                 </Collapsible>
@@ -260,7 +280,7 @@ export function AppSidebar() {
       </SidebarHeader>
       <SidebarContent className="gap-1 overflow-y-auto overscroll-contain px-2 py-4">
         {navGroups.map((g) => {
-          const items = g.items.filter((item) => navigationAllowedForRole(user?.role, item.url));
+          const items = g.items.filter((item) => navigationAllowedForUser(user, item.url));
           if (items.length === 0) return null;
           return (
             <SidebarGroup key={g.label} className="mb-2">
@@ -309,16 +329,18 @@ export function AppSidebar() {
                         </div>
                         {!collapsed && item.subItems && (
                           <CollapsibleContent className="ml-6 mt-1 grid gap-1 border-l border-sidebar-border pl-3">
-                            {item.subItems.map((subItem) => (
-                              <Link
-                                key={`${item.url}-${subItem.title}`}
-                                to={subItem.url}
-                                hash={subItem.hash}
-                                className={`rounded-lg px-2.5 py-2 text-xs transition-colors ${path === subItem.url ? "bg-cyan-300/15 font-semibold text-cyan-100" : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
-                              >
-                                {subItem.title}
-                              </Link>
-                            ))}
+                            {item.subItems
+                              .filter((subItem) => navigationAllowedForUser(user, subItem.url))
+                              .map((subItem) => (
+                                <Link
+                                  key={`${item.url}-${subItem.title}`}
+                                  to={subItem.url}
+                                  hash={subItem.hash}
+                                  className={`rounded-lg px-2.5 py-2 text-xs transition-colors ${path === subItem.url ? "bg-cyan-300/15 font-semibold text-cyan-100" : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
+                                >
+                                  {subItem.title}
+                                </Link>
+                              ))}
                           </CollapsibleContent>
                         )}
                       </SidebarMenuItem>

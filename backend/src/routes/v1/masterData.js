@@ -112,6 +112,17 @@ function createCrud(config) {
     const pinError = normalizeAndValidatePin(body, table);
     if (pinError) return res.status(400).json({ error: pinError });
     if (table === "erp_items") {
+      if (body.preferred_vendor_id) {
+        const vendor = await pool.query(
+          `SELECT 1 FROM erp_vendors WHERE id=$1 AND company_id=$2 AND is_active=TRUE AND is_deleted=FALSE`,
+          [body.preferred_vendor_id, req.user.company_id],
+        );
+        if (!vendor.rowCount) return res.status(400).json({ error: "Preferred supplier must be active in this company" });
+      }
+      if (body.supplier_lead_time_days !== undefined
+          && (!Number.isInteger(Number(body.supplier_lead_time_days)) || Number(body.supplier_lead_time_days) < 0)) {
+        return res.status(400).json({ error: "Supplier lead time must be a non-negative whole number of days" });
+      }
       if (!body.tax_group_id) {
         const defaultGroup = await pool.query(
           `SELECT id FROM erp_tax_groups
@@ -174,6 +185,17 @@ function createCrud(config) {
         [body.tax_group_id, req.user.company_id],
       );
       if (!group.rowCount) return res.status(400).json({ error: "Select an active tax group from this company" });
+    }
+    if (table === "erp_items" && body.preferred_vendor_id) {
+      const vendor = await pool.query(
+        `SELECT 1 FROM erp_vendors WHERE id=$1 AND company_id=$2 AND is_active=TRUE AND is_deleted=FALSE`,
+        [body.preferred_vendor_id, req.user.company_id],
+      );
+      if (!vendor.rowCount) return res.status(400).json({ error: "Preferred supplier must be active in this company" });
+    }
+    if (table === "erp_items" && body.supplier_lead_time_days !== undefined
+        && (!Number.isInteger(Number(body.supplier_lead_time_days)) || Number(body.supplier_lead_time_days) < 0)) {
+      return res.status(400).json({ error: "Supplier lead time must be a non-negative whole number of days" });
     }
     const keys = Object.keys(body).filter((k) => !["id", "company_id"].includes(k));
     if (!keys.length) return res.status(400).json({ error: "No fields to update" });

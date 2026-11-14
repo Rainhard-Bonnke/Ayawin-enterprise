@@ -31,7 +31,12 @@ test("POS Operator completes a stock-aware cash sale", async ({ page }) => {
     if (path === "/auth/csrf") {
       await route.fulfill({ json: { csrf_token: "uat-csrf-token" } });
     } else if (path === "/auth/refresh" && method === "POST") {
-      await route.fulfill({ json: { access_token: token, csrf_token: "uat-csrf-token" } });
+      await route.fulfill({ status: 401, json: { error: "No refresh session" } });
+    } else if (path === "/auth/login" && method === "POST") {
+      await route.fulfill({ json: { access_token: token, csrf_token: "uat-csrf-token", user: {
+        id: "uat-pos-operator", email: "pos.operator@example.test", username: "pos.operator",
+        role_name: "POS Operator", permissions: ["sales.order.create", "sales.delivery.post", "sales.invoice.create", "sales.receipt.create"],
+      } } });
     } else if (path === "/auth/me") {
       await route.fulfill({
         json: {
@@ -71,7 +76,21 @@ test("POS Operator completes a stock-aware cash sale", async ({ page }) => {
           lines: [{ id: "line-1", item_id: "item-1", quantity: 1, qty_delivered: delivered ? 1 : 0, qty_invoiced: 0, unit_price: 140 }],
         },
       });
+    } else if (path === "/sales/orders/order-id-1/pick-list" && method === "POST") {
+      await route.fulfill({ status: 201, json: {
+        id: "pick-list-1", pick_no: "PICK-2026-0001", status: "open",
+        lines: [{ id: "pick-line-1", item_id: "item-1", quantity_to_pick: 1 }],
+      } });
+    } else if (path === "/sales/pick-lists/pick-list-1/confirm" && method === "POST") {
+      const body = request.postDataJSON() as { lines: Array<{ pick_list_line_id: string; quantity_picked: number }> };
+      expect(body.lines).toEqual([{ pick_list_line_id: "pick-line-1", quantity_picked: 1 }]);
+      await route.fulfill({ status: 200, json: {
+        id: "pick-list-1", pick_no: "PICK-2026-0001", status: "picked",
+        lines: [{ id: "pick-line-1", item_id: "item-1", quantity_to_pick: 1, quantity_picked: 1 }],
+      } });
     } else if (path === "/sales/deliveries" && method === "POST") {
+      const body = request.postDataJSON() as { pick_list_id?: string };
+      expect(body.pick_list_id).toBe("pick-list-1");
       delivered = true;
       await route.fulfill({ status: 201, json: { ok: true, delivery_id: "delivery-1" } });
     } else if (path === "/sales/invoices" && method === "POST") {
@@ -85,12 +104,13 @@ test("POS Operator completes a stock-aware cash sale", async ({ page }) => {
     }
   });
 
-  const authenticatedUser = page.waitForResponse((response) => response.url().includes("/api/v1/auth/me"));
   await page.goto("/login");
-  await authenticatedUser;
-  await page.goto("/pos");
+  await page.getByLabel("Email or username").fill("pos.operator@example.test");
+  await page.getByLabel("Password").fill("uat-password");
+  await page.getByRole("button", { name: "Sign In" }).click();
 
-  await expect(page.getByRole("heading", { name: "Fast checkout" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fast checkout" })).toBeVisible({ timeout: 15000 });
+  await page.getByLabel("Customer").selectOption("customer-1");
   const taxPreview = page.waitForResponse((response) => response.url().endsWith("/api/v1/sales/tax-preview"));
   await page.getByRole("button", { name: /UAT Product/ }).click();
   await taxPreview;
@@ -101,6 +121,8 @@ test("POS Operator completes a stock-aware cash sale", async ({ page }) => {
   await expect(page.getByText("Sale completed", { exact: true })).toBeVisible();
   await expect(page.getByText("Receipt INV-POS-001")).toBeVisible();
   expect(calls).toContain("POST /sales/orders/order-id-1/confirm");
+  expect(calls).toContain("POST /sales/orders/order-id-1/pick-list");
+  expect(calls).toContain("POST /sales/pick-lists/pick-list-1/confirm");
   expect(calls).toContain("POST /sales/deliveries");
   expect(calls).toContain("POST /sales/invoices");
   expect(calls).toContain("POST /sales/invoices/invoice-1/pay");

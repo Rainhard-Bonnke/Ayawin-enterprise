@@ -206,6 +206,9 @@ async function reviewStocktake({ companyId, stocktakeId, decision, note, user })
     );
     const session = result.rows[0];
     if (!session) throw new Error("Submitted stock count not found");
+    if (String(session.submitted_by) === String(user.id)) {
+      throw new Error("The stocktake submitter cannot review or post their own count");
+    }
     if (decision === "reject") {
       const rejected = await client.query(
         `UPDATE erp_stocktake_sessions SET status = 'rejected', reviewed_at = NOW(),
@@ -295,18 +298,82 @@ async function reviewStocktake({ companyId, stocktakeId, decision, note, user })
         journalLines.push({ account_id: accountByCode[ACCOUNT_CODES.inventory], debit: 0, credit: value, description: "Stocktake loss" });
       }
     }
-    const journal = await gl.createJournalInTransaction(client, { companyId, userId: user.id,
-      entryDate: session.snapshot_at, journalType: "adjustment", source: "module",
-      referenceNo: session.count_no, description: `Stocktake adjustment ${session.count_no}`, lines: journalLines });
-    await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
+    let journalId = null;
+    if (journalLines.length) {
+      const journal = await gl.createJournalInTransaction(client, { companyId, userId: user.id,
+        entryDate: session.snapshot_at, journalType: "adjustment", source: "module",
+        referenceNo: session.count_no, description: `Stocktake adjustment ${session.count_no}`, lines: journalLines });
+      await gl.postJournalInTransaction(client, { journalId: journal.id, companyId, userId: user.id });
+      journalId = journal.id;
+    }
     const posted = await client.query(
       `UPDATE erp_stocktake_sessions SET status = 'posted', reviewed_at = NOW(), journal_id = $4,
        reviewed_by = $3, review_note = $5, posted_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND company_id = $2 RETURNING *`,
-      [stocktakeId, companyId, user.id, journal.id, note || null],
+      [stocktakeId, companyId, user.id, journalId, note || null],
     );
     await client.query("COMMIT");
     return posted.rows[0];
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function reopenStocktakeForRecount({ companyId, stocktakeId, user }) {
+  if (isDriver(user)) throw new Error("A supervisor must reopen this count for recount");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM erp_stocktake_sessions
+       WHERE id=$1 AND company_id=$2 AND status='recount_required' FOR UPDATE`,
+      [stocktakeId, companyId],
+    );
+    const session = result.rows[0];
+    if (!session) throw new Error("Stock count requiring recount was not found");
+    await assertLocationAccess(client, companyId, session.warehouse_id, user);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      `stocktake:${companyId}:${session.warehouse_id}`,
+    ]);
+    const competing = await client.query(
+      `SELECT id FROM erp_stocktake_sessions
+       WHERE company_id=$1 AND warehouse_id=$2 AND id<>$3 AND status IN ('counting','submitted')
+       LIMIT 1 FOR UPDATE`,
+      [companyId, session.warehouse_id, stocktakeId],
+    );
+    if (competing.rowCount) throw new Error("Another stock count is active for this location; complete it before reopening the recount");
+    const stock = await client.query(
+      `SELECT id, item_id, quantity, avg_unit_cost FROM erp_stock_on_hand
+       WHERE company_id=$1 AND warehouse_id=$2 AND is_deleted=FALSE FOR UPDATE`,
+      [companyId, session.warehouse_id],
+    );
+    const currentByItem = new Map(stock.rows.map((row) => [row.item_id, row]));
+    const sessionLines = await client.query(
+      `SELECT id, item_id FROM erp_stocktake_lines WHERE company_id=$1 AND stocktake_id=$2 FOR UPDATE`,
+      [companyId, stocktakeId],
+    );
+    for (const line of sessionLines.rows) {
+      const current = currentByItem.get(line.item_id);
+      await client.query(
+        `UPDATE erp_stocktake_lines
+         SET expected_quantity=$3, unit_cost=$4, counted_quantity=NULL, variance=NULL,
+             notes=NULL, counted_at=NULL, counted_by=NULL
+         WHERE id=$1 AND company_id=$2`,
+        [line.id, companyId, Number(current?.quantity || 0), Number(current?.avg_unit_cost || 0)],
+      );
+    }
+    const reopened = await client.query(
+      `UPDATE erp_stocktake_sessions SET status='counting', snapshot_at=NOW(),
+         submitted_at=NULL, submitted_by=NULL, reviewed_at=NULL, reviewed_by=NULL,
+         review_note=NULL, updated_at=NOW()
+       WHERE id=$1 AND company_id=$2 RETURNING *`,
+      [stocktakeId, companyId],
+    );
+    await client.query("COMMIT");
+    return reopened.rows[0];
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -322,4 +389,5 @@ module.exports = {
   getStocktake,
   submitStocktake,
   reviewStocktake,
+  reopenStocktakeForRecount,
 };

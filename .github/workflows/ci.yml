@@ -24,6 +24,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      VITE_API_BASE: https://api.example.test
       DATABASE_HOST: localhost
       DATABASE_PORT: 5432
       DATABASE_USER: postgres
@@ -63,6 +64,18 @@ jobs:
 
       - name: Run frontend schema tests
         run: npm run test:frontend
+
+      - name: Check Phase A module matrix
+        run: node scripts/generate-module-matrix.cjs --check
+
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+
+      - name: Build API Docker image
+        run: docker build -t ayawin-api:ci ./backend
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium

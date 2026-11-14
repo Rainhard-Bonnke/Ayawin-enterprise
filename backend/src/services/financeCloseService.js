@@ -44,6 +44,26 @@ function buildChecklist(period, counts) {
       count: Number(counts.vat_return_not_locked || 0),
     },
     {
+      code: "wht_not_remitted",
+      label: "Withholding tax not remitted for the period",
+      count: Number(counts.wht_not_remitted || 0),
+    },
+    {
+      code: "depreciation_run_pending",
+      label: "Depreciation run not posted for the period",
+      count: Number(counts.depreciation_run_pending || 0),
+    },
+    {
+      code: "fx_revaluation_pending",
+      label: "FX revaluation or reversal entries pending",
+      count: Number(counts.fx_revaluation_pending || 0),
+    },
+    {
+      code: "inventory_variances",
+      label: "Open inventory variances or reconciliation gaps",
+      count: Number(counts.inventory_variances || 0),
+    },
+    {
       code: "trial_balance_difference",
       label: "Trial balance difference",
       count: Number(counts.trial_balance_difference || 0),
@@ -68,8 +88,122 @@ function buildChecklist(period, counts) {
   };
 }
 
-async function getPeriodCloseChecklist(companyId, periodId) {
-  const result = await pool.query(
+function buildPhaseCReadinessSummary({
+  checklist,
+  foreignCurrencyWorkflow = {},
+  fxPolicyGovernance = false,
+} = {}) {
+  const checks = [];
+  const blockers = [];
+
+  const closeReady = checklist ? checklist.ready_to_close === true : true;
+  checks.push({
+    code: "finance_close_controls",
+    label: "Finance close controls",
+    status: closeReady ? "pass" : "fail",
+    message: closeReady
+      ? "The fiscal period is clear of open close blockers."
+      : "The fiscal period still has blocker events that must be cleared before close.",
+  });
+  if (!closeReady) {
+    blockers.push({
+      code: "finance_close_controls",
+      label: "Finance close controls",
+      message: "The period close checklist is still blocked by unresolved reconciliation or VAT controls.",
+    });
+  }
+
+  const fxReady = foreignCurrencyWorkflow.posting === true
+    && foreignCurrencyWorkflow.settlement === true
+    && foreignCurrencyWorkflow.revaluation === true
+    && foreignCurrencyWorkflow.reversal === true;
+  checks.push({
+    code: "foreign_currency_accounting",
+    label: "Foreign-currency accounting workflow",
+    status: fxReady ? "pass" : "fail",
+    message: fxReady
+      ? "Foreign-currency posting, settlement, revaluation, and reversal controls are implemented."
+      : "Foreign-currency posting, realized settlement, revaluation, and reversal are not all implemented.",
+  });
+  if (!fxReady) {
+    blockers.push({
+      code: "foreign_currency_accounting",
+      label: "Foreign-currency accounting workflow",
+      message: "The complete FX accounting contract must be implemented and verified before Phase C can be marked ready.",
+    });
+  }
+
+  checks.push({
+    code: "fx_policy_governance",
+    label: "FX policy governance",
+    status: fxPolicyGovernance ? "pass" : "fail",
+    message: fxPolicyGovernance
+      ? "FX policies require independent approval and approved rates are bound to policy direction and source."
+      : "FX policy approval and policy-bound exchange-rate controls are incomplete.",
+  });
+  if (!fxPolicyGovernance) {
+    blockers.push({
+      code: "fx_policy_governance",
+      label: "FX policy governance",
+      message: "An independently approved FX policy and matching approved rate source are required before foreign-currency accounting can be enabled.",
+    });
+  }
+
+  const vatReady = checklist
+    ? !checklist.blockers || !checklist.blockers.some((item) => item.code === "vat_return_not_locked")
+    : true;
+  checks.push({
+    code: "vat_locking",
+    label: "VAT period locking",
+    status: vatReady ? "pass" : "fail",
+    message: vatReady
+      ? "VAT periods are locked when required."
+      : "A VAT return must be locked before the period can be treated as complete.",
+  });
+  if (!vatReady) {
+    blockers.push({
+      code: "vat_locking",
+      label: "VAT period locking",
+      message: "The VAT return for the period is still unlocked and must be approved or closed before period close is considered complete.",
+    });
+  }
+
+  const ready = blockers.length === 0;
+  return {
+    phase: "C",
+    status: ready ? "ready" : "blocked",
+    ready,
+    checks,
+    blockers,
+    summary: ready
+      ? "Phase C finance and compliance guardrails are in a ready state."
+      : "Phase C has unresolved finance or compliance blockers.",
+  };
+}
+
+async function getPhaseCReadinessSummary(companyId, periodId) {
+  if (!periodId) throw new Error("A fiscal period id is required for Phase C readiness");
+  const checklist = await getPeriodCloseChecklist(companyId, periodId);
+  if (!checklist) return null;
+  const policies = await pool.query(
+    `SELECT COUNT(*)::int AS approved_policy_count
+     FROM erp_fx_accounting_policies
+     WHERE company_id = $1 AND status = 'approved' AND is_deleted = FALSE`,
+    [companyId],
+  );
+  const summary = buildPhaseCReadinessSummary({
+    checklist,
+    fxPolicyGovernance: Number(policies.rows[0]?.approved_policy_count || 0) > 0,
+  });
+  return {
+    ...summary,
+    period_checklist: checklist,
+    approved_fx_policy_count: Number(policies.rows[0]?.approved_policy_count || 0),
+  };
+}
+
+async function getPeriodCloseChecklist(companyId, periodId, database = pool) {
+  const result = await database.query(
     `SELECT fp.id, fp.name, fp.start_date, fp.end_date, fp.status
      FROM erp_fiscal_periods fp
      WHERE fp.id = $1 AND fp.company_id = $2 AND fp.is_deleted = FALSE`,
@@ -78,7 +212,7 @@ async function getPeriodCloseChecklist(companyId, periodId) {
   const period = result.rows[0];
   if (!period) return null;
 
-  const counts = await pool.query(
+  const counts = await database.query(
     `SELECT
        (SELECT COUNT(*) FROM erp_journals j
         WHERE j.company_id = $1 AND j.entry_date BETWEEN $2 AND $3
@@ -101,6 +235,37 @@ async function getPeriodCloseChecklist(companyId, periodId) {
        (SELECT COUNT(*) FROM erp_payroll_runs pr
         WHERE pr.company_id = $1 AND pr.payroll_month BETWEEN $2 AND $3
           AND pr.status <> 'posted') AS unfinalized_payroll_runs,
+       (SELECT COUNT(*) FROM erp_withholding_obligations obligation
+        WHERE obligation.company_id = $1 AND obligation.due_date <= $3
+          AND obligation.status = 'outstanding') AS wht_not_remitted,
+       (SELECT COUNT(*) FROM erp_fx_accounting_policies policy
+        WHERE policy.company_id=$1 AND policy.status='approved' AND policy.is_deleted=FALSE
+          AND EXISTS (
+            SELECT 1 FROM unnest(policy.monetary_account_ids) AS scoped(account_id)
+            JOIN erp_journal_lines line ON line.account_id=scoped.account_id
+              AND line.company_id=policy.company_id AND line.currency_code=policy.currency_code
+            JOIN erp_journals journal ON journal.id=line.journal_id AND journal.company_id=line.company_id
+              AND journal.status IN ('posted','reversed') AND journal.is_deleted=FALSE
+            WHERE journal.entry_date <= $3
+            GROUP BY scoped.account_id
+            HAVING SUM(line.transaction_debit - line.transaction_credit) <> 0
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM erp_fx_revaluation_runs run
+            WHERE run.company_id=$1 AND run.fiscal_period_id=$4
+              AND run.currency_code=policy.currency_code
+          )) AS fx_revaluation_pending,
+       (SELECT COUNT(*) FROM erp_fixed_assets a
+        WHERE a.company_id = $1 AND a.acquisition_date <= $3
+          AND a.status = 'active' AND a.is_deleted = FALSE
+          AND NOT EXISTS (
+            SELECT 1 FROM erp_fixed_asset_depreciation_runs dr
+            WHERE dr.company_id = $1 AND dr.period_start = $2 AND dr.period_end = $3
+              AND dr.status = 'posted' AND dr.is_deleted = FALSE
+          )) AS depreciation_run_pending,
+       (SELECT COUNT(*) FROM erp_stocktake_sessions s
+        WHERE s.company_id = $1 AND s.snapshot_at::date BETWEEN $2 AND $3
+          AND s.status IN ('counting', 'submitted', 'recount_required')) AS inventory_variances,
        (SELECT CASE WHEN EXISTS (
            SELECT 1 FROM erp_customer_invoices i WHERE i.company_id = $1 AND i.invoice_date BETWEEN $2 AND $3
              AND i.status IN ('posted','paid','partial','overdue') AND i.tax_amount > 0 AND i.is_deleted = FALSE
@@ -166,6 +331,37 @@ async function closeFiscalPeriod({ companyId, periodId, userId, reason }) {
          (SELECT COUNT(*) FROM erp_payroll_runs pr
           WHERE pr.company_id = $1 AND pr.payroll_month BETWEEN $2 AND $3
             AND pr.status <> 'posted') AS unfinalized_payroll_runs,
+         (SELECT COUNT(*) FROM erp_withholding_obligations obligation
+          WHERE obligation.company_id = $1 AND obligation.due_date <= $3
+            AND obligation.status = 'outstanding') AS wht_not_remitted,
+         (SELECT COUNT(*) FROM erp_fx_accounting_policies policy
+          WHERE policy.company_id=$1 AND policy.status='approved' AND policy.is_deleted=FALSE
+            AND EXISTS (
+              SELECT 1 FROM unnest(policy.monetary_account_ids) AS scoped(account_id)
+              JOIN erp_journal_lines line ON line.account_id=scoped.account_id
+                AND line.company_id=policy.company_id AND line.currency_code=policy.currency_code
+              JOIN erp_journals journal ON journal.id=line.journal_id AND journal.company_id=line.company_id
+                AND journal.status IN ('posted','reversed') AND journal.is_deleted=FALSE
+              WHERE journal.entry_date <= $3
+              GROUP BY scoped.account_id
+              HAVING SUM(line.transaction_debit - line.transaction_credit) <> 0
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM erp_fx_revaluation_runs run
+              WHERE run.company_id=$1 AND run.fiscal_period_id=$4
+                AND run.currency_code=policy.currency_code
+            )) AS fx_revaluation_pending,
+         (SELECT COUNT(*) FROM erp_fixed_assets a
+          WHERE a.company_id = $1 AND a.acquisition_date <= $3
+            AND a.status = 'active' AND a.is_deleted = FALSE
+            AND NOT EXISTS (
+              SELECT 1 FROM erp_fixed_asset_depreciation_runs dr
+              WHERE dr.company_id = $1 AND dr.period_start = $2 AND dr.period_end = $3
+                AND dr.status = 'posted' AND dr.is_deleted = FALSE
+            )) AS depreciation_run_pending,
+         (SELECT COUNT(*) FROM erp_stocktake_sessions s
+          WHERE s.company_id = $1 AND s.snapshot_at::date BETWEEN $2 AND $3
+            AND s.status IN ('counting', 'submitted', 'recount_required')) AS inventory_variances,
          (SELECT CASE WHEN EXISTS (
              SELECT 1 FROM erp_customer_invoices i WHERE i.company_id = $1 AND i.invoice_date BETWEEN $2 AND $3
                AND i.status IN ('posted','paid','partial','overdue') AND i.tax_amount > 0 AND i.is_deleted = FALSE
@@ -237,4 +433,11 @@ async function reopenFiscalPeriod({ companyId, periodId, userId, reason }) {
   } finally { client.release(); }
 }
 
-module.exports = { buildChecklist, getPeriodCloseChecklist, closeFiscalPeriod, reopenFiscalPeriod };
+module.exports = {
+  buildChecklist,
+  buildPhaseCReadinessSummary,
+  getPhaseCReadinessSummary,
+  getPeriodCloseChecklist,
+  closeFiscalPeriod,
+  reopenFiscalPeriod,
+};

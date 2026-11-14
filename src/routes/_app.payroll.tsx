@@ -21,6 +21,17 @@ const load = async (token: string, signal?: AbortSignal): Promise<RegisterRow[]>
   }));
 
 export const Route = createFileRoute("/_app/payroll")({
-  component: () => <ResourceRegisterPage title="Payroll" description="Payroll runs, employee totals, and posting status by month." columns={columns} load={load} queryKey={queryKeys.hr.payrollRuns()} actionLabel="Open HR workspace" actionTo="/hr" countLabel="Payroll runs" />,
+  component: () => (
+    <ResourceRegisterPage
+      title="Payroll"
+      description="Payroll runs, employee totals, and posting status by month."
+      columns={columns}
+      load={load}
+      queryKey={queryKeys.hr.payrollRuns()}
+      actionLabel="Open HR workspace"
+      actionTo="/hr"
+      countLabel="Payroll runs"
+    />
+  ),
   head: () => ({ meta: [{ title: "Payroll - Ayawin Stock Solution" }] }),
 });
